@@ -5,6 +5,7 @@
 //! tenancy, quota, merge, TTL, and counter rules to storage.
 
 use crate::ads::TeamResolver;
+use chrono::{DateTime, SecondsFormat, Utc};
 use envoy_types::pb::envoy::config::core::v3::{
     header_value_option, HeaderMap, HeaderValue, HeaderValueOption, RequestMethod,
 };
@@ -29,9 +30,8 @@ use fp_domain::{
     DiscoverySessionId, DomainError, ListenerId, OpenAiTokenUsage, RouteConfigId, SecretSpec,
     TeamId, AI_MODEL_HEADER,
 };
-use fp_storage::repos::{ai, api_lifecycle, discovery, identity, secrets};
-use serde_json::{Map, Value};
-use sqlx::types::chrono::Utc;
+use fp_storage::repos::{ai, ai_trace, api_lifecycle, discovery, identity, secrets};
+use serde_json::{json, Map, Value};
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataMap;
@@ -95,6 +95,89 @@ struct AiExtProcState {
     last_usage: Option<OpenAiTokenUsage>,
     upstream_model_override: Option<String>,
     request_path: Option<String>,
+    request_id: Option<String>,
+    trace_id: Option<String>,
+    model: Option<String>,
+    request_headers_at: Option<DateTime<Utc>>,
+    hops: Vec<TraceHop>,
+}
+
+/// One entry of the per-request hop timeline persisted into `ai_trace_events.hops`.
+/// `origin` and `failed` are merge/derivation mechanics for the storage upsert: origin
+/// decides the winner when both ExtProc streams record the same hop name, and `failed`
+/// feeds the order-independent `failure_hop` derivation. Never carries request/response
+/// bodies or credential values — `detail` holds ids, header *names*, and counters only.
+#[derive(Debug, Clone)]
+struct TraceHop {
+    hop: &'static str,
+    started_at: DateTime<Utc>,
+    ended_at: DateTime<Utc>,
+    outcome: &'static str,
+    origin: &'static str,
+    failed: bool,
+    detail: Value,
+}
+
+impl TraceHop {
+    fn to_json(&self) -> Value {
+        json!({
+            "hop": self.hop,
+            "started_at": self.started_at.to_rfc3339_opts(SecondsFormat::Micros, true),
+            "ended_at": self.ended_at.to_rfc3339_opts(SecondsFormat::Micros, true),
+            "outcome": self.outcome,
+            "origin": self.origin,
+            "failed": self.failed,
+            "detail": self.detail,
+        })
+    }
+}
+
+impl AiExtProcState {
+    /// Which side of the request this ExtProc stream is: the listener-side router stream
+    /// carries a listener id, the upstream-side provider stream carries provider metadata
+    /// (`ai_context` admits no other shapes).
+    fn trace_origin(&self) -> &'static str {
+        match &self.context {
+            Some(context)
+                if context.provider_id.is_some() || !context.failover_chain.is_empty() =>
+            {
+                "upstream"
+            }
+            _ => "listener",
+        }
+    }
+
+    fn push_hop(
+        &mut self,
+        hop: &'static str,
+        started_at: DateTime<Utc>,
+        outcome: &'static str,
+        failed: bool,
+        detail: Value,
+    ) {
+        let ended_at = Utc::now().max(started_at);
+        let origin = self.trace_origin();
+        self.hops.push(TraceHop {
+            hop,
+            started_at,
+            ended_at,
+            outcome,
+            origin,
+            failed,
+            detail,
+        });
+    }
+}
+
+/// Extract the 32-hex trace-id field from a W3C `traceparent` header value.
+fn traceparent_trace_id(value: &str) -> Option<String> {
+    let mut parts = value.split('-');
+    let _version = parts.next()?;
+    let trace_id = parts.next()?;
+    (trace_id.len() == 32
+        && trace_id.bytes().all(|b| b.is_ascii_hexdigit())
+        && trace_id.bytes().any(|b| b != b'0'))
+    .then(|| trace_id.to_ascii_lowercase())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,7 +376,8 @@ fn ai_process_stream(
                 }
             }
         }
-        persist_ai_usage(&pool, &state).await;
+        let settlement = persist_ai_usage(&pool, &state).await;
+        persist_ai_trace(&pool, &state, settlement).await;
     });
     rx
 }
@@ -761,6 +845,7 @@ async fn ai_response_with_pool(
     if let Some(processing_request::Request::RequestHeaders(headers)) = request.request.as_ref() {
         let map = headers_from_header_map(headers.headers.as_ref());
         state.request_path = header_value(&map, ":path");
+        note_ai_request_identity(state, &map);
         return ai_request_headers_response(pool, state, request).await;
     }
     if matches!(
@@ -775,6 +860,21 @@ async fn ai_response_with_pool(
         return ai_upstream_request_body_response(state, request);
     }
     ai_response(state, request)
+}
+
+/// Record the request-identity facts the trace row is keyed and correlated by: the
+/// server-owned `x-request-id` (post-HCM-mutation, so both streams observe the same value),
+/// the inbound `traceparent` trace-id when present, and the model routing hint.
+fn note_ai_request_identity(state: &mut AiExtProcState, map: &Map<String, Value>) {
+    state.request_headers_at = Some(Utc::now());
+    state.request_id = header_value(map, "x-request-id");
+    if state.trace_id.is_none() {
+        state.trace_id =
+            header_value(map, "traceparent").and_then(|value| traceparent_trace_id(&value));
+    }
+    if state.model.is_none() {
+        state.model = header_value(map, AI_MODEL_HEADER);
+    }
 }
 
 fn ai_upstream_request_body_response(
@@ -816,6 +916,7 @@ fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> Proces
             state.response_content_type = header_value(&map, "content-type")
                 .or_else(|| header_value(&map, "Content-Type"))
                 .map(|value| value.to_ascii_lowercase());
+            note_ai_upstream_response(state);
             response_headers_response(CommonResponse {
                 status: common_response::ResponseStatus::Continue as i32,
                 ..Default::default()
@@ -825,6 +926,7 @@ fn ai_response(state: &mut AiExtProcState, request: ProcessingRequest) -> Proces
             match prepare_openai_chat_request(&body.body) {
                 Ok(prepared) => {
                     state.include_usage_injected = prepared.include_usage_injected;
+                    state.model = Some(prepared.model.clone());
                     let mut common = CommonResponse {
                         status: common_response::ResponseStatus::Continue as i32,
                         header_mutation: Some(HeaderMutation {
@@ -913,6 +1015,7 @@ async fn ai_request_headers_response(
     else {
         return ai_listener_request_headers_response(pool, state, request, context).await;
     };
+    let budget_started = Utc::now();
     match ai::exhausted_enforcing_budget(
         pool,
         context.team_id,
@@ -922,6 +1025,13 @@ async fn ai_request_headers_response(
     .await
     {
         Ok(Some(name)) => {
+            state.push_hop(
+                "budget",
+                budget_started,
+                "rejected",
+                true,
+                json!({"mode": "enforcing", "budget": name}),
+            );
             metrics::counter!(
                 "fp_ai_budget_threshold_crossings_total",
                 "mode" => "enforcing",
@@ -934,8 +1044,23 @@ async fn ai_request_headers_response(
                 "flowplane_ai_budget_exceeded",
             );
         }
-        Ok(None) => {}
+        Ok(None) => {
+            state.push_hop(
+                "budget",
+                budget_started,
+                "allowed",
+                false,
+                json!({"mode": "enforcing"}),
+            );
+        }
         Err(err) => {
+            state.push_hop(
+                "budget",
+                budget_started,
+                "check_failed",
+                true,
+                json!({"mode": "enforcing"}),
+            );
             tracing::debug!(team = %context.team_id, route_config = %context.route_config_id, "failed to check AI budget: {}", err.message);
             return immediate_response(500, "AI budget check unavailable".into());
         }
@@ -947,6 +1072,7 @@ async fn ai_request_headers_response(
         }
         _ => None,
     };
+    let credential_started = Utc::now();
     match selected_backend_runtime(
         pool,
         context.team_id,
@@ -962,6 +1088,17 @@ async fn ai_request_headers_response(
                 state_context.provider_id = Some(provider_id);
                 state_context.backend_position = Some(backend_position);
             }
+            state.push_hop(
+                "credential_injection",
+                credential_started,
+                "injected",
+                false,
+                json!({
+                    "provider_id": provider_id,
+                    "backend_position": backend_position,
+                    "auth_header": runtime.auth_header.clone(),
+                }),
+            );
             state.upstream_model_override = runtime.model_override;
             let mut set_headers = vec![mutation_header_value(
                 runtime.auth_header,
@@ -979,7 +1116,16 @@ async fn ai_request_headers_response(
                 ..Default::default()
             })
         }
-        Err(_) => immediate_response(500, "AI provider credential unavailable".into()),
+        Err(_) => {
+            state.push_hop(
+                "credential_injection",
+                credential_started,
+                "unavailable",
+                true,
+                json!({"provider_id": provider_id, "backend_position": backend_position}),
+            );
+            immediate_response(500, "AI provider credential unavailable".into())
+        }
     }
 }
 
@@ -1016,6 +1162,18 @@ async fn ai_listener_request_headers_response(
     request: ProcessingRequest,
     context: AiExtProcContext,
 ) -> ProcessingResponse {
+    // Listener-side hops: the request reached the AI listener and its route/team identity
+    // was reconstructed from CP-attached gRPC metadata; no per-request authn filter runs on
+    // AI listeners today, so the auth hop truthfully records `not_configured`.
+    let route_started = state.request_headers_at.unwrap_or_else(Utc::now);
+    let route_detail = json!({
+        "listener_id": context.listener_id,
+        "route_config_id": context.route_config_id,
+        "model": state.model.clone(),
+    });
+    state.push_hop("route_match", route_started, "matched", false, route_detail);
+    let auth_at = Utc::now();
+    state.push_hop("auth", auth_at, "not_configured", false, json!({}));
     let request_model = match request.request {
         Some(processing_request::Request::RequestHeaders(headers)) => {
             let map = headers_from_header_map(headers.headers.as_ref());
@@ -1044,6 +1202,7 @@ async fn ai_listener_request_headers_response(
         }
     };
     let (provider_id, backend_position) = selected;
+    let budget_started = Utc::now();
     match ai::exhausted_enforcing_budget(
         pool,
         context.team_id,
@@ -1053,6 +1212,13 @@ async fn ai_listener_request_headers_response(
     .await
     {
         Ok(Some(name)) => {
+            state.push_hop(
+                "budget",
+                budget_started,
+                "rejected",
+                true,
+                json!({"mode": "enforcing", "budget": name}),
+            );
             metrics::counter!(
                 "fp_ai_budget_threshold_crossings_total",
                 "mode" => "enforcing",
@@ -1065,12 +1231,28 @@ async fn ai_listener_request_headers_response(
                 "flowplane_ai_budget_exceeded",
             );
         }
-        Ok(None) => {}
+        Ok(None) => {
+            state.push_hop(
+                "budget",
+                budget_started,
+                "allowed",
+                false,
+                json!({"mode": "enforcing"}),
+            );
+        }
         Err(err) => {
+            state.push_hop(
+                "budget",
+                budget_started,
+                "check_failed",
+                true,
+                json!({"mode": "enforcing"}),
+            );
             tracing::debug!(team = %context.team_id, route_config = %context.route_config_id, "failed to check AI budget: {}", err.message);
             return immediate_response(500, "AI budget check unavailable".into());
         }
     }
+    let credential_started = Utc::now();
     match selected_backend_runtime(
         pool,
         context.team_id,
@@ -1082,6 +1264,17 @@ async fn ai_listener_request_headers_response(
     .await
     {
         Ok(runtime) => {
+            state.push_hop(
+                "credential_injection",
+                credential_started,
+                "injected",
+                false,
+                json!({
+                    "provider_id": provider_id,
+                    "backend_position": backend_position,
+                    "auth_header": runtime.auth_header.clone(),
+                }),
+            );
             state.upstream_model_override = runtime.model_override;
             let mut set_headers = vec![mutation_header_value(
                 runtime.auth_header,
@@ -1099,7 +1292,16 @@ async fn ai_listener_request_headers_response(
                 ..Default::default()
             })
         }
-        Err(_) => immediate_response(500, "AI provider credential unavailable".into()),
+        Err(_) => {
+            state.push_hop(
+                "credential_injection",
+                credential_started,
+                "unavailable",
+                true,
+                json!({"provider_id": provider_id, "backend_position": backend_position}),
+            );
+            immediate_response(500, "AI provider credential unavailable".into())
+        }
     }
 }
 
@@ -1265,14 +1467,15 @@ fn remember_ai_usage(state: &mut AiExtProcState, usage: OpenAiTokenUsage) {
     state.last_usage = Some(usage);
 }
 
-async fn persist_ai_usage(pool: &sqlx::PgPool, state: &AiExtProcState) {
+/// Persist token usage and settle budgets. Returns `Some(true)` when the usage event was
+/// recorded and settled, `Some(false)` when persistence failed, and `None` when this stream
+/// had no attributable usage to persist — feeds the trace `usage` hop's settlement outcome.
+async fn persist_ai_usage(pool: &sqlx::PgPool, state: &AiExtProcState) -> Option<bool> {
     let (Some(context), Some(usage)) = (&state.context, state.last_usage) else {
-        return;
+        return None;
     };
-    let Some(provider_id) = context.provider_id else {
-        return;
-    };
-    if let Err(err) = ai::record_usage_event_and_settle_budgets(
+    let provider_id = context.provider_id?;
+    match ai::record_usage_event_and_settle_budgets(
         pool,
         ai::AiUsageEventInsert {
             team_id: context.team_id,
@@ -1284,7 +1487,110 @@ async fn persist_ai_usage(pool: &sqlx::PgPool, state: &AiExtProcState) {
     )
     .await
     {
-        tracing::debug!(team = %context.team_id, route_config = %context.route_config_id, "failed to persist AI usage: {}", err.message);
+        Ok(()) => Some(true),
+        Err(err) => {
+            tracing::debug!(team = %context.team_id, route_config = %context.route_config_id, "failed to persist AI usage: {}", err.message);
+            Some(false)
+        }
+    }
+}
+
+/// Close the `upstream` hop when the upstream-side stream observes response headers. The
+/// listener-side stream records the final status in the row's top-level `status_code`
+/// column instead, so the hop stays owned by exactly one origin.
+fn note_ai_upstream_response(state: &mut AiExtProcState) {
+    if state.trace_origin() != "upstream" {
+        return;
+    }
+    let started = state.request_headers_at.unwrap_or_else(Utc::now);
+    let status = state.response_status;
+    let failed = status.is_none_or(|status| status >= 400);
+    let detail = json!({
+        "provider_id": state.context.as_ref().and_then(|context| context.provider_id),
+        "backend_position": state.context.as_ref().and_then(|context| context.backend_position),
+        "status": status,
+        "latency_ms": (Utc::now() - started).num_milliseconds(),
+    });
+    let outcome = if failed { "error" } else { "ok" };
+    state.push_hop("upstream", started, outcome, failed, detail);
+}
+
+/// Persist this stream's trace contribution — strictly best-effort: runs after the HTTP
+/// exchange has already completed (the ExtProc stream is closed), and any error is logged
+/// and counted, never surfaced. The listener stream owns the row identity columns; the
+/// upstream stream merges provider-side hops into the same `(team_id, request_id)` row.
+async fn persist_ai_trace(pool: &sqlx::PgPool, state: &AiExtProcState, settlement: Option<bool>) {
+    let Some(context) = &state.context else {
+        return;
+    };
+    let Some(request_id) = state.request_id.clone() else {
+        return;
+    };
+    let is_upstream = state.trace_origin() == "upstream";
+    let mut hops: Vec<Value> = state.hops.iter().map(TraceHop::to_json).collect();
+    if is_upstream {
+        if let Some(usage) = state.last_usage {
+            let now = Utc::now();
+            hops.push(
+                TraceHop {
+                    hop: "usage",
+                    started_at: now,
+                    ended_at: now,
+                    outcome: match settlement {
+                        Some(true) => "settled",
+                        Some(false) => "settle_failed",
+                        None => "extracted",
+                    },
+                    origin: "upstream",
+                    failed: false,
+                    detail: json!({
+                        "prompt_tokens": usage.prompt_tokens,
+                        "completion_tokens": usage.completion_tokens,
+                        "total_tokens": usage.total_tokens,
+                    }),
+                }
+                .to_json(),
+            );
+        }
+    } else if let Some(model) = &state.model {
+        // The model routing header may only be known after the request body was parsed;
+        // backfill the route_match hop detail recorded at header time.
+        for hop in &mut hops {
+            if hop.get("hop").and_then(Value::as_str) == Some("route_match") {
+                if let Some(detail) = hop.get_mut("detail") {
+                    if detail.get("model").is_none_or(Value::is_null) {
+                        detail["model"] = Value::String(model.clone());
+                    }
+                }
+            }
+        }
+    }
+    let event = ai_trace::AiTraceEventUpsert {
+        team_id: context.team_id,
+        request_id,
+        trace_id: if is_upstream {
+            None
+        } else {
+            state.trace_id.clone()
+        },
+        route_config_id: context.route_config_id,
+        listener_id: context.listener_id,
+        provider_id: context.provider_id,
+        model: if is_upstream {
+            None
+        } else {
+            state.model.clone()
+        },
+        status_code: if is_upstream {
+            None
+        } else {
+            state.response_status
+        },
+        hops: Value::Array(hops),
+    };
+    if let Err(err) = ai_trace::upsert_trace_event(pool, &event).await {
+        metrics::counter!("fp_ai_trace_dropped_total", "reason" => "db").increment(1);
+        tracing::debug!(team = %context.team_id, route_config = %context.route_config_id, "failed to persist AI trace event: {}", err.message);
     }
 }
 
@@ -2432,5 +2738,583 @@ mod tests {
             body_mutation::Mutation::Body(body) => Some(body),
             _ => None,
         }
+    }
+
+    fn header_map(pairs: &[(&str, &str)]) -> Map<String, Value> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), Value::String((*value).to_string())))
+            .collect()
+    }
+
+    fn listener_trace_context(team_id: TeamId) -> AiExtProcContext {
+        AiExtProcContext {
+            team_id,
+            listener_id: Some(ListenerId::from(Uuid::now_v7())),
+            route_config_id: RouteConfigId::from(Uuid::now_v7()),
+            provider_id: None,
+            backend_position: None,
+            failover_chain: Vec::new(),
+        }
+    }
+
+    fn upstream_trace_context(team_id: TeamId) -> AiExtProcContext {
+        AiExtProcContext {
+            team_id,
+            listener_id: None,
+            route_config_id: RouteConfigId::from(Uuid::now_v7()),
+            provider_id: Some(AiProviderId::from(Uuid::now_v7())),
+            backend_position: Some(0),
+            failover_chain: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn traceparent_trace_id_extracts_valid_ids_only() {
+        assert_eq!(
+            traceparent_trace_id("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
+                .as_deref(),
+            Some("0af7651916cd43dd8448eb211c80319c")
+        );
+        assert_eq!(
+            traceparent_trace_id("00-0AF7651916CD43DD8448EB211C80319C-b7ad6b7169203331-01")
+                .as_deref(),
+            Some("0af7651916cd43dd8448eb211c80319c"),
+            "trace id is normalized to lowercase"
+        );
+        assert_eq!(traceparent_trace_id("not-a-traceparent"), None);
+        assert_eq!(
+            traceparent_trace_id("00-00000000000000000000000000000000-b7ad6b7169203331-01"),
+            None,
+            "all-zero trace id is invalid per W3C"
+        );
+        assert_eq!(traceparent_trace_id("00-shorttrace-b7ad-01"), None);
+    }
+
+    #[test]
+    fn note_ai_request_identity_captures_request_id_trace_id_and_model() {
+        let mut state = AiExtProcState::default();
+        note_ai_request_identity(
+            &mut state,
+            &header_map(&[
+                ("x-request-id", "req-abc"),
+                (
+                    "traceparent",
+                    "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+                ),
+                (AI_MODEL_HEADER, "gpt-5"),
+            ]),
+        );
+        assert_eq!(state.request_id.as_deref(), Some("req-abc"));
+        assert_eq!(
+            state.trace_id.as_deref(),
+            Some("0af7651916cd43dd8448eb211c80319c")
+        );
+        assert_eq!(state.model.as_deref(), Some("gpt-5"));
+        assert!(state.request_headers_at.is_some());
+
+        let mut bare = AiExtProcState::default();
+        note_ai_request_identity(&mut bare, &header_map(&[("x-request-id", "req-xyz")]));
+        assert_eq!(
+            bare.trace_id, None,
+            "absent traceparent leaves trace_id unset"
+        );
+        assert_eq!(bare.model, None);
+    }
+
+    #[test]
+    fn push_hop_stamps_origin_and_monotonic_hop_window() {
+        let team_id = TeamId::from(Uuid::now_v7());
+        let mut listener = AiExtProcState {
+            context: Some(listener_trace_context(team_id)),
+            ..Default::default()
+        };
+        let started = Utc::now();
+        listener.push_hop("auth", started, "not_configured", false, json!({}));
+        assert_eq!(listener.hops.len(), 1);
+        let hop = &listener.hops[0];
+        assert_eq!(hop.hop, "auth");
+        assert_eq!(hop.origin, "listener");
+        assert!(!hop.failed);
+        assert!(hop.started_at <= hop.ended_at);
+
+        let mut upstream = AiExtProcState {
+            context: Some(upstream_trace_context(team_id)),
+            ..Default::default()
+        };
+        upstream.push_hop("budget", Utc::now(), "rejected", true, json!({}));
+        assert_eq!(upstream.hops[0].origin, "upstream");
+        assert!(upstream.hops[0].failed);
+
+        let serialized = upstream.hops[0].to_json();
+        assert_eq!(serialized["hop"], "budget");
+        assert_eq!(serialized["outcome"], "rejected");
+        assert_eq!(serialized["origin"], "upstream");
+        assert_eq!(serialized["failed"], true);
+        assert!(
+            serialized["started_at"].as_str().unwrap() <= serialized["ended_at"].as_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn upstream_response_hop_maps_status_to_outcome_and_skips_listener_stream() {
+        let team_id = TeamId::from(Uuid::now_v7());
+        let mut ok = AiExtProcState {
+            context: Some(upstream_trace_context(team_id)),
+            response_status: Some(200),
+            request_headers_at: Some(Utc::now()),
+            ..Default::default()
+        };
+        note_ai_upstream_response(&mut ok);
+        assert_eq!(ok.hops.len(), 1);
+        assert_eq!(ok.hops[0].hop, "upstream");
+        assert_eq!(ok.hops[0].outcome, "ok");
+        assert!(!ok.hops[0].failed);
+        assert_eq!(ok.hops[0].detail["status"], 200);
+
+        let mut error = AiExtProcState {
+            context: Some(upstream_trace_context(team_id)),
+            response_status: Some(500),
+            ..Default::default()
+        };
+        note_ai_upstream_response(&mut error);
+        assert_eq!(error.hops[0].outcome, "error");
+        assert!(error.hops[0].failed);
+
+        let mut listener = AiExtProcState {
+            context: Some(listener_trace_context(team_id)),
+            response_status: Some(200),
+            ..Default::default()
+        };
+        note_ai_upstream_response(&mut listener);
+        assert!(
+            listener.hops.is_empty(),
+            "the listener stream owns status_code, not the upstream hop"
+        );
+    }
+
+    #[tokio::test]
+    async fn ai_trace_two_stream_capture_persists_merged_redacted_row() {
+        let _guard = crate::snapshot::ENV_LOCK.lock().await;
+        let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        use aes_gcm::aead::Aead;
+        use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+        use base64::Engine as _;
+
+        let key = *b"12345678901234567890123456789012";
+        std::env::set_var("FLOWPLANE_SECRET_ENCRYPTION_KEY_ID", "default");
+        std::env::set_var(
+            "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+            String::from_utf8_lossy(&key).to_string(),
+        );
+        let pool = fp_storage::connect(&url, 4).await.expect("connect");
+        fp_storage::migrate(&pool).await.expect("migrate");
+        let org = identity::create_org(&pool, &format!("org-{}", Uuid::now_v7()), "")
+            .await
+            .expect("org");
+        let team = identity::create_team(&pool, org.id, &format!("team-{}", Uuid::now_v7()), "")
+            .await
+            .expect("team");
+        let other_team =
+            identity::create_team(&pool, org.id, &format!("team-{}", Uuid::now_v7()), "")
+                .await
+                .expect("other team");
+
+        let secret_value = "Bearer fp-trace-secret-value";
+        let spec = SecretSpec::GenericSecret {
+            secret: base64::engine::general_purpose::STANDARD.encode(secret_value),
+        };
+        let plaintext = serde_json::to_vec(&spec).expect("secret json");
+        let nonce = [9_u8; 12];
+        let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher");
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
+            .expect("encrypt");
+
+        let secret_id = Uuid::now_v7();
+        let provider_id = Uuid::now_v7();
+        let route_id = Uuid::now_v7();
+        let route_config_id = Uuid::now_v7();
+        let listener_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO secrets \
+             (id, team_id, org_id, name, description, secret_type, configuration_encrypted, nonce, encryption_key_id) \
+             VALUES ($1, $2, $3, 'ai-trace-key', '', 'generic_secret', $4, $5, 'default')",
+        )
+        .bind(secret_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(ciphertext)
+        .bind(nonce.to_vec())
+        .execute(&pool)
+        .await
+        .expect("secret");
+        sqlx::query(
+            "INSERT INTO ai_providers \
+             (id, team_id, org_id, name, kind, base_url, path_prefix, credential_secret_id, auth_header) \
+             VALUES ($1, $2, $3, 'openai-trace', 'openai', 'https://api.openai.com', NULL, $4, 'authorization')",
+        )
+        .bind(provider_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(secret_id)
+        .execute(&pool)
+        .await
+        .expect("provider");
+        sqlx::query(
+            "INSERT INTO route_configs (id, team_id, org_id, name, spec) \
+             VALUES ($1, $2, $3, 'ai-trace-routes', '{}'::jsonb)",
+        )
+        .bind(route_config_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("route config");
+        let route_spec = serde_json::json!({
+            "listener_port": 19100,
+            "path": "/v1/chat/completions",
+            "backends": [{
+                "provider_id": provider_id,
+                "models": [],
+                "weight": 1,
+                "priority": 0
+            }]
+        });
+        sqlx::query(
+            "INSERT INTO ai_routes \
+             (id, team_id, org_id, name, spec, cluster_names, route_config_name, listener_name) \
+             VALUES ($1, $2, $3, 'ai-trace-route', $4, ARRAY['ai-trace-b1'], 'ai-trace-routes', 'ai-trace-listener')",
+        )
+        .bind(route_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(route_spec)
+        .execute(&pool)
+        .await
+        .expect("ai route");
+        sqlx::query(
+            "INSERT INTO ai_route_backends (ai_route_id, team_id, provider_id, position) \
+             VALUES ($1, $2, $3, 0)",
+        )
+        .bind(route_id)
+        .bind(team.id.as_uuid())
+        .bind(provider_id)
+        .execute(&pool)
+        .await
+        .expect("backend");
+
+        let request_id = Uuid::now_v7().to_string();
+        let traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+        let prompt_marker = format!("fp-trace-prompt-{}", Uuid::now_v7());
+        let request_headers = |extra: &[(&str, &str)]| {
+            let mut headers = vec![
+                (":path", "/v1/chat/completions"),
+                ("x-request-id", request_id.as_str()),
+                (AI_MODEL_HEADER, "gpt-5"),
+            ];
+            headers.extend_from_slice(extra);
+            ProcessingRequest {
+                request: Some(processing_request::Request::RequestHeaders(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                        headers: Some(HeaderMap {
+                            headers: headers
+                                .into_iter()
+                                .map(|(key, value)| HeaderValue {
+                                    key: key.into(),
+                                    value: value.into(),
+                                    raw_value: Vec::new(),
+                                })
+                                .collect(),
+                        }),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            }
+        };
+        let response_headers = ProcessingRequest {
+            request: Some(processing_request::Request::ResponseHeaders(
+                envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                    headers: Some(HeaderMap {
+                        headers: vec![
+                            HeaderValue {
+                                key: ":status".into(),
+                                value: "200".into(),
+                                raw_value: Vec::new(),
+                            },
+                            HeaderValue {
+                                key: "content-type".into(),
+                                value: "application/json".into(),
+                                raw_value: Vec::new(),
+                            },
+                        ],
+                    }),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        let response_body = ProcessingRequest {
+            request: Some(processing_request::Request::ResponseBody(
+                envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                    body: br#"{"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}"#.to_vec(),
+                    end_of_stream: true,
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+
+        // Listener-side stream: route_match/auth (+ single-backend budget/credential) hops.
+        let mut listener_state = AiExtProcState {
+            context: Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: Some(ListenerId::from(listener_id)),
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: None,
+                backend_position: None,
+                failover_chain: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        ai_response_with_pool(
+            &pool,
+            &mut listener_state,
+            request_headers(&[("traceparent", traceparent)]),
+        )
+        .await;
+        let request_body = ProcessingRequest {
+            request: Some(processing_request::Request::RequestBody(
+                envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                    body: format!(
+                        r#"{{"model":"gpt-5","messages":[{{"role":"user","content":"{prompt_marker}"}}]}}"#
+                    )
+                    .into_bytes(),
+                    end_of_stream: true,
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        ai_response_with_pool(&pool, &mut listener_state, request_body).await;
+        ai_response_with_pool(&pool, &mut listener_state, response_headers.clone()).await;
+        ai_response_with_pool(&pool, &mut listener_state, response_body.clone()).await;
+        let settlement = persist_ai_usage(&pool, &listener_state).await;
+        assert_eq!(
+            settlement, None,
+            "the listener stream has no attributed usage"
+        );
+        persist_ai_trace(&pool, &listener_state, settlement).await;
+
+        // Upstream-side stream: budget/credential/upstream/usage hops merged into the row.
+        let mut upstream_state = AiExtProcState {
+            context: Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: None,
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: Some(AiProviderId::from(provider_id)),
+                backend_position: Some(0),
+                failover_chain: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        ai_response_with_pool(
+            &pool,
+            &mut upstream_state,
+            request_headers(&[("traceparent", traceparent)]),
+        )
+        .await;
+        ai_response_with_pool(&pool, &mut upstream_state, response_headers).await;
+        ai_response_with_pool(&pool, &mut upstream_state, response_body).await;
+        let settlement = persist_ai_usage(&pool, &upstream_state).await;
+        assert_eq!(
+            settlement,
+            Some(true),
+            "usage settles on the upstream stream"
+        );
+        persist_ai_trace(&pool, &upstream_state, settlement).await;
+
+        // Exactly one merged row with the full hop timeline and no sensitive strings.
+        let rows = fp_storage::repos::ai_trace::list_trace_events(
+            &pool,
+            team.id,
+            fp_storage::repos::ai_trace::AiTraceQuery {
+                request_id: Some(&request_id),
+                trace_id: None,
+                limit: 10,
+            },
+        )
+        .await
+        .expect("list trace events");
+        assert_eq!(rows.len(), 1, "both streams merged into one trace row");
+        let row = &rows[0];
+        assert_eq!(row.status_code, Some(200));
+        assert_eq!(row.failure_hop, None);
+        assert_eq!(row.model.as_deref(), Some("gpt-5"));
+        assert_eq!(row.listener_id, Some(ListenerId::from(listener_id)));
+        assert_eq!(row.provider_id, Some(AiProviderId::from(provider_id)));
+        assert_eq!(
+            row.trace_id.as_deref(),
+            Some("0af7651916cd43dd8448eb211c80319c")
+        );
+        let hops = row.hops.as_array().expect("hops array");
+        let names: Vec<&str> = hops
+            .iter()
+            .map(|hop| hop["hop"].as_str().expect("hop name"))
+            .collect();
+        for expected in [
+            "route_match",
+            "auth",
+            "budget",
+            "credential_injection",
+            "upstream",
+            "usage",
+        ] {
+            assert_eq!(
+                names.iter().filter(|name| **name == expected).count(),
+                1,
+                "expected exactly one {expected} hop, got {names:?}"
+            );
+        }
+        for hop in hops {
+            let started = hop["started_at"].as_str().expect("started_at");
+            let ended = hop["ended_at"].as_str().expect("ended_at");
+            assert!(started <= ended, "hop {} window inverted", hop["hop"]);
+        }
+        let usage_hop = hops
+            .iter()
+            .find(|hop| hop["hop"] == "usage")
+            .expect("usage hop");
+        assert_eq!(usage_hop["outcome"], "settled");
+        assert_eq!(usage_hop["detail"]["total_tokens"], 5);
+        let auth_hop = hops
+            .iter()
+            .find(|hop| hop["hop"] == "auth")
+            .expect("auth hop");
+        assert_eq!(auth_hop["outcome"], "not_configured");
+        let upstream_hop = hops
+            .iter()
+            .find(|hop| hop["hop"] == "upstream")
+            .expect("upstream hop");
+        assert_eq!(upstream_hop["detail"]["status"], 200);
+
+        // Column-level sensitive scan: neither the prompt nor the secret value anywhere.
+        let row_text: String = sqlx::query_scalar(
+            "SELECT row_to_json(t)::text FROM \
+             (SELECT * FROM ai_trace_events WHERE team_id = $1 AND request_id = $2) t",
+        )
+        .bind(team.id.as_uuid())
+        .bind(&request_id)
+        .fetch_one(&pool)
+        .await
+        .expect("row json");
+        assert!(
+            !row_text.contains(secret_value),
+            "credential value must never appear in the trace row"
+        );
+        assert!(
+            !row_text.contains(&prompt_marker),
+            "prompt content must never appear in the trace row"
+        );
+
+        // Cross-team scoping: the other team sees nothing for this request id.
+        let foreign = fp_storage::repos::ai_trace::list_trace_events(
+            &pool,
+            other_team.id,
+            fp_storage::repos::ai_trace::AiTraceQuery {
+                request_id: Some(&request_id),
+                trace_id: None,
+                limit: 10,
+            },
+        )
+        .await
+        .expect("foreign list");
+        assert!(foreign.is_empty());
+
+        // Absent traceparent leaves trace_id null (AC 9, negative half).
+        let bare_request_id = Uuid::now_v7().to_string();
+        let mut bare_state = AiExtProcState {
+            context: Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: Some(ListenerId::from(listener_id)),
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: None,
+                backend_position: None,
+                failover_chain: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        let bare_headers = ProcessingRequest {
+            request: Some(processing_request::Request::RequestHeaders(
+                envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                    headers: Some(HeaderMap {
+                        headers: vec![
+                            HeaderValue {
+                                key: ":path".into(),
+                                value: "/v1/chat/completions".into(),
+                                raw_value: Vec::new(),
+                            },
+                            HeaderValue {
+                                key: "x-request-id".into(),
+                                value: bare_request_id.clone(),
+                                raw_value: Vec::new(),
+                            },
+                            HeaderValue {
+                                key: AI_MODEL_HEADER.into(),
+                                value: "gpt-5".into(),
+                                raw_value: Vec::new(),
+                            },
+                        ],
+                    }),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        ai_response_with_pool(&pool, &mut bare_state, bare_headers).await;
+        persist_ai_trace(&pool, &bare_state, None).await;
+        let bare_rows = fp_storage::repos::ai_trace::list_trace_events(
+            &pool,
+            team.id,
+            fp_storage::repos::ai_trace::AiTraceQuery {
+                request_id: Some(&bare_request_id),
+                trace_id: None,
+                limit: 10,
+            },
+        )
+        .await
+        .expect("bare list");
+        assert_eq!(bare_rows.len(), 1);
+        assert_eq!(bare_rows[0].trace_id, None);
+    }
+
+    #[tokio::test]
+    async fn ai_trace_persistence_failure_is_swallowed_best_effort() {
+        let _guard = crate::snapshot::ENV_LOCK.lock().await;
+        let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let pool = fp_storage::connect(&url, 4).await.expect("connect");
+        fp_storage::migrate(&pool).await.expect("migrate");
+        // A team that does not exist violates the FK — the write fails, the call must not.
+        let mut state = AiExtProcState {
+            context: Some(AiExtProcContext {
+                team_id: TeamId::from(Uuid::now_v7()),
+                listener_id: Some(ListenerId::from(Uuid::now_v7())),
+                route_config_id: RouteConfigId::from(Uuid::now_v7()),
+                provider_id: None,
+                backend_position: None,
+                failover_chain: Vec::new(),
+            }),
+            request_id: Some(Uuid::now_v7().to_string()),
+            ..Default::default()
+        };
+        state.push_hop("auth", Utc::now(), "not_configured", false, json!({}));
+        persist_ai_trace(&pool, &state, None).await;
     }
 }

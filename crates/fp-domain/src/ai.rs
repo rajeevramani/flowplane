@@ -1,7 +1,7 @@
 //! AI gateway provider resources (S10).
 
 use crate::error::{DomainError, DomainResult};
-use crate::id::{AiBudgetId, AiProviderId, AiRouteId, RouteConfigId, SecretId, TeamId};
+use crate::id::{AiBudgetId, AiProviderId, AiRouteId, ListenerId, RouteConfigId, SecretId, TeamId};
 use crate::validate_name;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -180,6 +180,34 @@ pub struct AiUsageSummary {
     pub completion_tokens: u64,
     pub total_tokens: u64,
     pub event_count: u64,
+}
+
+/// One end-to-end trace row per AI data-plane request, keyed by the server-owned
+/// `x-request-id`. Hop detail is carried only in `hops` (a JSON array of
+/// `{hop, started_at, ended_at, outcome, origin, detail}` entries) — there is no
+/// relational hop projection, and by construction no prompt/completion/credential
+/// payload field exists anywhere in the row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct AiTraceEvent {
+    #[schema(value_type = uuid::Uuid)]
+    pub id: uuid::Uuid,
+    #[schema(value_type = uuid::Uuid)]
+    pub team_id: TeamId,
+    pub request_id: String,
+    pub trace_id: Option<String>,
+    #[schema(value_type = uuid::Uuid)]
+    pub route_config_id: RouteConfigId,
+    #[schema(value_type = Option<uuid::Uuid>)]
+    pub listener_id: Option<ListenerId>,
+    #[schema(value_type = Option<uuid::Uuid>)]
+    pub provider_id: Option<AiProviderId>,
+    pub model: Option<String>,
+    pub status_code: Option<i32>,
+    pub failure_hop: Option<String>,
+    #[schema(value_type = Object)]
+    pub hops: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
