@@ -164,3 +164,9 @@ flowplane ai usage --provider-id <provider-id-from-step-1>
 ```
 
 This GETs `/api/v1/teams/{team}/ai/usage` and returns `AiUsageSummary` rows with `prompt_tokens`, `completion_tokens`, `total_tokens`, and `event_count`. A non-zero `event_count` confirms the request routed to the provider and was accounted against the budget. You can also filter by `--route-config-id`.
+
+Every request through the AI listener also records a per-hop trace — including
+budget rejections (enforcing mode) and `would_reject` verdicts (shadow mode) —
+retrievable with `flowplane ai trace --request-id <id from the response>`. To
+debug a failing or slow request hop by hop, see
+[Trace an AI request through the gateway](./trace-ai-requests.md).

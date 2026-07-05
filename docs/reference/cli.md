@@ -286,6 +286,9 @@ AI gateway resources. `providers`, `routes`, and `budgets` each use the shared r
 | `ai routes <RESOURCE_CMD>` | shared resource subcommands (see `cluster`) |
 | `ai budgets <RESOURCE_CMD>` | shared resource subcommands (see `cluster`) |
 | `ai usage` | `--team <TEAM>`, `--provider-id <ID>`, `--route-config-id <ID>`, `--limit <N>` (i64, default 50), `--offset <N>` (i64, default 0) |
+| `ai trace` | `--team <TEAM>`, `--request-id <ID>` (server-generated `x-request-id` from the AI data-plane response), `--trace-id <ID>` (W3C trace id from an inbound `traceparent`), `--limit <N>` (i64, default 50) |
+| `ai retention get` | `--team <TEAM>` — shows the trace TTL in force (team policy or the built-in 30-day default) |
+| `ai retention set` | `--team <TEAM>`, `--days <DAYS>` (i32, 1–365, required) — create-or-replace; affects only newly captured traces |
 
 ### `learn`
 Learning capture sessions.

@@ -78,6 +78,7 @@ Endpoints that use `ListQuery` return the uniform `Page<T>` envelope:
 
 - Every request is assigned a request id, honoring a syntactically valid inbound `x-request-id` header (otherwise generated). The id is echoed in the `x-request-id` response header and included in the error envelope as `request_id`.
 - A W3C `traceparent` header on the request is honored, joining Flowplane spans to the caller's distributed trace.
+- **AI data-plane listeners differ deliberately**: they ignore a client-supplied `x-request-id`, always generate a server-owned id, and always return it in the response. Only the server-generated id keys the request's trace row (`GET /api/v1/teams/{team}/ai/trace`). An inbound `traceparent` is forwarded to the AI provider unchanged and its `trace_id` is stored on the trace row for cross-system correlation. See [Trace an AI request through the gateway](../how-to/trace-ai-requests.md).
 
 ### Errors
 
@@ -427,7 +428,7 @@ configured). The 60 s reconcile loop is the backstop; this is only a fast path.
 | POST | `/api/v1/teams/{team}/route-generation-plans` |
 | POST | `/api/v1/teams/{team}/route-generation-plans/{plan_id}/apply` |
 
-### AI (providers, routes, budgets, usage)
+### AI (providers, routes, budgets, usage, trace, retention)
 
 | Method | Path |
 |--------|------|
@@ -447,6 +448,11 @@ configured). The 60 s reconcile loop is the backstop; this is only a fast path.
 | PATCH  | `/api/v1/teams/{team}/ai/budgets/{name}` |
 | DELETE | `/api/v1/teams/{team}/ai/budgets/{name}` |
 | GET    | `/api/v1/teams/{team}/ai/usage` |
+| GET    | `/api/v1/teams/{team}/ai/trace` |
+| GET    | `/api/v1/teams/{team}/ai/retention` |
+| PUT    | `/api/v1/teams/{team}/ai/retention` |
+
+`GET ai/trace` takes `request_id`, `trace_id`, and `limit` query parameters and returns the per-hop trace timeline for AI data-plane requests; a lookup with no matching row returns an explicit miss object naming the never-traced request classes. `PUT ai/retention` sets the team's trace TTL in days (1–365; default 30 when no policy exists) and requires the `ai-usage` update grant.
 
 ### Dataplanes (+ proxy certificates, telemetry, envoy config)
 

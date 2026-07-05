@@ -34,6 +34,7 @@ Native OpenTelemetry `gen_ai.*` semantic-convention meters are deferred for v1.0
 | Outbox handler failures | `fp_outbox_handler_failures_total` | counter | `consumer` | outbox consumer |
 | Capture drops | `fp_capture_dropped_total` | counter | `source`, `reason` | ALS/ext_proc capture ingest |
 | AI budget threshold crossings | `fp_ai_budget_threshold_crossings_total` | counter | `mode`, `result` | capture budget enforcement |
+| AI trace persistence drops | `fp_ai_trace_dropped_total` | counter | `reason` | ext_proc trace capture; trace writes are best-effort, so a sustained rate here means AI request traces are being lost (DB pressure) while traffic itself is unaffected |
 | Sampler failures | `fp_observability_sampler_failures_total` | counter | `source` | serve-owned sampler |
 
 ## Alert Baseline
