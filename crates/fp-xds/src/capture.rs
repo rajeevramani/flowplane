@@ -156,8 +156,20 @@ impl AiExtProcState {
         failed: bool,
         detail: Value,
     ) {
-        let ended_at = Utc::now().max(started_at);
         let origin = self.trace_origin();
+        self.push_hop_with_origin(hop, started_at, outcome, origin, failed, detail);
+    }
+
+    fn push_hop_with_origin(
+        &mut self,
+        hop: &'static str,
+        started_at: DateTime<Utc>,
+        outcome: &'static str,
+        origin: &'static str,
+        failed: bool,
+        detail: Value,
+    ) {
+        let ended_at = Utc::now().max(started_at);
         self.hops.push(TraceHop {
             hop,
             started_at,
@@ -1154,10 +1166,11 @@ async fn ai_request_headers_response(
     .await
     {
         Ok(Some(name)) => {
-            state.push_hop(
+            state.push_hop_with_origin(
                 "budget",
                 budget_started,
                 "rejected",
+                "listener",
                 true,
                 json!({"mode": "enforcing", "verdict": budget_verdict(true, true), "budget": name}),
             );
@@ -1167,7 +1180,8 @@ async fn ai_request_headers_response(
                 "result" => "exhausted"
             )
             .increment(1);
-            return immediate_response_with_details(
+            return ai_immediate_response_with_details(
+                state,
                 429,
                 format!("AI budget \"{name}\" exceeded"),
                 "flowplane_ai_budget_exceeded",
@@ -1180,15 +1194,16 @@ async fn ai_request_headers_response(
             state.push_hop("budget", budget_started, "allowed", false, detail);
         }
         Err(err) => {
-            state.push_hop(
+            state.push_hop_with_origin(
                 "budget",
                 budget_started,
                 "check_failed",
+                "listener",
                 true,
                 json!({"mode": "enforcing"}),
             );
             tracing::debug!(team = %context.team_id, route_config = %context.route_config_id, "failed to check AI budget: {}", err.message);
-            return immediate_response(500, "AI budget check unavailable".into());
+            return ai_immediate_response(state, 500, "AI budget check unavailable".into());
         }
     }
     let request_path = match request.request {
@@ -1250,14 +1265,15 @@ async fn ai_request_headers_response(
                 "AI credential injection failed: {}",
                 failure.status.message()
             );
-            push_credential_failure_hop(
+            push_credential_failure_hop_with_origin(
                 state,
                 credential_started,
                 provider_id,
                 backend_position,
+                "listener",
                 &failure,
             );
-            immediate_response(500, "AI provider credential unavailable".into())
+            ai_immediate_response(state, 500, "AI provider credential unavailable".into())
         }
     }
 }
@@ -1366,7 +1382,8 @@ async fn ai_listener_request_headers_response(
                 "result" => "exhausted"
             )
             .increment(1);
-            return immediate_response_with_details(
+            return ai_immediate_response_with_details(
+                state,
                 429,
                 format!("AI budget \"{name}\" exceeded"),
                 "flowplane_ai_budget_exceeded",
@@ -1387,7 +1404,7 @@ async fn ai_listener_request_headers_response(
                 json!({"mode": "enforcing"}),
             );
             tracing::debug!(team = %context.team_id, route_config = %context.route_config_id, "failed to check AI budget: {}", err.message);
-            return immediate_response(500, "AI budget check unavailable".into());
+            return ai_immediate_response(state, 500, "AI budget check unavailable".into());
         }
     }
     let credential_started = Utc::now();
@@ -1445,7 +1462,7 @@ async fn ai_listener_request_headers_response(
                 backend_position,
                 &failure,
             );
-            immediate_response(500, "AI provider credential unavailable".into())
+            ai_immediate_response(state, 500, "AI provider credential unavailable".into())
         }
     }
 }
@@ -1554,10 +1571,29 @@ fn push_credential_failure_hop(
     backend_position: i32,
     failure: &CredentialFailure,
 ) {
-    state.push_hop(
+    push_credential_failure_hop_with_origin(
+        state,
+        started_at,
+        provider_id,
+        backend_position,
+        state.trace_origin(),
+        failure,
+    );
+}
+
+fn push_credential_failure_hop_with_origin(
+    state: &mut AiExtProcState,
+    started_at: DateTime<Utc>,
+    provider_id: AiProviderId,
+    backend_position: i32,
+    origin: &'static str,
+    failure: &CredentialFailure,
+) {
+    state.push_hop_with_origin(
         "credential_injection",
         started_at,
         failure.outcome,
+        origin,
         true,
         json!({
             "provider_id": provider_id,
@@ -1759,6 +1795,10 @@ async fn persist_ai_trace(pool: &sqlx::PgPool, state: &AiExtProcState, settlemen
     };
     let is_upstream = state.trace_origin() == "upstream";
     let mut hops: Vec<Value> = state.hops.iter().map(TraceHop::to_json).collect();
+    let reached_upstream = state
+        .hops
+        .iter()
+        .any(|hop| hop.hop == "upstream" && hop.outcome != "no_upstream_connection");
     if is_upstream {
         if let Some(usage_hop) = synthesized_usage_hop(state, settlement) {
             hops.push(usage_hop.to_json());
@@ -1792,7 +1832,7 @@ async fn persist_ai_trace(pool: &sqlx::PgPool, state: &AiExtProcState, settlemen
         } else {
             state.model.clone()
         },
-        status_code: if is_upstream {
+        status_code: if reached_upstream {
             None
         } else {
             state.response_status
@@ -2063,6 +2103,24 @@ fn response_body_response(common: CommonResponse) -> ProcessingResponse {
 
 fn immediate_response(status: u32, message: String) -> ProcessingResponse {
     immediate_response_with_details(status, message, "flowplane_ai_request_invalid")
+}
+
+fn ai_immediate_response(
+    state: &mut AiExtProcState,
+    status: u32,
+    message: String,
+) -> ProcessingResponse {
+    ai_immediate_response_with_details(state, status, message, "flowplane_ai_request_invalid")
+}
+
+fn ai_immediate_response_with_details(
+    state: &mut AiExtProcState,
+    status: u32,
+    message: String,
+    details: &str,
+) -> ProcessingResponse {
+    state.response_status = Some(status as i32);
+    immediate_response_with_details(status, message, details)
 }
 
 fn immediate_response_with_details(
@@ -3660,6 +3718,55 @@ mod tests {
         persist_ai_trace(&pool, &state, None).await;
     }
 
+    #[tokio::test]
+    async fn ai_trace_listener_local_503_persists_status_with_synthetic_upstream_hop() {
+        let _guard = crate::snapshot::ENV_LOCK.lock().await;
+        let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let pool = fp_storage::connect(&url, 4).await.expect("connect");
+        fp_storage::migrate(&pool).await.expect("migrate");
+        let org = identity::create_org(&pool, &format!("org-{}", Uuid::now_v7()), "")
+            .await
+            .expect("org");
+        let team = identity::create_team(&pool, org.id, &format!("team-{}", Uuid::now_v7()), "")
+            .await
+            .expect("team");
+
+        let request_id = Uuid::now_v7().to_string();
+        let mut state = AiExtProcState {
+            context: Some(listener_trace_context(team.id)),
+            request_id: Some(request_id.clone()),
+            response_status: Some(503),
+            ..Default::default()
+        };
+        note_ai_missing_upstream(&mut state);
+        persist_ai_trace(&pool, &state, None).await;
+
+        let rows = fp_storage::repos::ai_trace::list_trace_events(
+            &pool,
+            team.id,
+            fp_storage::repos::ai_trace::AiTraceQuery {
+                request_id: Some(&request_id),
+                trace_id: None,
+                limit: 10,
+            },
+        )
+        .await
+        .expect("list trace events");
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.status_code, Some(503));
+        assert_eq!(row.failure_hop.as_deref(), Some("upstream"));
+        let hops = row.hops.as_array().expect("hops array");
+        let upstream_hop = hops
+            .iter()
+            .find(|hop| hop["hop"] == "upstream")
+            .expect("synthetic upstream hop");
+        assert_eq!(upstream_hop["outcome"], "no_upstream_connection");
+    }
+
     // ---- Slice s3: failure-path rows and shadow-budget verdict ----
 
     #[test]
@@ -3730,6 +3837,30 @@ mod tests {
                 .collect();
             assert_eq!(keys, vec!["auth_header", "backend_position", "provider_id"]);
         }
+    }
+
+    #[test]
+    fn ai_immediate_response_stamps_trace_status_before_building_response() {
+        let mut state = AiExtProcState::default();
+        let response = ai_immediate_response_with_details(
+            &mut state,
+            429,
+            "AI budget \"hard-stop\" exceeded".into(),
+            "flowplane_ai_budget_exceeded",
+        );
+
+        assert_eq!(state.response_status, Some(429));
+        let processing_response::Response::ImmediateResponse(immediate) =
+            response.response.expect("immediate response")
+        else {
+            panic!("expected immediate response");
+        };
+        assert_eq!(immediate.status.expect("status").code, 429);
+        assert_eq!(immediate.details, "flowplane_ai_budget_exceeded");
+        assert_eq!(
+            String::from_utf8(immediate.body).expect("body"),
+            "AI budget \"hard-stop\" exceeded"
+        );
     }
 
     #[test]
@@ -3968,6 +4099,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         let row = row.expect("budget-reject trace row was persisted");
+        assert_eq!(row.status_code, Some(429));
         assert_eq!(row.failure_hop.as_deref(), Some("budget"));
         let hops = row.hops.as_array().expect("hops array");
         let budget_hop = hops
@@ -3982,6 +4114,134 @@ mod tests {
                 .iter()
                 .any(|hop| hop["hop"] == "credential_injection" || hop["hop"] == "upstream"),
             "a budget-rejected request never reaches credential injection or the upstream: {hops:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ai_budget_check_unavailable_stream_returns_500_and_persists_status() {
+        let _guard = crate::snapshot::ENV_LOCK.lock().await;
+        let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let setup_pool = fp_storage::connect(&url, 4).await.expect("connect");
+        fp_storage::migrate(&setup_pool).await.expect("migrate");
+        let org = identity::create_org(&setup_pool, &format!("org-{}", Uuid::now_v7()), "")
+            .await
+            .expect("org");
+        let team =
+            identity::create_team(&setup_pool, org.id, &format!("team-{}", Uuid::now_v7()), "")
+                .await
+                .expect("team");
+
+        let mut lock_tx = setup_pool.begin().await.expect("begin lock transaction");
+        // Shared external test DB resource: hold ai_budgets only until the 50ms
+        // statement_timeout below forces the budget-check error path.
+        sqlx::query("LOCK TABLE ai_budgets IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *lock_tx)
+            .await
+            .expect("lock budgets");
+
+        let timeout_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(4)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query("SET statement_timeout = '50ms'")
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .expect("connect timeout pool");
+
+        let request_id = Uuid::now_v7().to_string();
+        let route_config_id = RouteConfigId::from(Uuid::now_v7());
+        let provider_id = AiProviderId::from(Uuid::now_v7());
+        let headers = ProcessingRequest {
+            request: Some(processing_request::Request::RequestHeaders(
+                envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                    headers: Some(HeaderMap {
+                        headers: vec![
+                            HeaderValue {
+                                key: ":path".into(),
+                                value: "/v1/chat/completions".into(),
+                                raw_value: Vec::new(),
+                            },
+                            HeaderValue {
+                                key: "x-request-id".into(),
+                                value: request_id.clone(),
+                                raw_value: Vec::new(),
+                            },
+                        ],
+                    }),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        let mut rx = ai_process_stream(
+            timeout_pool.clone(),
+            tokio_stream::iter(vec![Ok(headers)]),
+            Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: None,
+                route_config_id,
+                provider_id: Some(provider_id),
+                backend_position: Some(0),
+                failover_chain: Vec::new(),
+            }),
+        );
+
+        let response = rx.recv().await.expect("immediate response");
+        let processing_response::Response::ImmediateResponse(immediate) = response
+            .expect("response ok")
+            .response
+            .expect("response set")
+        else {
+            panic!("expected budget-check immediate response");
+        };
+        assert_eq!(immediate.status.expect("status").code, 500);
+        assert_eq!(
+            String::from_utf8(immediate.body).expect("body"),
+            "AI budget check unavailable"
+        );
+        lock_tx.rollback().await.expect("release budget table lock");
+
+        let mut row: Option<fp_domain::AiTraceEvent> = None;
+        for _ in 0..50 {
+            let rows = fp_storage::repos::ai_trace::list_trace_events(
+                &timeout_pool,
+                team.id,
+                fp_storage::repos::ai_trace::AiTraceQuery {
+                    request_id: Some(&request_id),
+                    trace_id: None,
+                    limit: 10,
+                },
+            )
+            .await
+            .expect("list trace events");
+            if let Some(found) = rows.into_iter().next() {
+                row = Some(found);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let row = row.expect("budget-check-failed trace row was persisted");
+        assert_eq!(row.status_code, Some(500));
+        assert_eq!(row.failure_hop.as_deref(), Some("budget"));
+        let hops = row.hops.as_array().expect("hops array");
+        let budget_hop = hops
+            .iter()
+            .find(|hop| hop["hop"] == "budget")
+            .expect("budget hop");
+        assert_eq!(budget_hop["outcome"], "check_failed");
+        assert!(
+            !hops
+                .iter()
+                .any(|hop| hop["hop"] == "credential_injection" || hop["hop"] == "upstream"),
+            "a budget-check failure never reaches credential injection or the upstream: {hops:?}"
         );
     }
 
@@ -4180,6 +4440,7 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
             let row = row.expect("credential-failure trace row was persisted");
+            assert_eq!(row.status_code, Some(500));
             assert_eq!(row.failure_hop.as_deref(), Some("credential_injection"));
             assert_eq!(row.provider_id, Some(AiProviderId::from(provider_id)));
             let hops = row.hops.as_array().expect("hops array");
