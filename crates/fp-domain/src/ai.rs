@@ -21,6 +21,14 @@ pub const AI_MODEL_HEADER: &str = "x-flowplane-ai-model";
 pub const DEFAULT_AI_ROUTE_TIMEOUT_SECS: u32 = 120;
 pub const MAX_AI_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
+pub fn ai_error_envelope(code: &str, message: &str) -> String {
+    serde_json::json!({
+        "code": code,
+        "message": message,
+    })
+    .to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AiRoute {
     pub id: AiRouteId,
@@ -589,6 +597,16 @@ mod tests {
         assert!(validate_trace_ttl_days(0).is_err());
         assert!(validate_trace_ttl_days(-7).is_err());
         assert!(validate_trace_ttl_days(MAX_AI_TRACE_TTL_DAYS + 1).is_err());
+    }
+
+    #[test]
+    fn ai_error_envelope_round_trips_embedded_quotes() {
+        let message = r#"AI budget "hard-stop" exceeded for model "gpt-5""#;
+        let envelope = ai_error_envelope("flowplane_ai_budget_exceeded", message);
+
+        let parsed: serde_json::Value = serde_json::from_str(&envelope).expect("json envelope");
+        assert_eq!(parsed["code"], "flowplane_ai_budget_exceeded");
+        assert_eq!(parsed["message"], message);
     }
 
     #[test]

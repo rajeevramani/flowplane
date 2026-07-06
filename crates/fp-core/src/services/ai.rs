@@ -11,7 +11,7 @@ use fp_domain::gateway::route_config::{
     RouteConfigSpec, RouteRule, VirtualHost, WeightedClusterTarget,
 };
 use fp_domain::{
-    validate_ai_budget_name, validate_ai_provider_name, validate_ai_route_name,
+    ai_error_envelope, validate_ai_budget_name, validate_ai_provider_name, validate_ai_route_name,
     validate_trace_ttl_days, AiBudget, AiBudgetSpec, AiProvider, AiProviderSpec, AiRetentionPolicy,
     AiRoute, AiRouteMaterializedResources, AiRouteSpec, AiTraceEvent, AiUsageSummary, DomainError,
     DomainResult, RequestId, AI_MODEL_HEADER, DEFAULT_AI_ROUTE_TIMEOUT_SECS,
@@ -1267,10 +1267,10 @@ fn no_eligible_backend_route(path: &str) -> RouteRule {
             redirect: None,
             direct_response: Some(DirectResponseAction {
                 status: 400,
-                body: Some(
-                    r#"{"code":"no_eligible_ai_backend","message":"no eligible AI backend for requested model"}"#
-                        .into(),
-                ),
+                body: Some(ai_error_envelope(
+                    "no_eligible_ai_backend",
+                    "no eligible AI backend for requested model",
+                )),
             }),
             prefix_rewrite: None,
             template_rewrite: None,
@@ -1528,5 +1528,38 @@ mod tests {
         assert_eq!(weighted[1].cluster, names.cluster_names[1]);
         assert_eq!(weighted[1].weight, 7);
         assert!(default_route.action.retry_policy.is_none());
+    }
+
+    #[test]
+    fn no_eligible_backend_route_keeps_direct_response_body() {
+        let spec = route_spec(vec![AiRouteBackend {
+            provider_id: fp_domain::id::AiProviderId::generate(),
+            models: vec!["gpt-5".into()],
+            model_override: None,
+            weight: 1,
+            priority: 0,
+        }]);
+        let names = materialized_names("llm", &spec).expect("names");
+        let targets = ai_route_targets("llm", &spec).expect("targets");
+        let route_config = ai_route_config_spec(&spec, &targets, &names).expect("route config");
+
+        let route = route_config.virtual_hosts[0]
+            .routes
+            .iter()
+            .find(|route| route.name == "no-eligible-backend")
+            .expect("no eligible backend route");
+        let direct_response = route
+            .action
+            .direct_response
+            .as_ref()
+            .expect("direct response");
+
+        assert_eq!(direct_response.status, 400);
+        assert_eq!(
+            direct_response.body.as_deref(),
+            Some(
+                r#"{"code":"no_eligible_ai_backend","message":"no eligible AI backend for requested model"}"#
+            )
+        );
     }
 }
