@@ -1,6 +1,7 @@
 //! AI gateway services.
 
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
+use crate::services::egress_policy::{EgressPolicy, EgressValidation};
 use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
@@ -46,6 +47,19 @@ pub async fn create_provider(
     spec: AiProviderSpec,
     request_id: RequestId,
 ) -> DomainResult<AiProvider> {
+    let policy = EgressPolicy::from_process_config().await;
+    create_provider_with_egress_policy(pool, ctx, team, name, spec, request_id, &policy).await
+}
+
+pub async fn create_provider_with_egress_policy(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    spec: AiProviderSpec,
+    request_id: RequestId,
+    policy: &EgressPolicy,
+) -> DomainResult<AiProvider> {
     authorize(
         pool,
         ctx,
@@ -56,7 +70,8 @@ pub async fn create_provider(
     )
     .await?;
     validate_ai_provider_name(name)?;
-    validate_provider_spec(pool, ctx, team, &spec, request_id).await?;
+    let egress =
+        validate_provider_spec_with_policy(pool, ctx, team, &spec, request_id, policy).await?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::AiProviders).await?;
 
     let mut tx = pool
@@ -64,18 +79,16 @@ pub async fn create_provider(
         .await
         .map_err(crate::services::db_err("create AI provider: begin"))?;
     let provider = ai::create(&mut tx, team, name, &spec).await?;
-    audit::record_in_tx(
-        &mut tx,
-        &mutation_audit(
-            ctx,
-            request_id,
-            team,
-            "ai_provider.create",
-            "ai-providers",
-            name,
-        ),
-    )
-    .await?;
+    let mut entry = mutation_audit(
+        ctx,
+        request_id,
+        team,
+        "ai_provider.create",
+        "ai-providers",
+        name,
+    );
+    entry.detail = egress.audit_detail();
+    audit::record_in_tx(&mut tx, &entry).await?;
     tx.commit()
         .await
         .map_err(crate::services::db_err("create AI provider: commit"))?;
@@ -132,6 +145,31 @@ pub async fn update_provider(
     expected_version: i64,
     request_id: RequestId,
 ) -> DomainResult<AiProvider> {
+    let policy = EgressPolicy::from_process_config().await;
+    update_provider_with_egress_policy(
+        pool,
+        ctx,
+        team,
+        name,
+        spec,
+        expected_version,
+        request_id,
+        &policy,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn update_provider_with_egress_policy(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    spec: AiProviderSpec,
+    expected_version: i64,
+    request_id: RequestId,
+    policy: &EgressPolicy,
+) -> DomainResult<AiProvider> {
     authorize(
         pool,
         ctx,
@@ -141,25 +179,24 @@ pub async fn update_provider(
         request_id,
     )
     .await?;
-    validate_provider_spec(pool, ctx, team, &spec, request_id).await?;
+    let egress =
+        validate_provider_spec_with_policy(pool, ctx, team, &spec, request_id, policy).await?;
     let mut tx = pool
         .begin()
         .await
         .map_err(crate::services::db_err("update AI provider: begin"))?;
     let provider = ai::update(&mut tx, team.id, name, &spec, expected_version).await?;
     ai::mark_routes_stale_for_provider(&mut tx, team.id, provider.id).await?;
-    audit::record_in_tx(
-        &mut tx,
-        &mutation_audit(
-            ctx,
-            request_id,
-            team,
-            "ai_provider.update",
-            "ai-providers",
-            name,
-        ),
-    )
-    .await?;
+    let mut entry = mutation_audit(
+        ctx,
+        request_id,
+        team,
+        "ai_provider.update",
+        "ai-providers",
+        name,
+    );
+    entry.detail = egress.audit_detail();
+    audit::record_in_tx(&mut tx, &entry).await?;
     tx.commit()
         .await
         .map_err(crate::services::db_err("update AI provider: commit"))?;
@@ -1368,14 +1405,16 @@ fn route_token(value: &str) -> String {
     }
 }
 
-async fn validate_provider_spec(
+async fn validate_provider_spec_with_policy(
     pool: &PgPool,
     ctx: &PrincipalCtx,
     team: TeamRef,
     spec: &AiProviderSpec,
     request_id: RequestId,
-) -> DomainResult<()> {
+    policy: &EgressPolicy,
+) -> DomainResult<EgressValidation> {
     spec.validate()?;
+    let egress = validate_provider_egress(spec, policy).await?;
     authorize(pool, ctx, Resource::Secrets, Action::Read, team, request_id).await?;
     let secret =
         fp_storage::repos::secrets::get_secret_by_id(pool, team.id, spec.credential_secret_id)
@@ -1389,7 +1428,24 @@ async fn validate_provider_spec(
             "AI provider credential_secret_id must reference a generic_secret",
         ));
     }
-    Ok(())
+    Ok(egress)
+}
+
+async fn validate_provider_egress(
+    spec: &AiProviderSpec,
+    policy: &EgressPolicy,
+) -> DomainResult<EgressValidation> {
+    let url = Url::parse(&spec.base_url)
+        .map_err(|_| DomainError::validation("AI provider base_url must be a valid URL"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| DomainError::validation("AI provider base_url must include a host"))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| DomainError::validation("AI provider base_url must include a port"))?;
+    policy
+        .validate_host_port(host, port, "AI provider base_url")
+        .await
 }
 
 async fn validate_budget_spec(
@@ -1461,6 +1517,21 @@ mod tests {
             weight,
             priority,
         }
+    }
+
+    #[tokio::test]
+    async fn provider_egress_validation_rejects_denied_destination_before_storage_inputs() {
+        let spec = AiProviderSpec {
+            kind: fp_domain::AiProviderKind::OpenaiCompatible,
+            base_url: "http://127.0.0.1:11434".into(),
+            path_prefix: Some("/v1".into()),
+            credential_secret_id: fp_domain::SecretId::generate(),
+            models: vec!["gpt-5".into()],
+            auth_header: "authorization".into(),
+        };
+        validate_provider_egress(&spec, &EgressPolicy::default())
+            .await
+            .expect_err("loopback provider destination denied");
     }
 
     fn route_spec(backends: Vec<AiRouteBackend>) -> AiRouteSpec {

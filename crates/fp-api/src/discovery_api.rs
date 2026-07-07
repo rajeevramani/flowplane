@@ -204,15 +204,8 @@ pub async fn start_discovery_session(
     let input = body.into_service().map_err(|e| ApiError::new(e, rid))?;
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
-        svc::start_session_with_policy(
-            &state.pool,
-            &ctx,
-            team,
-            input,
-            rid,
-            &state.discovery_forwarding_policy,
-        )
-        .await
+        svc::start_session_with_policy(&state.pool, &ctx, team, input, rid, &state.egress_policy)
+            .await
     };
     let session = run.await.map_err(|e| ApiError::new(e, rid))?;
     Ok((

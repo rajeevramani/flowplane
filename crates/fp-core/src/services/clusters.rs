@@ -3,6 +3,7 @@
 //! they commit together or not at all.
 
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
+use crate::services::egress_policy::{EgressPolicy, EgressValidation};
 use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
@@ -45,9 +46,23 @@ pub async fn create_cluster(
     spec: ClusterSpec,
     request_id: RequestId,
 ) -> DomainResult<Cluster> {
+    let policy = EgressPolicy::from_process_config().await;
+    create_cluster_with_egress_policy(pool, ctx, team, name, spec, request_id, &policy).await
+}
+
+pub async fn create_cluster_with_egress_policy(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    spec: ClusterSpec,
+    request_id: RequestId,
+    policy: &EgressPolicy,
+) -> DomainResult<Cluster> {
     authorize(pool, ctx, Action::Create, team, request_id).await?;
     validate_cluster_name(name)?;
     spec.validate()?;
+    let egress = validate_cluster_egress(&spec, policy).await?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::Clusters).await?;
 
     let mut tx = pool
@@ -70,7 +85,7 @@ pub async fn create_cluster(
     .await?;
     audit::record_in_tx(
         &mut tx,
-        &mutation_audit(ctx, request_id, team, "cluster.create", name),
+        &mutation_audit(ctx, request_id, team, "cluster.create", name, &egress),
     )
     .await?;
     tx.commit()
@@ -113,8 +128,34 @@ pub async fn update_cluster(
     expected_version: i64,
     request_id: RequestId,
 ) -> DomainResult<Cluster> {
+    let policy = EgressPolicy::from_process_config().await;
+    update_cluster_with_egress_policy(
+        pool,
+        ctx,
+        team,
+        name,
+        spec,
+        expected_version,
+        request_id,
+        &policy,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn update_cluster_with_egress_policy(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    spec: ClusterSpec,
+    expected_version: i64,
+    request_id: RequestId,
+    policy: &EgressPolicy,
+) -> DomainResult<Cluster> {
     authorize(pool, ctx, Action::Update, team, request_id).await?;
     spec.validate()?;
+    let egress = validate_cluster_egress(&spec, policy).await?;
     let mut tx = pool
         .begin()
         .await
@@ -135,13 +176,29 @@ pub async fn update_cluster(
     .await?;
     audit::record_in_tx(
         &mut tx,
-        &mutation_audit(ctx, request_id, team, "cluster.update", name),
+        &mutation_audit(ctx, request_id, team, "cluster.update", name, &egress),
     )
     .await?;
     tx.commit()
         .await
         .map_err(crate::services::db_err("update cluster: commit"))?;
     Ok(cluster)
+}
+
+async fn validate_cluster_egress(
+    spec: &ClusterSpec,
+    policy: &EgressPolicy,
+) -> DomainResult<EgressValidation> {
+    let mut validation = EgressValidation::default();
+    for endpoint in &spec.endpoints {
+        let endpoint_validation = policy
+            .validate_host_port(&endpoint.host, endpoint.port, "cluster endpoint")
+            .await?;
+        if validation.allowlist_match.is_none() {
+            validation.allowlist_match = endpoint_validation.allowlist_match;
+        }
+    }
+    Ok(validation)
 }
 
 pub async fn delete_cluster(
@@ -185,7 +242,14 @@ pub async fn delete_cluster(
     .await?;
     audit::record_in_tx(
         &mut tx,
-        &mutation_audit(ctx, request_id, team, "cluster.delete", name),
+        &mutation_audit(
+            ctx,
+            request_id,
+            team,
+            "cluster.delete",
+            name,
+            &EgressValidation::default(),
+        ),
     )
     .await?;
     tx.commit()
@@ -200,6 +264,7 @@ fn mutation_audit(
     team: TeamRef,
     action: &str,
     name: &str,
+    egress: &EgressValidation,
 ) -> audit::AuditEntry {
     let (actor_type, actor_id) = actor_of(ctx);
     audit::AuditEntry {
@@ -213,6 +278,43 @@ fn mutation_audit(
         org_id: Some(team.org_id),
         team_id: Some(team.id),
         outcome: audit::Outcome::Success,
-        detail: serde_json::json!({}),
+        detail: egress.audit_detail(),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use fp_domain::gateway::cluster::{Endpoint, LbPolicy};
+
+    fn spec(host: &str, port: u16) -> ClusterSpec {
+        ClusterSpec {
+            aggregate_clusters: Vec::new(),
+            endpoints: vec![Endpoint {
+                host: host.into(),
+                port,
+                weight: None,
+            }],
+            lb_policy: LbPolicy::RoundRobin,
+            least_request: None,
+            ring_hash: None,
+            maglev: None,
+            dns_lookup_family: None,
+            connect_timeout_secs: 5,
+            use_tls: false,
+            upstream_tls: None,
+            protocol: None,
+            health_checks: None,
+            circuit_breakers: None,
+            outlier_detection: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn cluster_egress_validation_rejects_denied_endpoint_before_storage_inputs() {
+        validate_cluster_egress(&spec("10.0.0.10", 8080), &EgressPolicy::default())
+            .await
+            .expect_err("private cluster endpoint denied");
     }
 }

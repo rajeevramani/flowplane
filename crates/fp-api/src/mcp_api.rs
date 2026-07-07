@@ -935,13 +935,14 @@ async fn execute_static_tool(
             let spec =
                 serde_json::from_value::<ClusterSpec>(required_value(&arguments, "spec")?)
                     .map_err(|e| DomainError::validation(format!("invalid cluster spec: {e}")))?;
-            let item = fp_core::services::clusters::create_cluster(
+            let item = fp_core::services::clusters::create_cluster_with_egress_policy(
                 &state.pool,
                 ctx,
                 team,
                 string_arg(&arguments, "name")?,
                 spec,
                 rid,
+                &state.egress_policy,
             )
             .await?;
             serde_json::to_value(item).map_err(json_err)
@@ -950,7 +951,7 @@ async fn execute_static_tool(
             let spec =
                 serde_json::from_value::<ClusterSpec>(required_value(&arguments, "spec")?)
                     .map_err(|e| DomainError::validation(format!("invalid cluster spec: {e}")))?;
-            let item = fp_core::services::clusters::update_cluster(
+            let item = fp_core::services::clusters::update_cluster_with_egress_policy(
                 &state.pool,
                 ctx,
                 team,
@@ -959,6 +960,7 @@ async fn execute_static_tool(
                 integer_arg(&arguments, "revision")
                     .ok_or_else(|| DomainError::validation("revision is required"))?,
                 rid,
+                &state.egress_policy,
             )
             .await?;
             serde_json::to_value(item).map_err(json_err)
@@ -2325,7 +2327,7 @@ mod tests {
             validator: None,
             write_throttle: std::sync::Arc::new(crate::throttle::WriteThrottle::new(1000)),
             xds_readiness: None,
-            discovery_forwarding_policy: Default::default(),
+            egress_policy: Default::default(),
             rls_repush: None,
             rls_grpc_configured: false,
         }

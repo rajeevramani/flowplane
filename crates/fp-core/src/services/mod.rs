@@ -7,6 +7,7 @@ pub mod api_lifecycle;
 pub mod clusters;
 pub mod dataplanes;
 pub mod discovery;
+pub mod egress_policy;
 pub mod expose;
 pub mod gateway;
 pub mod learning;

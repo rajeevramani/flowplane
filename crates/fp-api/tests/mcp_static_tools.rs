@@ -142,7 +142,7 @@ async fn fixture() -> Option<Fixture> {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
-        discovery_forwarding_policy: Default::default(),
+        egress_policy: Default::default(),
         rls_repush: None,
         rls_grpc_configured: false,
     });

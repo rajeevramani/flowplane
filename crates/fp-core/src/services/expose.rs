@@ -3,6 +3,7 @@
 //! gateway resources that xDS already understands.
 
 use crate::authz::PrincipalCtx;
+use crate::services::egress_policy::EgressPolicy;
 use crate::services::{clusters, gateway};
 use fp_domain::authz::TeamRef;
 use fp_domain::gateway::cluster::{Cluster, ClusterSpec, Endpoint, UpstreamTlsConfig};
@@ -71,8 +72,21 @@ pub async fn expose(
     request: ExposeRequest,
     request_id: RequestId,
 ) -> DomainResult<ExposedService> {
+    let policy = EgressPolicy::from_process_config().await;
+    expose_with_egress_policy(pool, ctx, team, request, request_id, &policy).await
+}
+
+pub async fn expose_with_egress_policy(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    request: ExposeRequest,
+    request_id: RequestId,
+    policy: &EgressPolicy,
+) -> DomainResult<ExposedService> {
     fp_domain::validate_name(&request.name)?;
     let upstream = parse_upstream(&request.upstream)?;
+    validate_expose_egress(&upstream, policy).await?;
     let path = normalize_path(&request.path)?;
     let names = ExposeNames::new(&request.name);
     let public_base_url = request.public_base_url;
@@ -143,7 +157,8 @@ pub async fn expose(
             Some(port) => port,
             None => allocate_port(pool, ctx, team, request_id).await?,
         };
-        match create_resources_for_port(pool, ctx, team, &template, port, request_id).await {
+        match create_resources_for_port(pool, ctx, team, &template, port, request_id, policy).await
+        {
             Ok((cluster, route_config, listener)) => {
                 let curl_url = listener
                     .spec
@@ -190,6 +205,7 @@ async fn create_resources_for_port(
     template: &ExposeTemplate,
     port: u16,
     request_id: RequestId,
+    policy: &EgressPolicy,
 ) -> DomainResult<(Cluster, RouteConfig, Listener)> {
     let listener_spec = ListenerSpec {
         address: "0.0.0.0".into(),
@@ -202,13 +218,14 @@ async fn create_resources_for_port(
         tls_context: None,
     };
 
-    let cluster = clusters::create_cluster(
+    let cluster = clusters::create_cluster_with_egress_policy(
         pool,
         ctx,
         team,
         &template.names.cluster,
         template.cluster_spec.clone(),
         request_id,
+        policy,
     )
     .await?;
     let route_config = match gateway::create_route_config(
@@ -441,6 +458,16 @@ fn parse_upstream(raw: &str) -> DomainResult<ParsedUpstream> {
     })
 }
 
+async fn validate_expose_egress(
+    upstream: &ParsedUpstream,
+    policy: &EgressPolicy,
+) -> DomainResult<()> {
+    policy
+        .validate_host_port(&upstream.host, upstream.port, "expose upstream")
+        .await
+        .map(|_| ())
+}
+
 fn normalize_path(path: &str) -> DomainResult<String> {
     let path = path.trim();
     if path.is_empty() {
@@ -459,4 +486,18 @@ fn expose_curl_url(public_base_url: &str, path: &str) -> DomainResult<String> {
         .map_err(|e| DomainError::validation(format!("invalid listener public_base_url: {e}")))?;
     url.set_path(path);
     Ok(url.to_string())
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn expose_egress_validation_rejects_denied_upstream_before_resource_templates() {
+        let upstream = parse_upstream("http://127.0.0.1:3001").expect("parse upstream");
+        validate_expose_egress(&upstream, &EgressPolicy::default())
+            .await
+            .expect_err("loopback expose upstream denied");
+    }
 }

@@ -198,7 +198,7 @@ async fn learning_session_lifecycle_over_http() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
-        discovery_forwarding_policy: Default::default(),
+        egress_policy: Default::default(),
         rls_repush: None,
         rls_grpc_configured: false,
     });
@@ -352,7 +352,7 @@ async fn api_definition_import_status_and_delete_over_http() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
-        discovery_forwarding_policy: Default::default(),
+        egress_policy: Default::default(),
         rls_repush: None,
         rls_grpc_configured: false,
     });
@@ -479,7 +479,7 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
-        discovery_forwarding_policy: Default::default(),
+        egress_policy: Default::default(),
         rls_repush: None,
         rls_grpc_configured: false,
     });
@@ -879,7 +879,7 @@ async fn multi_org_user_selects_active_org_with_header() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
-        discovery_forwarding_policy: Default::default(),
+        egress_policy: Default::default(),
         rls_repush: None,
         rls_grpc_configured: false,
     });
@@ -978,7 +978,7 @@ async fn proxy_certificate_registry_flow_over_http() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
-        discovery_forwarding_policy: Default::default(),
+        egress_policy: Default::default(),
         rls_repush: None,
         rls_grpc_configured: false,
     });
@@ -1285,7 +1285,7 @@ async fn secret_values_are_write_only_over_http() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
-        discovery_forwarding_policy: Default::default(),
+        egress_policy: Default::default(),
         rls_repush: None,
         rls_grpc_configured: false,
     });
@@ -1757,7 +1757,7 @@ async fn malformed_json_body_returns_validation_envelope() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
-        discovery_forwarding_policy: Default::default(),
+        egress_policy: Default::default(),
         rls_repush: None,
         rls_grpc_configured: false,
     });
@@ -1890,7 +1890,7 @@ async fn ai_trace_retrieval_over_http() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
-        discovery_forwarding_policy: Default::default(),
+        egress_policy: Default::default(),
         rls_repush: None,
         rls_grpc_configured: false,
     });
@@ -2126,7 +2126,7 @@ async fn ai_retention_crud_authz_and_audit_over_http() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
-        discovery_forwarding_policy: Default::default(),
+        egress_policy: Default::default(),
         rls_repush: None,
         rls_grpc_configured: false,
     });

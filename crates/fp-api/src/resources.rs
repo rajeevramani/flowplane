@@ -195,6 +195,7 @@ macro_rules! endpoints {
      view: $view:ident, create: $create_body:ident, update: $update_body:ident,
      svc_create: $svc_create:path, svc_get: $svc_get:path, svc_list: $svc_list:path,
      svc_update: $svc_update:path, svc_delete: $svc_delete:path
+     $(, egress: $egress:ident)?
      $(, rls: $rls:ident)?) => {
         pub mod $mod_name {
             use super::*;
@@ -246,7 +247,16 @@ macro_rules! endpoints {
             ) -> Result<(axum::http::StatusCode, Json<$view>), ApiError> {
                 let run = async {
                     let team = resolve_team(&state, &ctx, &team).await?;
-                    $svc_create(&state.pool, &ctx, team, &body.name, body.spec, rid $(, state.$rls)?).await
+                    $svc_create(
+                        &state.pool,
+                        &ctx,
+                        team,
+                        &body.name,
+                        body.spec,
+                        rid
+                        $(, &state.$egress)?
+                        $(, state.$rls)?
+                    ).await
                 };
                 let created = run.await.map_err(|e| ApiError::new(e, rid))?;
                 Ok((axum::http::StatusCode::CREATED, Json($view::from(created))))
@@ -299,7 +309,17 @@ macro_rules! endpoints {
                 let run = async {
                     let revision = revision_from(&headers)?;
                     let team = resolve_team(&state, &ctx, &team).await?;
-                    $svc_update(&state.pool, &ctx, team, &name, body.spec, revision, rid $(, state.$rls)?).await
+                    $svc_update(
+                        &state.pool,
+                        &ctx,
+                        team,
+                        &name,
+                        body.spec,
+                        revision,
+                        rid
+                        $(, &state.$egress)?
+                        $(, state.$rls)?
+                    ).await
                 };
                 run.await.map(|v| Json($view::from(v))).map_err(|e| ApiError::new(e, rid))
             }
@@ -338,9 +358,10 @@ macro_rules! endpoints {
 
 endpoints!(clusters, "clusters", "Clusters",
     view: ClusterView, create: CreateClusterBody, update: UpdateClusterBody,
-    svc_create: cluster_svc::create_cluster, svc_get: cluster_svc::get_cluster,
-    svc_list: cluster_svc::list_clusters, svc_update: cluster_svc::update_cluster,
-    svc_delete: cluster_svc::delete_cluster);
+    svc_create: cluster_svc::create_cluster_with_egress_policy, svc_get: cluster_svc::get_cluster,
+    svc_list: cluster_svc::list_clusters, svc_update: cluster_svc::update_cluster_with_egress_policy,
+    svc_delete: cluster_svc::delete_cluster,
+    egress: egress_policy);
 
 endpoints!(listeners, "listeners", "Listeners",
     view: ListenerView, create: CreateListenerBody, update: UpdateListenerBody,

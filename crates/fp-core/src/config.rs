@@ -82,6 +82,10 @@ pub struct ServerConfig {
     /// in dev mode or with `FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT=true`. Env
     /// `FLOWPLANE_DATAPLANE_TLS_*`.
     pub dataplane_tls: Option<DataplaneTlsConfig>,
+    /// Process-config allowlist for private tenant-authored egress destinations. Entries are
+    /// exact `ip:port` socket addresses and do not override control-plane, xDS, database, or
+    /// metadata destination denies. Env `FLOWPLANE_EGRESS_ALLOWED_DESTINATIONS`.
+    pub egress_allowed_destinations: Vec<SocketAddr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -161,6 +165,7 @@ struct FileConfig {
     dataplane_tls_cert: Option<String>,
     dataplane_tls_key: Option<String>,
     dataplane_tls_client_ca: Option<String>,
+    egress_allowed_destinations: Option<String>,
 }
 
 const DEFAULT_API_ADDR: &str = "0.0.0.0:8080";
@@ -462,6 +467,11 @@ impl ServerConfig {
                  FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT=true",
             ));
         }
+        let egress_allowed_destinations = crate::services::egress_policy::parse_socket_addr_list(
+            get("FLOWPLANE_EGRESS_ALLOWED_DESTINATIONS")
+                .or(file.egress_allowed_destinations.as_deref())
+                .or_else(|| get("FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS")),
+        );
 
         Ok(Self {
             api_addr,
@@ -485,6 +495,7 @@ impl ServerConfig {
             rls_grpc_url,
             rls_grpc_allow_production_plaintext,
             dataplane_tls,
+            egress_allowed_destinations,
         })
     }
 }

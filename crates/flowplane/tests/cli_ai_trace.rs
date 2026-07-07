@@ -107,7 +107,7 @@ async fn ai_trace_cli_renders_the_same_hops_as_rest() {
         validator: None,
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
-        discovery_forwarding_policy: Default::default(),
+        egress_policy: Default::default(),
         rls_repush: None,
         rls_grpc_configured: false,
     });

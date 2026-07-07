@@ -13,71 +13,14 @@ use fp_domain::gateway::route_config::{
 use fp_domain::{validate_name, DiscoverySessionId, DomainError, DomainResult, RequestId};
 use fp_storage::repos::{audit, clusters, discovery, gateway};
 use sqlx::PgPool;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::IpAddr;
+
+pub use crate::services::egress_policy::EgressPolicy as DiscoveryForwardingPolicy;
 
 #[derive(Debug, Clone)]
 pub struct StartDiscoveryInput {
     pub name: String,
     pub spec: DiscoverySessionSpec,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct DiscoveryForwardingPolicy {
-    denied_destinations: Vec<SocketAddr>,
-    allowed_destinations: Vec<SocketAddr>,
-}
-
-impl DiscoveryForwardingPolicy {
-    pub fn new(denied_destinations: Vec<SocketAddr>) -> Self {
-        Self::with_allowed(denied_destinations, Vec::new())
-    }
-
-    pub fn with_allowed(
-        denied_destinations: Vec<SocketAddr>,
-        allowed_destinations: Vec<SocketAddr>,
-    ) -> Self {
-        Self {
-            denied_destinations: denied_destinations
-                .into_iter()
-                .map(|addr| SocketAddr::new(canonical_ip(addr.ip()), addr.port()))
-                .collect(),
-            allowed_destinations: allowed_destinations
-                .into_iter()
-                .map(|addr| SocketAddr::new(canonical_ip(addr.ip()), addr.port()))
-                .collect(),
-        }
-    }
-
-    pub async fn from_server_config(config: &crate::config::ServerConfig) -> Self {
-        let mut denied = vec![config.api_addr, config.xds_addr];
-        if let Some((host, port)) = postgres_host_port(&config.database_url) {
-            if let Ok(addrs) = tokio::net::lookup_host((host.as_str(), port)).await {
-                denied.extend(addrs);
-            }
-        }
-        let allowed = std::env::var("FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS")
-            .ok()
-            .map(|raw| {
-                raw.split(',')
-                    .filter_map(|entry| entry.trim().parse::<SocketAddr>().ok())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        Self::with_allowed(denied, allowed)
-    }
-}
-
-fn postgres_host_port(database_url: &str) -> Option<(String, u16)> {
-    let authority = database_url.split_once("://")?.1.split('/').next()?;
-    let host_port = authority
-        .rsplit_once('@')
-        .map(|(_, hp)| hp)
-        .unwrap_or(authority);
-    let (host, port) = host_port.rsplit_once(':')?;
-    Some((
-        host.trim_matches(&['[', ']'][..]).to_string(),
-        port.parse().ok()?,
-    ))
 }
 
 async fn authorize(
@@ -112,15 +55,8 @@ pub async fn start_session(
     input: StartDiscoveryInput,
     request_id: RequestId,
 ) -> DomainResult<DiscoverySession> {
-    start_session_with_policy(
-        pool,
-        ctx,
-        team,
-        input,
-        request_id,
-        &DiscoveryForwardingPolicy::default(),
-    )
-    .await
+    let policy = crate::services::egress_policy::EgressPolicy::from_process_config().await;
+    start_session_with_policy(pool, ctx, team, input, request_id, &policy).await
 }
 
 pub async fn start_session_with_policy(
@@ -397,117 +333,14 @@ async fn validate_upstream(
     port: u16,
     policy: &DiscoveryForwardingPolicy,
 ) -> DomainResult<IpAddr> {
-    if host.contains('/') || host.contains('@') || host == "*" || port == 0 {
-        return Err(DomainError::validation(
-            "discovery upstream must be host:port without scheme, path, credentials, or wildcard",
-        ));
-    }
-    let mut resolved = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|e| {
-            DomainError::validation(format!("cannot resolve discovery upstream \"{host}\": {e}"))
-        })?
-        .map(|addr| canonical_ip(addr.ip()))
-        .collect::<Vec<_>>();
-    resolved.sort();
-    resolved.dedup();
-    if resolved.is_empty() {
-        return Err(DomainError::validation(
-            "discovery upstream did not resolve to an address",
-        ));
-    }
-    if resolved
-        .iter()
-        .any(|ip| deny_reason(ip, port, policy).is_some())
-    {
-        return Err(DomainError::validation(
-            "discovery upstream resolves to a denied internal destination",
-        )
-        .with_details(serde_json::json!({"reason": "denied_internal_destination"})));
-    }
-    Ok(resolved[0])
-}
-
-fn canonical_ip(ip: IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V6(v6) => v6
-            .to_ipv4_mapped()
-            .map(IpAddr::V4)
-            .unwrap_or(IpAddr::V6(v6)),
-        other => other,
-    }
-}
-
-fn deny_reason(ip: &IpAddr, port: u16, policy: &DiscoveryForwardingPolicy) -> Option<&'static str> {
-    if policy
-        .denied_destinations
-        .iter()
-        .any(|addr| addr.ip() == *ip && addr.port() == port)
-    {
-        return Some("denied_flowplane_destination");
-    }
-    if always_denied_destination(ip) {
-        return Some("denied_internal_destination");
-    }
-    if policy
-        .allowed_destinations
-        .iter()
-        .any(|addr| addr.ip() == *ip && addr.port() == port)
-    {
-        return None;
-    }
-    match ip {
-        IpAddr::V4(ip) => {
-            if ip.is_loopback() || ip.is_private() {
-                Some("denied_internal_destination")
-            } else {
-                None
-            }
-        }
-        IpAddr::V6(ip) => {
-            if ip.is_loopback() {
-                Some("denied_internal_destination")
-            } else {
-                None
-            }
-        }
-    }
-}
-
-fn always_denied_destination(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            ip.is_link_local()
-                || ip.is_multicast()
-                || ip.is_unspecified()
-                || *ip == Ipv4Addr::new(169, 254, 169, 254)
-        }
-        IpAddr::V6(ip) => {
-            ip.is_unspecified()
-                || ip.is_multicast()
-                || is_ipv6_link_local(ip)
-                || is_ipv6_unique_local(ip)
-                || is_6to4(ip)
-                || is_nat64_well_known(ip)
-                || *ip == Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254)
-        }
-    }
-}
-
-fn is_ipv6_link_local(ip: &Ipv6Addr) -> bool {
-    (ip.segments()[0] & 0xffc0) == 0xfe80
-}
-
-fn is_ipv6_unique_local(ip: &Ipv6Addr) -> bool {
-    (ip.segments()[0] & 0xfe00) == 0xfc00
-}
-
-fn is_6to4(ip: &Ipv6Addr) -> bool {
-    ip.segments()[0] == 0x2002
-}
-
-fn is_nat64_well_known(ip: &Ipv6Addr) -> bool {
-    ip.segments()[0] == 0x0064 && ip.segments()[1] == 0xff9b
+    let validation = policy
+        .validate_host_port(host, port, "discovery upstream")
+        .await?;
+    validation
+        .resolved_ips
+        .first()
+        .copied()
+        .ok_or_else(|| DomainError::validation("discovery upstream did not resolve to an address"))
 }
 
 struct GatewayResourceEvents<'a> {
@@ -624,80 +457,24 @@ fn mutation_audit(
 }
 
 #[cfg(test)]
-#[allow(clippy::panic, clippy::unwrap_used)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::*;
+    use std::net::IpAddr;
 
-    #[test]
-    fn canonicalizes_ipv4_mapped_ipv6_before_deny_checks() {
-        let mapped = "::ffff:169.254.169.254".parse::<IpAddr>().unwrap();
-        let canonical = canonical_ip(mapped);
-        assert_eq!(canonical, IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)));
-        assert!(deny_reason(&canonical, 80, &DiscoveryForwardingPolicy::default()).is_some());
-    }
-
-    #[test]
-    fn denies_embedded_address_prefixes_until_extraction_exists() {
-        let policy = DiscoveryForwardingPolicy::default();
-        assert!(
-            deny_reason(&"2002:0808:0808::1".parse::<IpAddr>().unwrap(), 80, &policy).is_some()
+    #[tokio::test]
+    async fn discovery_persists_hermetically_resolved_hostname_ip() {
+        let policy = super::DiscoveryForwardingPolicy::with_static_hosts(
+            Vec::new(),
+            Vec::new(),
+            vec![(
+                "upstream.example.test".into(),
+                443,
+                vec!["93.184.216.34".parse().unwrap()],
+            )],
         );
-        assert!(deny_reason(
-            &"64:ff9b::0808:0808".parse::<IpAddr>().unwrap(),
-            80,
-            &policy
-        )
-        .is_some());
-    }
-
-    #[test]
-    fn configured_flowplane_destinations_are_denied_by_ip_and_port() {
-        let ip = "203.0.113.10".parse::<IpAddr>().unwrap();
-        let policy = DiscoveryForwardingPolicy::new(vec![SocketAddr::new(ip, 5432)]);
-        assert_eq!(
-            deny_reason(&ip, 5432, &policy),
-            Some("denied_flowplane_destination")
-        );
-        assert_eq!(deny_reason(&ip, 5433, &policy), None);
-    }
-
-    #[test]
-    fn explicit_allowlist_admits_private_destination_after_denylist() {
-        let ip = "127.0.0.1".parse::<IpAddr>().unwrap();
-        let allowed =
-            DiscoveryForwardingPolicy::with_allowed(Vec::new(), vec![SocketAddr::new(ip, 3001)]);
-        assert_eq!(deny_reason(&ip, 3001, &allowed), None);
-
-        let denied = DiscoveryForwardingPolicy::with_allowed(
-            vec![SocketAddr::new(ip, 3001)],
-            vec![SocketAddr::new(ip, 3001)],
-        );
-        assert_eq!(
-            deny_reason(&ip, 3001, &denied),
-            Some("denied_flowplane_destination")
-        );
-    }
-
-    #[test]
-    fn explicit_allowlist_cannot_admit_metadata_destination() {
-        let ip = "169.254.169.254".parse::<IpAddr>().unwrap();
-        let policy =
-            DiscoveryForwardingPolicy::with_allowed(Vec::new(), vec![SocketAddr::new(ip, 80)]);
-        assert_eq!(
-            deny_reason(&ip, 80, &policy),
-            Some("denied_internal_destination")
-        );
-    }
-
-    #[test]
-    fn postgres_host_port_parses_basic_database_urls() {
-        assert_eq!(
-            postgres_host_port("postgres://user:pass@db.example.test:5432/flowplane"),
-            Some(("db.example.test".into(), 5432))
-        );
-        assert_eq!(
-            postgres_host_port("postgres://user:pass@[2001:db8::10]:5432/flowplane"),
-            Some(("2001:db8::10".into(), 5432))
-        );
+        let ip = super::validate_upstream("upstream.example.test", 443, &policy)
+            .await
+            .expect("hostname resolves through static policy");
+        assert_eq!(ip, "93.184.216.34".parse::<IpAddr>().unwrap());
     }
 }

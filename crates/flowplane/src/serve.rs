@@ -195,8 +195,8 @@ pub async fn run() -> anyhow::Result<()> {
         );
     }
 
-    let discovery_forwarding_policy =
-        fp_core::services::discovery::DiscoveryForwardingPolicy::from_server_config(&config).await;
+    let egress_policy =
+        fp_core::services::egress_policy::EgressPolicy::from_server_config(&config).await;
 
     // CP→RLS policy sync (S5): when the RLS admin URL is set, run the 60 s reconcile worker and
     // expose a force-repush kick. The first reconcile fires immediately at startup.
@@ -249,7 +249,7 @@ pub async fn run() -> anyhow::Result<()> {
             max_lag: 0,
             failed: xds_consumer_failed,
         }),
-        discovery_forwarding_policy,
+        egress_policy,
         rls_repush,
         rls_grpc_configured: config.rls_grpc_url.is_some(),
     };

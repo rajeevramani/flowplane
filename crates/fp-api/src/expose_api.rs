@@ -102,7 +102,7 @@ pub async fn expose(
 ) -> Result<(StatusCode, Json<ExposeView>), ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
-        svc::expose(
+        svc::expose_with_egress_policy(
             &state.pool,
             &ctx,
             team,
@@ -114,6 +114,7 @@ pub async fn expose(
                 public_base_url: body.public_base_url,
             },
             rid,
+            &state.egress_policy,
         )
         .await
     };
