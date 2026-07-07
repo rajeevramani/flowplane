@@ -720,8 +720,25 @@ async fn ai_cluster_metadata(
     .map_err(|err| DomainError::internal(format!("list AI cluster metadata: {err}")))?;
     let mut out = HashMap::with_capacity(rows.len());
     for row in rows {
+        // `cluster_names[position + 1]` is NULL when a backend position has no matching
+        // materialized cluster name (short/misaligned cluster_names array). That is a data
+        // gap for an incompletely materialized route, not a fatal condition — skip it and
+        // keep priming, mirroring the undecryptable-secret resilience elsewhere in rebuild.
+        // Row::get would panic on the NULL, taking down snapshot priming (and startup).
+        let cluster_name: Option<String> = row.try_get("cluster_name").map_err(|err| {
+            DomainError::internal(format!("decode AI cluster metadata cluster_name: {err}"))
+        })?;
+        let Some(cluster_name) = cluster_name else {
+            let position: i32 = row.try_get("position").unwrap_or_default();
+            tracing::warn!(
+                team = %team_id,
+                position,
+                "skipping AI cluster metadata: backend position has no materialized cluster name"
+            );
+            continue;
+        };
         out.insert(
-            row.get("cluster_name"),
+            cluster_name,
             translate::AiUpstreamProcessorMetadata {
                 team_id: team_id.as_uuid(),
                 route_config_id: RouteConfigId::from(row.get::<uuid::Uuid, _>("route_config_id"))
