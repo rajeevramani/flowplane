@@ -2,12 +2,12 @@
 
 > Audience: api-teams, operators · Status: stable
 
-Every request that reaches an AI listener leaves a **trace row**: a per-hop
-timeline of what the gateway did (route match, auth, budget check, credential
-injection, upstream call, usage accounting), with an outcome and timing for each
-hop. This guide shows how to retrieve that timeline to answer "where did my AI
-request die, and why" — without reading Envoy logs — and how to control how long
-trace rows are kept.
+Every request that reaches an AI listener leaves a **trace row**: one merged
+record of the ExtProc stream contributions for the request (route match, auth,
+budget check, credential injection, upstream call, usage accounting), with an
+outcome and timing window for each hop. This guide shows how to retrieve that
+row to answer "where did my AI request die, and why" — without reading Envoy
+logs — and how to control how long trace rows are kept.
 
 Prerequisites: a working AI provider + route (see
 [Create an AI provider, route traffic to it, and attach a token budget](./ai-gateway-route-budget.md))
@@ -43,7 +43,7 @@ That id is the key to the trace row.
 > only that server id keys a trace. If you send your own id, it will not find
 > a trace — use the id from the *response*.
 
-## 2. Retrieve the hop timeline
+## 2. Retrieve the hop record
 
 ```bash
 flowplane ai trace --request-id 019f2f5a-9ae3-76d1-bd61-dcc24cfe6e6c --json
@@ -84,8 +84,29 @@ Expected output (a successful request; timestamps trimmed):
 }
 ```
 
-Each hop carries `started_at`/`ended_at` (elided above), so slow requests show
-*where* the time went — `upstream.detail.latency_ms` is the provider round trip.
+The `hops` array is a merged row view of one or more ExtProc stream
+contributions, not the execution-order contract for the request. Do not infer a
+single sequential waterfall from array position. `origin` is the stream-context
+label attached to the hop, such as `listener` or `upstream`; it is not a
+physical-side guarantee and it does not by itself prove the order in which gates
+executed.
+
+Each hop carries `started_at`/`ended_at` (elided above). These timestamps are
+per-hop windows from the stream that pushed the hop, so windows may overlap or
+appear back-anchored. In the successful sample above, the surviving `budget`,
+`credential_injection`, `upstream`, and `usage` hops all have
+`origin: "upstream"` because they are upstream-labeled stream contributions
+after merge. The `upstream` hop can start before or overlap the same-origin
+`budget` and `credential_injection` hops because it is anchored to that stream's
+request-header window, while the budget and credential windows start when those
+checks run later in the stream.
+
+That timestamp shape does not mean the checks were skipped or bypassed.
+Enforcing budget rejection and credential failure short-circuit before upstream
+forwarding; failed traces for those cases do not produce an upstream hop.
+`upstream.detail.latency_ms` remains the upstream-hop latency signal, but it is
+measured from the upstream-labeled stream window rather than promised as pure
+provider-only time.
 
 Trace rows never contain prompt or completion text, request/response bodies, or
 credential values; the schema stores outcomes, ids, timings, and token counts
