@@ -10,6 +10,38 @@ upgrade of an earlier Flowplane line — there is no in-place migration path fro
 version. `1.0.0` is its first stable release and the point at which the public REST API,
 CLI surface, and configuration contract become subject to semantic versioning.
 
+## [Unreleased]
+
+### Added
+
+- **AI request tracing.** Every request through an AI gateway listener records a per-hop
+  trace row (route match, auth, budget, credential injection, upstream, usage) with
+  outcomes, per-hop timings, HTTP status, and token counts. Retrieve it with
+  `flowplane ai trace --request-id <id>`; a W3C `traceparent` is propagated to the provider
+  and its `trace_id` stored for APM correlation. Trace rows never contain prompt/response
+  bodies or credential values.
+- **AI trace retention.** Per-team trace TTL via `flowplane ai retention get|set`
+  (`GET`/`PUT /api/v1/teams/{team}/ai/retention`), default 30 days; rows are stamped with
+  their expiry at capture time.
+- **AI budget shadow previews.** The budget hop's `detail.shadow[]` reports would-be
+  rejections for shadow-mode budgets on otherwise-successful requests.
+
+### Fixed
+
+- AI gateway listeners now own `x-request-id`: a client-supplied id is ignored and the
+  server generates its own (returned in the response), so a caller cannot choose or collide
+  another request's trace key. (#227)
+- AI budget-exceeded (429) and credential-failure (500) rejections now return the JSON error
+  envelope `{"code","message"}` with `content-type: application/json`, matching the
+  `route_match` error style. (#230)
+- Listener-side AI rejections (budget, credential injection) now record the client-facing
+  HTTP status in the trace row's `status_code` instead of leaving it null. (#231)
+- `PUT /api/v1/teams/{team}/ai/retention` enforces optimistic concurrency: a stale or
+  malformed `If-Match` is rejected (409 / 400) instead of silently last-writer-winning. (#226)
+- Docs — AI trace hop timeline (a merged multi-stream view, not an execution-order waterfall;
+  corrected `latency_ms` scope) and the budget hop's `detail.shadow[]` shape now match the
+  runtime. (#228, #229)
+
 ## [2.1.1] - 2026-06-30
 
 Patch release. Documentation and release-packaging update for no-clone evaluation and
