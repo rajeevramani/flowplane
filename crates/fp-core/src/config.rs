@@ -86,6 +86,12 @@ pub struct ServerConfig {
     /// exact `ip:port` socket addresses and do not override control-plane, xDS, database, or
     /// metadata destination denies. Env `FLOWPLANE_EGRESS_ALLOWED_DESTINATIONS`.
     pub egress_allowed_destinations: Vec<SocketAddr>,
+    /// Dev-mode-only escape hatch for tenant-authored Envoy filename fields. This is false unless
+    /// explicitly acknowledged with `FLOWPLANE_DEV_ALLOW_TENANT_FILE_PATHS=yes-this-is-local-only`.
+    pub dev_allow_tenant_file_paths: bool,
+    /// Canonical base directories under which dev local-file tenant paths must resolve. Env
+    /// `FLOWPLANE_DEV_TENANT_FILE_BASE_DIRS`.
+    pub dev_tenant_file_base_dirs: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -166,6 +172,8 @@ struct FileConfig {
     dataplane_tls_key: Option<String>,
     dataplane_tls_client_ca: Option<String>,
     egress_allowed_destinations: Option<String>,
+    dev_allow_tenant_file_paths: Option<bool>,
+    dev_tenant_file_base_dirs: Option<String>,
 }
 
 const DEFAULT_API_ADDR: &str = "0.0.0.0:8080";
@@ -472,6 +480,29 @@ impl ServerConfig {
                 .or(file.egress_allowed_destinations.as_deref())
                 .or_else(|| get("FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS")),
         );
+        let dev_allow_tenant_file_paths = get("FLOWPLANE_DEV_ALLOW_TENANT_FILE_PATHS")
+            == Some("yes-this-is-local-only")
+            || file.dev_allow_tenant_file_paths.unwrap_or(false);
+        if dev_allow_tenant_file_paths && !dev_mode {
+            return Err(DomainError::invalid_config(
+                "FLOWPLANE_DEV_ALLOW_TENANT_FILE_PATHS requires FLOWPLANE_DEV_MODE=true",
+            ));
+        }
+        let dev_tenant_file_base_dirs = crate::services::filesystem_path_policy::parse_path_list(
+            get("FLOWPLANE_DEV_TENANT_FILE_BASE_DIRS")
+                .map(str::to_owned)
+                .or(file.dev_tenant_file_base_dirs),
+        );
+        if dev_allow_tenant_file_paths && dev_tenant_file_base_dirs.is_empty() {
+            return Err(DomainError::invalid_config(
+                "FLOWPLANE_DEV_TENANT_FILE_BASE_DIRS is required when dev tenant file paths are enabled",
+            ));
+        }
+        crate::services::filesystem_path_policy::FilesystemPathPolicy::new(
+            dev_mode,
+            dev_allow_tenant_file_paths,
+            dev_tenant_file_base_dirs.clone(),
+        )?;
 
         Ok(Self {
             api_addr,
@@ -496,6 +527,8 @@ impl ServerConfig {
             rls_grpc_allow_production_plaintext,
             dataplane_tls,
             egress_allowed_destinations,
+            dev_allow_tenant_file_paths,
+            dev_tenant_file_base_dirs,
         })
     }
 }
@@ -537,6 +570,20 @@ mod tests {
         ));
         std::fs::write(&path, contents).expect("write token");
         path.to_string_lossy().into_owned()
+    }
+
+    fn write_temp_dir(prefix: &str) -> String {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("flowplane-{prefix}-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&path).expect("mkdir");
+        path.canonicalize()
+            .expect("canonical")
+            .to_string_lossy()
+            .into_owned()
     }
 
     #[test]
@@ -667,6 +714,33 @@ mod tests {
                 .map(AdminCredential::token),
             Some("sync-secret")
         );
+    }
+
+    #[test]
+    fn tenant_file_path_opt_in_requires_dev_mode_and_base_dirs() {
+        let mut env = base_env();
+        env.insert(
+            "FLOWPLANE_DEV_ALLOW_TENANT_FILE_PATHS".into(),
+            "yes-this-is-local-only".into(),
+        );
+        let err = ServerConfig::resolve(&env, FileConfig::default())
+            .expect_err("file path opt-in outside dev mode rejected");
+        assert_eq!(err.code, fp_domain::ErrorCode::InvalidConfig);
+        assert!(err.message.contains("FLOWPLANE_DEV_MODE"));
+
+        env.insert("FLOWPLANE_DEV_MODE".into(), "true".into());
+        let err = ServerConfig::resolve(&env, FileConfig::default())
+            .expect_err("file path opt-in without base dirs rejected");
+        assert!(err.message.contains("FLOWPLANE_DEV_TENANT_FILE_BASE_DIRS"));
+
+        env.insert(
+            "FLOWPLANE_DEV_TENANT_FILE_BASE_DIRS".into(),
+            write_temp_dir("tenant-files"),
+        );
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+        assert!(cfg.dev_mode);
+        assert!(cfg.dev_allow_tenant_file_paths);
+        assert_eq!(cfg.dev_tenant_file_base_dirs.len(), 1);
     }
 
     fn oidc_env() -> HashMap<String, String> {

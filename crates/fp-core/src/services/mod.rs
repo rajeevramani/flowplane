@@ -9,6 +9,7 @@ pub mod dataplanes;
 pub mod discovery;
 pub mod egress_policy;
 pub mod expose;
+pub mod filesystem_path_policy;
 pub mod gateway;
 pub mod learning;
 pub mod orgs;

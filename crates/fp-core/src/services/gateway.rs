@@ -2,13 +2,14 @@
 //! one transaction of row + event + audit).
 
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
+use crate::services::filesystem_path_policy::FilesystemPathPolicy;
 use crate::services::rls_sync::{compose_domain, namespace_uuid};
 use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
 use fp_domain::gateway::cluster::RESERVED_RATE_LIMIT_CLUSTER;
 use fp_domain::gateway::filters::HttpFilterSpec;
-use fp_domain::gateway::listener::{Listener, ListenerSpec};
+use fp_domain::gateway::listener::{Listener, ListenerSpec, ListenerTlsConfig};
 use fp_domain::gateway::route_config::{RouteConfig, RouteConfigSpec};
 use fp_domain::{validate_name, DomainError, DomainResult, RequestId};
 use fp_storage::repos::{audit, clusters, gateway};
@@ -324,9 +325,34 @@ pub async fn create_listener(
     ctx: &PrincipalCtx,
     team: TeamRef,
     name: &str,
+    spec: ListenerSpec,
+    request_id: RequestId,
+    rls_grpc_configured: bool,
+) -> DomainResult<Listener> {
+    let file_policy = FilesystemPathPolicy::from_process_config()?;
+    create_listener_with_file_policy(
+        pool,
+        ctx,
+        team,
+        name,
+        spec,
+        request_id,
+        rls_grpc_configured,
+        &file_policy,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn create_listener_with_file_policy(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
     mut spec: ListenerSpec,
     request_id: RequestId,
     rls_grpc_configured: bool,
+    file_policy: &FilesystemPathPolicy,
 ) -> DomainResult<Listener> {
     authorize(
         pool,
@@ -339,6 +365,7 @@ pub async fn create_listener(
     .await?;
     validate_user_listener_name(name)?;
     spec.validate()?;
+    validate_listener_filesystem_paths(&spec, file_policy)?;
     resolve_global_rate_limit_filters(pool, team, &mut spec, rls_grpc_configured).await?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::Listeners).await?;
     let mut tx = pool
@@ -426,10 +453,37 @@ pub async fn update_listener(
     ctx: &PrincipalCtx,
     team: TeamRef,
     name: &str,
+    spec: ListenerSpec,
+    expected_version: i64,
+    request_id: RequestId,
+    rls_grpc_configured: bool,
+) -> DomainResult<Listener> {
+    let file_policy = FilesystemPathPolicy::from_process_config()?;
+    update_listener_with_file_policy(
+        pool,
+        ctx,
+        team,
+        name,
+        spec,
+        expected_version,
+        request_id,
+        rls_grpc_configured,
+        &file_policy,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn update_listener_with_file_policy(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
     mut spec: ListenerSpec,
     expected_version: i64,
     request_id: RequestId,
     rls_grpc_configured: bool,
+    file_policy: &FilesystemPathPolicy,
 ) -> DomainResult<Listener> {
     authorize(
         pool,
@@ -441,6 +495,7 @@ pub async fn update_listener(
     )
     .await?;
     spec.validate()?;
+    validate_listener_filesystem_paths(&spec, file_policy)?;
     resolve_global_rate_limit_filters(pool, team, &mut spec, rls_grpc_configured).await?;
     let mut tx = pool
         .begin()
@@ -537,4 +592,85 @@ fn validate_user_listener_name(name: &str) -> DomainResult<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_listener_filesystem_paths(
+    spec: &ListenerSpec,
+    policy: &FilesystemPathPolicy,
+) -> DomainResult<()> {
+    for log in &spec.access_logs {
+        policy.validate_path("access_log.path", &log.path)?;
+    }
+    if let Some(ListenerTlsConfig {
+        cert_chain_file,
+        private_key_file,
+        ca_cert_file,
+        ..
+    }) = &spec.tls_context
+    {
+        policy.validate_optional_path("tls_context.cert_chain_file", cert_chain_file.as_deref())?;
+        policy
+            .validate_optional_path("tls_context.private_key_file", private_key_file.as_deref())?;
+        policy.validate_optional_path("tls_context.ca_cert_file", ca_cert_file.as_deref())?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use fp_domain::gateway::listener::{AccessLogConfig, ListenerProtocol, ListenerTlsConfig};
+
+    fn listener_spec() -> ListenerSpec {
+        ListenerSpec {
+            address: "0.0.0.0".into(),
+            port: 18443,
+            public_base_url: None,
+            protocol: ListenerProtocol::Https,
+            route_config: None,
+            http_filters: Vec::new(),
+            access_logs: Vec::new(),
+            tls_context: Some(ListenerTlsConfig {
+                cert_chain_file: None,
+                private_key_file: None,
+                ca_cert_file: None,
+                require_client_certificate: false,
+                tls_certificate_sds_secret_name: Some("edge-cert".into()),
+                validation_context_sds_secret_name: Some("edge-ca".into()),
+            }),
+        }
+    }
+
+    #[test]
+    fn listener_filesystem_validation_accepts_sds_tls_by_default() {
+        validate_listener_filesystem_paths(&listener_spec(), &FilesystemPathPolicy::disabled())
+            .expect("SDS-only listener accepted");
+    }
+
+    #[test]
+    fn listener_filesystem_validation_rejects_tls_files_by_default() {
+        let mut spec = listener_spec();
+        spec.tls_context = Some(ListenerTlsConfig {
+            cert_chain_file: Some("/etc/tenant/cert.pem".into()),
+            private_key_file: Some("/etc/tenant/key.pem".into()),
+            ca_cert_file: None,
+            require_client_certificate: false,
+            tls_certificate_sds_secret_name: None,
+            validation_context_sds_secret_name: None,
+        });
+        validate_listener_filesystem_paths(&spec, &FilesystemPathPolicy::disabled())
+            .expect_err("tenant TLS files rejected by default");
+    }
+
+    #[test]
+    fn listener_filesystem_validation_rejects_access_logs_by_default() {
+        let mut spec = listener_spec();
+        spec.access_logs = vec![AccessLogConfig {
+            path: "/var/log/envoy/access.log".into(),
+            text_format: None,
+        }];
+        validate_listener_filesystem_paths(&spec, &FilesystemPathPolicy::disabled())
+            .expect_err("tenant access-log path rejected by default");
+    }
 }

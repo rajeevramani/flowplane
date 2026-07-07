@@ -4,13 +4,16 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
 use fp_core::services::clusters as svc;
+use fp_core::services::egress_policy::EgressPolicy;
+use fp_core::services::filesystem_path_policy::FilesystemPathPolicy;
 use fp_core::{GrantSet, PrincipalCtx};
 use fp_domain::authz::TeamRef;
 use fp_domain::event::DomainEvent;
-use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, LbPolicy};
+use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, LbPolicy, UpstreamTlsConfig};
 use fp_domain::{ErrorCode, OrgRole, RequestId};
 use fp_storage::repos::identity;
 use sqlx::PgPool;
+use std::net::{IpAddr, Ipv4Addr};
 
 fn unique(prefix: &str) -> String {
     format!(
@@ -107,6 +110,27 @@ async fn world() -> Option<World> {
         admin,
         outsider,
     })
+}
+
+fn public_egress_policy() -> EgressPolicy {
+    EgressPolicy::with_static_hosts(
+        Vec::new(),
+        Vec::new(),
+        vec![(
+            "api.example.com".into(),
+            443,
+            vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 20))],
+        )],
+    )
+}
+
+async fn event_count(pool: &PgPool, team: TeamRef, event_type: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM events WHERE event_type = $1 AND team_id = $2")
+        .bind(event_type)
+        .bind(team.id.as_uuid())
+        .fetch_one(pool)
+        .await
+        .expect("event count")
 }
 
 #[tokio::test]
@@ -339,6 +363,174 @@ async fn grantless_member_denied_with_actionable_forbidden() {
     .expect_err("no grant, no create");
     assert_eq!(err.code, ErrorCode::Forbidden);
     assert!(err.message.contains("clusters:create"));
+}
+
+#[tokio::test]
+async fn cluster_ca_file_rejection_does_not_persist_row_or_outbox_event() {
+    let Some(w) = world().await else { return };
+    let name = unique("file-ca");
+    let before = event_count(&w.pool, w.team, "cluster.upserted").await;
+    let mut cluster = spec("api.example.com");
+    cluster.endpoints[0].port = 443;
+    cluster.use_tls = true;
+    cluster.upstream_tls = Some(UpstreamTlsConfig {
+        sni: Some("api.example.com".into()),
+        validation_context_sds_secret_name: None,
+        ca_cert_file: Some("/etc/tenant/ca.pem".into()),
+        auto_sni_san_validation: false,
+        insecure_skip_verify: false,
+    });
+
+    let err = svc::create_cluster_with_policies(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &name,
+        cluster,
+        RequestId::generate(),
+        &public_egress_policy(),
+        &FilesystemPathPolicy::disabled(),
+    )
+    .await
+    .expect_err("tenant CA file rejected");
+    assert_eq!(err.code, ErrorCode::ValidationFailed);
+
+    let stored: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM clusters WHERE team_id = $1 AND name = $2")
+            .bind(w.team.id.as_uuid())
+            .bind(&name)
+            .fetch_optional(&w.pool)
+            .await
+            .expect("cluster lookup");
+    assert!(stored.is_none(), "rejected cluster must not persist");
+    assert_eq!(
+        event_count(&w.pool, w.team, "cluster.upserted").await,
+        before,
+        "rejected cluster must not append an outbox event"
+    );
+}
+
+#[tokio::test]
+async fn cluster_sds_validation_context_still_persists() {
+    let Some(w) = world().await else { return };
+    let name = unique("sds-ca");
+    let mut cluster = spec("api.example.com");
+    cluster.endpoints[0].port = 443;
+    cluster.use_tls = true;
+    cluster.upstream_tls = Some(UpstreamTlsConfig {
+        sni: Some("api.example.com".into()),
+        validation_context_sds_secret_name: Some("tenant-ca".into()),
+        ca_cert_file: None,
+        auto_sni_san_validation: true,
+        insecure_skip_verify: false,
+    });
+    let created = svc::create_cluster_with_policies(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &name,
+        cluster,
+        RequestId::generate(),
+        &public_egress_policy(),
+        &FilesystemPathPolicy::disabled(),
+    )
+    .await
+    .expect("SDS-backed cluster persists");
+    assert_eq!(created.name, name);
+}
+
+#[tokio::test]
+async fn listener_file_path_rejection_does_not_persist_row_or_outbox_event() {
+    let Some(w) = world().await else { return };
+    use fp_core::services::gateway as gw;
+    use fp_domain::gateway::listener::{ListenerProtocol, ListenerSpec, ListenerTlsConfig};
+
+    let name = unique("file-listener");
+    let before = event_count(&w.pool, w.team, "listener.upserted").await;
+    let spec = ListenerSpec {
+        address: "0.0.0.0".into(),
+        port: 18443,
+        public_base_url: None,
+        protocol: ListenerProtocol::Https,
+        route_config: None,
+        http_filters: Vec::new(),
+        access_logs: Vec::new(),
+        tls_context: Some(ListenerTlsConfig {
+            cert_chain_file: Some("/etc/tenant/cert.pem".into()),
+            private_key_file: Some("/etc/tenant/key.pem".into()),
+            ca_cert_file: None,
+            require_client_certificate: false,
+            tls_certificate_sds_secret_name: None,
+            validation_context_sds_secret_name: None,
+        }),
+    };
+
+    let err = gw::create_listener_with_file_policy(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &name,
+        spec,
+        RequestId::generate(),
+        false,
+        &FilesystemPathPolicy::disabled(),
+    )
+    .await
+    .expect_err("tenant listener TLS files rejected");
+    assert_eq!(err.code, ErrorCode::ValidationFailed);
+
+    let stored: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM listeners WHERE team_id = $1 AND name = $2")
+            .bind(w.team.id.as_uuid())
+            .bind(&name)
+            .fetch_optional(&w.pool)
+            .await
+            .expect("listener lookup");
+    assert!(stored.is_none(), "rejected listener must not persist");
+    assert_eq!(
+        event_count(&w.pool, w.team, "listener.upserted").await,
+        before,
+        "rejected listener must not append an outbox event"
+    );
+}
+
+#[tokio::test]
+async fn listener_sds_tls_still_persists() {
+    let Some(w) = world().await else { return };
+    use fp_core::services::gateway as gw;
+    use fp_domain::gateway::listener::{ListenerProtocol, ListenerSpec, ListenerTlsConfig};
+
+    let name = unique("sds-listener");
+    let spec = ListenerSpec {
+        address: "0.0.0.0".into(),
+        port: 18444,
+        public_base_url: None,
+        protocol: ListenerProtocol::Https,
+        route_config: None,
+        http_filters: Vec::new(),
+        access_logs: Vec::new(),
+        tls_context: Some(ListenerTlsConfig {
+            cert_chain_file: None,
+            private_key_file: None,
+            ca_cert_file: None,
+            require_client_certificate: false,
+            tls_certificate_sds_secret_name: Some("edge-cert".into()),
+            validation_context_sds_secret_name: Some("edge-ca".into()),
+        }),
+    };
+    let created = gw::create_listener_with_file_policy(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &name,
+        spec,
+        RequestId::generate(),
+        false,
+        &FilesystemPathPolicy::disabled(),
+    )
+    .await
+    .expect("SDS-backed listener persists");
+    assert_eq!(created.name, name);
 }
 
 mod referential {

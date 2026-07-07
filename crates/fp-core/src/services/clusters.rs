@@ -4,10 +4,11 @@
 
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
 use crate::services::egress_policy::{EgressPolicy, EgressValidation};
+use crate::services::filesystem_path_policy::FilesystemPathPolicy;
 use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
-use fp_domain::gateway::cluster::{validate_cluster_name, Cluster, ClusterSpec};
+use fp_domain::gateway::cluster::{validate_cluster_name, Cluster, ClusterSpec, UpstreamTlsConfig};
 use fp_domain::{DomainResult, RequestId};
 use fp_storage::repos::{audit, clusters};
 use fp_storage::scope::TeamScope;
@@ -47,7 +48,18 @@ pub async fn create_cluster(
     request_id: RequestId,
 ) -> DomainResult<Cluster> {
     let policy = EgressPolicy::from_process_config().await;
-    create_cluster_with_egress_policy(pool, ctx, team, name, spec, request_id, &policy).await
+    let file_policy = FilesystemPathPolicy::from_process_config()?;
+    create_cluster_with_policies(
+        pool,
+        ctx,
+        team,
+        name,
+        spec,
+        request_id,
+        &policy,
+        &file_policy,
+    )
+    .await
 }
 
 pub async fn create_cluster_with_egress_policy(
@@ -59,10 +71,36 @@ pub async fn create_cluster_with_egress_policy(
     request_id: RequestId,
     policy: &EgressPolicy,
 ) -> DomainResult<Cluster> {
+    let file_policy = FilesystemPathPolicy::from_process_config()?;
+    create_cluster_with_policies(
+        pool,
+        ctx,
+        team,
+        name,
+        spec,
+        request_id,
+        policy,
+        &file_policy,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn create_cluster_with_policies(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    spec: ClusterSpec,
+    request_id: RequestId,
+    policy: &EgressPolicy,
+    file_policy: &FilesystemPathPolicy,
+) -> DomainResult<Cluster> {
     authorize(pool, ctx, Action::Create, team, request_id).await?;
     validate_cluster_name(name)?;
     spec.validate()?;
     let egress = validate_cluster_egress(&spec, policy).await?;
+    validate_cluster_filesystem_paths(&spec, file_policy)?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::Clusters).await?;
 
     let mut tx = pool
@@ -129,7 +167,8 @@ pub async fn update_cluster(
     request_id: RequestId,
 ) -> DomainResult<Cluster> {
     let policy = EgressPolicy::from_process_config().await;
-    update_cluster_with_egress_policy(
+    let file_policy = FilesystemPathPolicy::from_process_config()?;
+    update_cluster_with_policies(
         pool,
         ctx,
         team,
@@ -138,6 +177,7 @@ pub async fn update_cluster(
         expected_version,
         request_id,
         &policy,
+        &file_policy,
     )
     .await
 }
@@ -153,9 +193,37 @@ pub async fn update_cluster_with_egress_policy(
     request_id: RequestId,
     policy: &EgressPolicy,
 ) -> DomainResult<Cluster> {
+    let file_policy = FilesystemPathPolicy::from_process_config()?;
+    update_cluster_with_policies(
+        pool,
+        ctx,
+        team,
+        name,
+        spec,
+        expected_version,
+        request_id,
+        policy,
+        &file_policy,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn update_cluster_with_policies(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    spec: ClusterSpec,
+    expected_version: i64,
+    request_id: RequestId,
+    policy: &EgressPolicy,
+    file_policy: &FilesystemPathPolicy,
+) -> DomainResult<Cluster> {
     authorize(pool, ctx, Action::Update, team, request_id).await?;
     spec.validate()?;
     let egress = validate_cluster_egress(&spec, policy).await?;
+    validate_cluster_filesystem_paths(&spec, file_policy)?;
     let mut tx = pool
         .begin()
         .await
@@ -183,6 +251,20 @@ pub async fn update_cluster_with_egress_policy(
         .await
         .map_err(crate::services::db_err("update cluster: commit"))?;
     Ok(cluster)
+}
+
+fn validate_cluster_filesystem_paths(
+    spec: &ClusterSpec,
+    policy: &FilesystemPathPolicy,
+) -> DomainResult<()> {
+    if let Some(UpstreamTlsConfig {
+        ca_cert_file: Some(path),
+        ..
+    }) = &spec.upstream_tls
+    {
+        policy.validate_path("upstream_tls.ca_cert_file", path)?;
+    }
+    Ok(())
 }
 
 async fn validate_cluster_egress(
@@ -316,5 +398,35 @@ mod tests {
         validate_cluster_egress(&spec("10.0.0.10", 8080), &EgressPolicy::default())
             .await
             .expect_err("private cluster endpoint denied");
+    }
+
+    #[test]
+    fn cluster_filesystem_validation_rejects_ca_file_by_default() {
+        let mut spec = spec("api.example.com", 443);
+        spec.use_tls = true;
+        spec.upstream_tls = Some(UpstreamTlsConfig {
+            sni: Some("api.example.com".into()),
+            validation_context_sds_secret_name: None,
+            ca_cert_file: Some("/etc/tenant-ca.pem".into()),
+            auto_sni_san_validation: false,
+            insecure_skip_verify: false,
+        });
+        validate_cluster_filesystem_paths(&spec, &FilesystemPathPolicy::disabled())
+            .expect_err("tenant CA file rejected by default");
+    }
+
+    #[test]
+    fn cluster_filesystem_validation_accepts_sds_reference_by_default() {
+        let mut spec = spec("api.example.com", 443);
+        spec.use_tls = true;
+        spec.upstream_tls = Some(UpstreamTlsConfig {
+            sni: Some("api.example.com".into()),
+            validation_context_sds_secret_name: Some("tenant-ca".into()),
+            ca_cert_file: None,
+            auto_sni_san_validation: true,
+            insecure_skip_verify: false,
+        });
+        validate_cluster_filesystem_paths(&spec, &FilesystemPathPolicy::disabled())
+            .expect("SDS reference accepted");
     }
 }

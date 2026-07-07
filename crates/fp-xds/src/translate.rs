@@ -2831,6 +2831,33 @@ mod tests {
     }
 
     #[test]
+    fn accepted_sds_upstream_tls_emits_no_tenant_filename_data_source() {
+        let mut spec = cluster_spec();
+        spec.upstream_tls = Some(UpstreamTlsConfig {
+            sni: Some("api.example.com".into()),
+            validation_context_sds_secret_name: Some("upstream-ca".into()),
+            ca_cert_file: None,
+            auto_sni_san_validation: true,
+            insecure_skip_verify: false,
+        });
+        let ctx = upstream_tls_context_of("api", &spec);
+        let common = ctx.common_tls_context.expect("common");
+        assert!(
+            common.tls_certificates.is_empty(),
+            "tenant-authored upstream specs must not emit inline filename cert sources"
+        );
+        match common.validation_context_type.expect("validation context") {
+            tls::common_tls_context::ValidationContextType::ValidationContextSdsSecretConfig(
+                config,
+            ) => assert_eq!(config.name, "upstream-ca"),
+            tls::common_tls_context::ValidationContextType::ValidationContext(vc) => {
+                panic!("unexpected tenant filename validation context: {vc:?}")
+            }
+            other => panic!("unexpected validation context: {other:?}"),
+        }
+    }
+
+    #[test]
     fn cluster_translation_is_deterministic_and_sorted() {
         let a = cluster_to_proto("payments", &cluster_spec()).expect("translate");
         let b = cluster_to_proto("payments", &cluster_spec()).expect("translate");
@@ -3505,6 +3532,10 @@ mod tests {
         let tls_context =
             tls::DownstreamTlsContext::decode(any.value.as_slice()).expect("downstream tls");
         let common = tls_context.common_tls_context.expect("common");
+        assert!(
+            common.tls_certificates.is_empty(),
+            "accepted SDS listener TLS must not emit tenant filename certificate sources"
+        );
         assert_eq!(common.tls_certificate_sds_secret_configs.len(), 1);
         assert_eq!(
             common.tls_certificate_sds_secret_configs[0].name,
@@ -3519,6 +3550,9 @@ mod tests {
             tls::common_tls_context::ValidationContextType::ValidationContextSdsSecretConfig(
                 config,
             ) => assert_eq!(config.name, "edge-ca"),
+            tls::common_tls_context::ValidationContextType::ValidationContext(vc) => {
+                panic!("unexpected tenant filename validation context: {vc:?}")
+            }
             other => panic!("unexpected validation context: {other:?}"),
         }
     }

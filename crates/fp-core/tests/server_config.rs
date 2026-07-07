@@ -49,6 +49,8 @@ fn config_file_rls_grpc_plaintext_fails_before_service_startup() {
         "DATABASE_URL",
         "FLOWPLANE_API_INSECURE",
         "FLOWPLANE_DEV_MODE",
+        "FLOWPLANE_DEV_ALLOW_TENANT_FILE_PATHS",
+        "FLOWPLANE_DEV_TENANT_FILE_BASE_DIRS",
         "FLOWPLANE_RLS_GRPC_URL",
         "FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT",
         "FLOWPLANE_DATAPLANE_TLS_CERT",
@@ -87,6 +89,8 @@ async fn config_file_egress_policy_uses_database_deny_and_allowlist() {
         "DATABASE_URL",
         "FLOWPLANE_API_INSECURE",
         "FLOWPLANE_DEV_MODE",
+        "FLOWPLANE_DEV_ALLOW_TENANT_FILE_PATHS",
+        "FLOWPLANE_DEV_TENANT_FILE_BASE_DIRS",
         "FLOWPLANE_EGRESS_ALLOWED_DESTINATIONS",
         "FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS",
     ];
