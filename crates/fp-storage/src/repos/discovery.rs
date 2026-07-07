@@ -11,6 +11,11 @@ use sqlx::postgres::PgRow;
 use sqlx::types::Uuid;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
+use super::observation_ingest::{
+    decide_observation_quota, merge_headers, merged_body_bytes, sanitize_headers,
+    ObservationQuotaChange, ObservationQuotaState,
+};
+
 const COLUMNS: &str = "id, team_id, name, status, listener_port, upstream_host, upstream_port, \
     upstream_tls, validated_upstream_ip, validated_upstream_port, cluster_name, \
     route_config_name, listener_name, target_sample_count, max_duration_seconds, max_bytes, \
@@ -244,20 +249,8 @@ pub async fn ingest_raw_observation(
     provenance: &DiscoveryObservationProvenance,
 ) -> DomainResult<DiscoveryObservation> {
     input.validate()?;
-    let session: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM discovery_sessions WHERE team_id = $1 AND id = $2 AND status = 'capturing' FOR UPDATE",
-    )
-    .bind(team.id.as_uuid())
-    .bind(provenance.discovery_session_id.as_uuid())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|e| DomainError::internal(format!("lock discovery session: {e}")))?;
-    if session.is_none() {
-        return Err(DomainError::not_found(
-            "discovery session",
-            &provenance.discovery_session_id.to_string(),
-        ));
-    }
+    let session =
+        get_session_for_update(tx, team.id, &provenance.discovery_session_id.to_string()).await?;
 
     let existing = sqlx::query(&format!(
         "SELECT {RAW_COLUMNS}, {DISCOVERY_RAW_COLUMNS} \
@@ -272,19 +265,118 @@ pub async fn ingest_raw_observation(
     .fetch_optional(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("lock discovery raw observation: {e}")))?;
-    if let Some(row) = &existing {
-        let raw = raw_from_row(row);
+    let existing_raw = existing.as_ref().map(raw_from_row);
+    if let Some(raw) = &existing_raw {
         if raw.method != input.method || raw.path != input.path {
             return Err(DomainError::conflict(
                 "discovery observation request_id was already captured with different request metadata",
             ));
         }
+    } else if session.status != DiscoverySessionStatus::Capturing
+        && session.sample_count < i64::from(session.target_sample_count)
+    {
+        return Err(DomainError::conflict(format!(
+            "discovery session \"{}\" is {}",
+            session.name,
+            session.status.as_str()
+        ))
+        .with_hint("only capturing discovery sessions can accept new observations"));
     }
 
-    let id = existing
-        .as_ref()
-        .map(|row| RawObservationId::from(row.get::<Uuid, _>("id")))
-        .unwrap_or_else(RawObservationId::generate);
+    let incoming_request_headers = sanitize_headers(&input.request_headers);
+    let incoming_response_headers = sanitize_headers(&input.response_headers);
+    let merged = match existing_raw.as_ref() {
+        Some(existing) => RawObservation {
+            response_status: input.response_status.or(existing.response_status),
+            request_headers: merge_headers(
+                existing.request_headers.clone(),
+                incoming_request_headers,
+            ),
+            response_headers: merge_headers(
+                existing.response_headers.clone(),
+                incoming_response_headers,
+            ),
+            request_body: input
+                .request_body
+                .clone()
+                .or_else(|| existing.request_body.clone()),
+            response_body: input
+                .response_body
+                .clone()
+                .or_else(|| existing.response_body.clone()),
+            request_body_truncated: existing.request_body_truncated || input.request_body_truncated,
+            response_body_truncated: existing.response_body_truncated
+                || input.response_body_truncated,
+            metadata_seen: existing.metadata_seen || input.metadata_seen,
+            body_seen: existing.body_seen || input.body_seen,
+            observed_at: existing.observed_at.min(input.observed_at),
+            ..existing.clone()
+        },
+        None => RawObservation {
+            id: RawObservationId::generate(),
+            team_id: team.id,
+            capture_session_id: None,
+            request_id: input.request_id.clone(),
+            method: input.method.clone(),
+            path: input.path.clone(),
+            response_status: input.response_status,
+            request_headers: incoming_request_headers,
+            response_headers: incoming_response_headers,
+            request_body: input.request_body.clone(),
+            response_body: input.response_body.clone(),
+            request_body_truncated: input.request_body_truncated,
+            response_body_truncated: input.response_body_truncated,
+            request_body_bytes: 0,
+            response_body_bytes: 0,
+            metadata_seen: input.metadata_seen,
+            body_seen: input.body_seen,
+            observed_at: input.observed_at,
+            updated_at: input.observed_at,
+            created_at: input.observed_at,
+        },
+    };
+    let merged_request_bytes = merged_body_bytes(
+        merged.request_body.as_deref(),
+        existing_raw.as_ref().map(|row| row.request_body_bytes),
+        input.request_body_bytes,
+    );
+    let merged_response_bytes = merged_body_bytes(
+        merged.response_body.as_deref(),
+        existing_raw.as_ref().map(|row| row.response_body_bytes),
+        input.response_body_bytes,
+    );
+    let path_already_present = existing_raw.is_some()
+        || discovery_observation_path_exists(
+            tx,
+            team.id,
+            provenance.discovery_session_id,
+            &merged.path,
+            &input.request_id,
+        )
+        .await?;
+    let quota_change = match decide_observation_quota(
+        ObservationQuotaState {
+            sample_count: session.sample_count,
+            target_sample_count: session.target_sample_count,
+            byte_count: session.byte_count,
+            max_bytes: session.max_bytes,
+            path_count: session.path_count,
+            max_distinct_paths: session.max_distinct_paths,
+        },
+        existing_raw.is_some(),
+        existing_raw
+            .as_ref()
+            .map(|row| row.request_body_bytes + row.response_body_bytes),
+        merged_request_bytes + merged_response_bytes,
+        path_already_present,
+    ) {
+        Ok(change) => change,
+        Err(reason) => {
+            increment_discovery_drop_count(tx, team.id, session.id).await?;
+            return Err(reason.into_error("discovery"));
+        }
+    };
+
     let ttl_days: i32 = 30;
     sqlx::query(
         "INSERT INTO raw_observations \
@@ -303,24 +395,24 @@ pub async fn ingest_raw_observation(
             metadata_seen = EXCLUDED.metadata_seen, body_seen = EXCLUDED.body_seen, \
             observed_at = LEAST(raw_observations.observed_at, EXCLUDED.observed_at), updated_at = now()",
     )
-    .bind(id.as_uuid())
+    .bind(merged.id.as_uuid())
     .bind(team.id.as_uuid())
     .bind(team.org_id.as_uuid())
-    .bind(&input.request_id)
-    .bind(&input.method)
-    .bind(&input.path)
-    .bind(input.response_status)
-    .bind(serde_json::Value::Object(input.request_headers.clone()))
-    .bind(serde_json::Value::Object(input.response_headers.clone()))
-    .bind(&input.request_body)
-    .bind(&input.response_body)
-    .bind(input.request_body_truncated)
-    .bind(input.response_body_truncated)
-    .bind(input.request_body_bytes)
-    .bind(input.response_body_bytes)
-    .bind(input.metadata_seen)
-    .bind(input.body_seen)
-    .bind(input.observed_at)
+    .bind(&merged.request_id)
+    .bind(&merged.method)
+    .bind(&merged.path)
+    .bind(merged.response_status)
+    .bind(&merged.request_headers)
+    .bind(&merged.response_headers)
+    .bind(&merged.request_body)
+    .bind(&merged.response_body)
+    .bind(merged.request_body_truncated)
+    .bind(merged.response_body_truncated)
+    .bind(merged_request_bytes)
+    .bind(merged_response_bytes)
+    .bind(merged.metadata_seen)
+    .bind(merged.body_seen)
+    .bind(merged.observed_at)
     .bind(ttl_days)
     .execute(&mut **tx)
     .await
@@ -338,9 +430,9 @@ pub async fn ingest_raw_observation(
             forwarded_upstream_ip = EXCLUDED.forwarded_upstream_ip, \
             forwarded_upstream_tls = EXCLUDED.forwarded_upstream_tls",
     )
-    .bind(id.as_uuid())
+    .bind(merged.id.as_uuid())
     .bind(team.id.as_uuid())
-    .bind(&input.request_id)
+    .bind(&merged.request_id)
     .bind(provenance.discovery_session_id.as_uuid())
     .bind(provenance.discovery_listener_id.as_uuid())
     .bind(&provenance.observed_host)
@@ -353,11 +445,12 @@ pub async fn ingest_raw_observation(
     .execute(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("upsert discovery provenance: {e}")))?;
+    update_discovery_counters(tx, team.id, session.id, quota_change).await?;
 
     observations_for_session(tx, team.id, provenance.discovery_session_id)
         .await?
         .into_iter()
-        .find(|row| row.raw.id == id)
+        .find(|row| row.raw.id == merged.id)
         .ok_or_else(|| DomainError::internal("read ingested discovery observation"))
 }
 
@@ -418,4 +511,79 @@ async fn observations_for_session(
     .await
     .map_err(|e| DomainError::internal(format!("list discovery observations: {e}")))?;
     Ok(rows.iter().map(observation_from_row).collect())
+}
+
+async fn discovery_observation_path_exists(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    session_id: DiscoverySessionId,
+    path: &str,
+    request_id: &str,
+) -> DomainResult<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS( \
+            SELECT 1 FROM discovery_raw_observations dro \
+            JOIN raw_observations ro ON ro.id = dro.raw_observation_id AND ro.team_id = dro.team_id \
+            WHERE dro.team_id = $1 AND dro.discovery_session_id = $2 \
+              AND ro.path = $3 AND dro.request_id <> $4)",
+    )
+    .bind(team_id.as_uuid())
+    .bind(session_id.as_uuid())
+    .bind(path)
+    .bind(request_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("check discovery observation path: {e}")))
+}
+
+async fn increment_discovery_drop_count(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    session_id: DiscoverySessionId,
+) -> DomainResult<()> {
+    sqlx::query(
+        "UPDATE discovery_sessions SET drop_count = drop_count + 1, updated_at = now() \
+         WHERE team_id = $1 AND id = $2",
+    )
+    .bind(team_id.as_uuid())
+    .bind(session_id.as_uuid())
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("increment discovery drop count: {e}")))?;
+    Ok(())
+}
+
+async fn update_discovery_counters(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    session_id: DiscoverySessionId,
+    change: ObservationQuotaChange,
+) -> DomainResult<()> {
+    sqlx::query(
+        "UPDATE discovery_sessions SET \
+            sample_count = sample_count + $3, \
+            byte_count = byte_count + $4, \
+            path_count = path_count + $5, \
+            status = CASE \
+                WHEN status = 'capturing' AND sample_count + $3 >= target_sample_count \
+                    THEN 'completed' \
+                ELSE status \
+            END, \
+            completed_at = CASE \
+                WHEN status = 'capturing' AND sample_count + $3 >= target_sample_count \
+                    THEN COALESCE(completed_at, now()) \
+                ELSE completed_at \
+            END, \
+            updated_at = now() \
+         WHERE team_id = $1 AND id = $2",
+    )
+    .bind(team_id.as_uuid())
+    .bind(session_id.as_uuid())
+    .bind(change.sample_delta)
+    .bind(change.byte_delta)
+    .bind(change.path_delta)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("update discovery counters: {e}")))?;
+    Ok(())
 }

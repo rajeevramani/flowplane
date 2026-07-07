@@ -15,12 +15,16 @@ use fp_domain::{
     ErrorCode, ListenerId, RawObservationId, RetentionPolicyId, RouteConfigId, SpecVersionId,
     SpecVersionReviewEventId, TeamId,
 };
-use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgRow;
 use sqlx::types::chrono;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
+
+use super::observation_ingest::{
+    decide_observation_quota, merge_headers, merged_body_bytes, sanitize_headers,
+    ObservationQuotaState,
+};
 
 const API_COLUMNS: &str =
     "id, team_id, name, display_name, description, published_spec_version_id, version, created_at, updated_at";
@@ -265,73 +269,6 @@ fn canonical_hash(value: &serde_json::Value) -> DomainResult<String> {
     let bytes = serde_json::to_vec(value)
         .map_err(|e| DomainError::internal(format!("serialize api spec for hash: {e}")))?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
-}
-
-fn body_bytes(value: Option<&str>) -> i64 {
-    value.map_or(0, |body| body.len() as i64)
-}
-
-fn merged_body_bytes(
-    body: Option<&str>,
-    existing_bytes: Option<i64>,
-    incoming_bytes: Option<i64>,
-) -> i64 {
-    [Some(body_bytes(body)), existing_bytes, incoming_bytes]
-        .into_iter()
-        .flatten()
-        .max()
-        .unwrap_or(0)
-}
-
-fn sanitize_headers(headers: &Map<String, Value>) -> Value {
-    const REDACTED_HEADERS: &[&str] = &[
-        "authorization",
-        "proxy-authorization",
-        "x-api-key",
-        "x-auth-token",
-        "cookie",
-        "set-cookie",
-    ];
-    const DROPPED_HEADERS: &[&str] = &[
-        "connection",
-        "content-length",
-        "date",
-        "server",
-        "traceparent",
-        "tracestate",
-        "x-b3-sampled",
-        "x-b3-spanid",
-        "x-b3-traceid",
-        "x-envoy-attempt-count",
-        "x-envoy-decorator-operation",
-        "x-envoy-expected-rq-timeout-ms",
-        "x-envoy-internal",
-        "x-forwarded-client-cert",
-        "x-forwarded-for",
-        "x-forwarded-host",
-        "x-forwarded-proto",
-        "x-request-id",
-    ];
-    let mut out = Map::new();
-    for (name, value) in headers {
-        let lower = name.to_ascii_lowercase();
-        if DROPPED_HEADERS.contains(&lower.as_str()) {
-            continue;
-        }
-        if REDACTED_HEADERS.contains(&lower.as_str()) {
-            out.insert(name.clone(), Value::String("[REDACTED]".to_string()));
-        } else {
-            out.insert(name.clone(), value.clone());
-        }
-    }
-    Value::Object(out)
-}
-
-fn merge_headers(existing: Value, incoming: Value) -> Value {
-    match incoming {
-        Value::Object(map) if map.is_empty() => existing,
-        value => value,
-    }
 }
 
 async fn ensure_api_in_team(
@@ -1678,36 +1615,24 @@ async fn enforce_observation_quotas(
     let existing_body_bytes = existing
         .map(|row| row.request_body_bytes + row.response_body_bytes)
         .unwrap_or(0);
-    let sample_delta = if existing.is_some() { 0 } else { 1 };
-    let next_sample_count = session.sample_count + sample_delta;
-    let next_byte_count = session.byte_count - existing_body_bytes + merged_body_bytes;
-    if existing.is_none() && next_sample_count > i64::from(session.target_sample_count) {
+    let path_already_present = existing.is_some()
+        || raw_observation_path_exists(tx, session.team_id, session.id, path, request_id).await?;
+    if let Err(reason) = decide_observation_quota(
+        ObservationQuotaState {
+            sample_count: session.sample_count,
+            target_sample_count: session.target_sample_count,
+            byte_count: session.byte_count,
+            max_bytes: session.max_bytes,
+            path_count: session.path_count,
+            max_distinct_paths: session.max_distinct_paths,
+        },
+        existing.is_some(),
+        Some(existing_body_bytes),
+        merged_body_bytes,
+        path_already_present,
+    ) {
         increment_capture_drop_count(tx, session.team_id, session.id).await?;
-        return Err(DomainError::new(
-            ErrorCode::QuotaExceeded,
-            "learning session has reached its target sample count",
-        )
-        .with_hint("start a new learning session for additional samples"));
-    }
-    if next_byte_count > session.max_bytes {
-        increment_capture_drop_count(tx, session.team_id, session.id).await?;
-        return Err(DomainError::new(
-            ErrorCode::QuotaExceeded,
-            "learning session has reached its raw observation byte limit",
-        )
-        .with_hint("raise max_bytes or start a narrower learning session"));
-    }
-    if existing.is_none() {
-        let path_already_present =
-            raw_observation_path_exists(tx, session.team_id, session.id, path, request_id).await?;
-        if !path_already_present && session.path_count + 1 > i64::from(session.max_distinct_paths) {
-            increment_capture_drop_count(tx, session.team_id, session.id).await?;
-            return Err(DomainError::new(
-                ErrorCode::QuotaExceeded,
-                "learning session has reached its distinct path limit",
-            )
-            .with_hint("raise max_distinct_paths or scope capture to fewer routes"));
-        }
+        return Err(reason.into_error("learning"));
     }
     Ok(())
 }

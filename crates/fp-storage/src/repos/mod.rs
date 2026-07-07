@@ -11,6 +11,7 @@ pub mod dataplanes;
 pub mod discovery;
 pub mod gateway;
 pub mod identity;
+mod observation_ingest;
 pub mod rate_limit;
 pub mod route_generation;
 pub mod secrets;
