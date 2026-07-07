@@ -79,6 +79,11 @@ pub async fn run() -> anyhow::Result<()> {
     if let Some(rls) = &rls_cluster {
         fp_xds::translate::rls_cluster_to_proto(rls)
             .map_err(|e| anyhow::anyhow!("invalid FLOWPLANE_RLS_GRPC_URL: {e}"))?;
+        if config.rls_grpc_allow_production_plaintext && config.dataplane_tls.is_none() {
+            tracing::warn!(
+                "FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT=true: built-in RLS gRPC cluster will use plaintext h2c"
+            );
+        }
         tracing::info!(
             mtls = config.dataplane_tls.is_some(),
             "built-in rate_limit_cluster will be injected into CDS"

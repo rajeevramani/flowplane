@@ -72,9 +72,15 @@ pub struct ServerConfig {
     /// and injects the built-in `rate_limit_cluster` into CDS (S6) and defaults the
     /// `global_rate_limit` filter to it. `None` disables injection. Env `FLOWPLANE_RLS_GRPC_URL`.
     pub rls_grpc_url: Option<String>,
+    /// Production security override: allow the built-in RLS gRPC cluster to dial plaintext h2c
+    /// outside dev mode. This deliberately weakens the default and exists only for private
+    /// endpoint deployments that terminate TLS elsewhere. Env
+    /// `FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT`.
+    pub rls_grpc_allow_production_plaintext: bool,
     /// mTLS material the synthesized `rate_limit_cluster` presents to / verifies the RLS with
-    /// (S6). All three paths come together or not at all (see `resolve`). `None` => the built-in
-    /// cluster dials the RLS in plaintext h2c (dev only). Env `FLOWPLANE_DATAPLANE_TLS_*`.
+    /// (S6). All three paths come together or not at all (see `resolve`). `None` is accepted only
+    /// in dev mode or with `FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT=true`. Env
+    /// `FLOWPLANE_DATAPLANE_TLS_*`.
     pub dataplane_tls: Option<DataplaneTlsConfig>,
 }
 
@@ -151,6 +157,7 @@ struct FileConfig {
     rls_admin_url: Option<String>,
     rls_admin_token_file: Option<String>,
     rls_grpc_url: Option<String>,
+    rls_grpc_allow_production_plaintext: Option<bool>,
     dataplane_tls_cert: Option<String>,
     dataplane_tls_key: Option<String>,
     dataplane_tls_client_ca: Option<String>,
@@ -395,6 +402,11 @@ impl ServerConfig {
         let rls_grpc_url = get("FLOWPLANE_RLS_GRPC_URL")
             .map(str::to_owned)
             .or(file.rls_grpc_url);
+        let rls_grpc_allow_production_plaintext =
+            match get("FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT") {
+                Some(raw) => parse_bool("FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT", raw)?,
+                None => file.rls_grpc_allow_production_plaintext.unwrap_or(false),
+            };
 
         // Clamped to 1..=60: the knob exists only to make automated tests converge faster than the
         // design's 60 s reconcile window — it may LOWER the interval but never raise it past 60 s,
@@ -435,6 +447,21 @@ impl ServerConfig {
                 ))
             }
         };
+        if rls_grpc_url.is_some()
+            && dataplane_tls.is_none()
+            && !dev_mode
+            && !rls_grpc_allow_production_plaintext
+        {
+            return Err(DomainError::invalid_config(
+                "FLOWPLANE_RLS_GRPC_URL requires FLOWPLANE_DATAPLANE_TLS_CERT, \
+                 FLOWPLANE_DATAPLANE_TLS_KEY, and FLOWPLANE_DATAPLANE_TLS_CLIENT_CA in non-dev mode",
+            )
+            .with_hint(
+                "configure the dataplane TLS triad, enable FLOWPLANE_DEV_MODE for local dev, or \
+                 explicitly acknowledge plaintext with \
+                 FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT=true",
+            ));
+        }
 
         Ok(Self {
             api_addr,
@@ -456,6 +483,7 @@ impl ServerConfig {
             rls_admin_credential,
             rls_reconcile_secs,
             rls_grpc_url,
+            rls_grpc_allow_production_plaintext,
             dataplane_tls,
         })
     }
@@ -755,11 +783,74 @@ mod tests {
     }
 
     #[test]
-    fn rls_grpc_url_parsed_from_env() {
+    fn rls_grpc_url_requires_tls_triad_in_non_dev_default_mode() {
         let mut env = base_env();
         env.insert("FLOWPLANE_RLS_GRPC_URL".into(), "rls.internal:8081".into());
+        let err = ServerConfig::resolve(&env, FileConfig::default())
+            .expect_err("RLS gRPC without TLS must fail closed outside dev mode");
+        assert_eq!(err.code, fp_domain::ErrorCode::InvalidConfig);
+        assert!(err.message.contains("FLOWPLANE_RLS_GRPC_URL"));
+        assert!(
+            err.hint
+                .as_deref()
+                .unwrap_or_default()
+                .contains("FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT"),
+            "the remediation override must be visibly named in the error hint"
+        );
+    }
+
+    #[test]
+    fn rls_grpc_url_allows_plaintext_in_dev_mode_only() {
+        let mut env = base_env();
+        env.insert("FLOWPLANE_RLS_GRPC_URL".into(), "rls.internal:8081".into());
+        env.insert("FLOWPLANE_DEV_MODE".into(), "true".into());
         let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
         assert_eq!(cfg.rls_grpc_url.as_deref(), Some("rls.internal:8081"));
+        assert!(cfg.dataplane_tls.is_none());
+        assert!(!cfg.rls_grpc_allow_production_plaintext);
+    }
+
+    #[test]
+    fn rls_grpc_url_allows_non_dev_when_complete_tls_triad_is_present() {
+        let mut env = base_env();
+        env.insert("FLOWPLANE_RLS_GRPC_URL".into(), "rls.internal:8081".into());
+        for key in [
+            "FLOWPLANE_DATAPLANE_TLS_CERT",
+            "FLOWPLANE_DATAPLANE_TLS_KEY",
+            "FLOWPLANE_DATAPLANE_TLS_CLIENT_CA",
+        ] {
+            env.insert(key.into(), "/tmp/dp.pem".into());
+        }
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+        assert_eq!(cfg.rls_grpc_url.as_deref(), Some("rls.internal:8081"));
+        assert!(cfg.dataplane_tls.is_some());
+    }
+
+    #[test]
+    fn rls_grpc_url_partial_tls_keeps_named_invalid_config_error() {
+        let mut env = base_env();
+        env.insert("FLOWPLANE_RLS_GRPC_URL".into(), "rls.internal:8081".into());
+        env.insert("FLOWPLANE_DATAPLANE_TLS_CERT".into(), "/tmp/dp.pem".into());
+        let err = ServerConfig::resolve(&env, FileConfig::default())
+            .expect_err("partial dataplane TLS must fail before plaintext override checks");
+        assert_eq!(err.code, fp_domain::ErrorCode::InvalidConfig);
+        assert!(err.message.contains("FLOWPLANE_DATAPLANE_TLS_CERT"));
+        assert!(err.message.contains("FLOWPLANE_DATAPLANE_TLS_KEY"));
+        assert!(err.message.contains("FLOWPLANE_DATAPLANE_TLS_CLIENT_CA"));
+    }
+
+    #[test]
+    fn production_plaintext_rls_grpc_requires_visible_security_override() {
+        let mut env = base_env();
+        env.insert("FLOWPLANE_RLS_GRPC_URL".into(), "rls.internal:8081".into());
+        env.insert(
+            "FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT".into(),
+            "true".into(),
+        );
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+        assert_eq!(cfg.rls_grpc_url.as_deref(), Some("rls.internal:8081"));
+        assert!(cfg.dataplane_tls.is_none());
+        assert!(cfg.rls_grpc_allow_production_plaintext);
     }
 
     #[test]

@@ -51,6 +51,7 @@ Booleans accept `true`/`1`/`yes` and `false`/`0`/`no`. Invalid server values fai
 | `FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS` | server | — | no | Comma-separated `IP:port` allowlist for traffic discovery (for example `10.0.0.1:8080` or `[2001:db8::1]:443`); entries that are not a valid `IP:port` are ignored. |
 | `FLOWPLANE_MCP_ALLOWED_ORIGINS` | server | `http://localhost,http://127.0.0.1,http://[::1]` | no | Comma-separated allowed `Origin` values for the MCP endpoint. |
 | `FLOWPLANE_RLS_GRPC_URL` | server | — | no ¹⁵ | gRPC `host:port` of the rate-limit service. When set, the CP injects the built-in `rate_limit_cluster` into CDS and `global_rate_limit` filters may use the default `service_cluster`. Unset ⇒ a built-in-path `global_rate_limit` filter is rejected `400` at config time. |
+| `FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT` | server | `false` | no ¹⁵ | Security override for private-endpoint deployments that intentionally allow plaintext h2c to the RLS gRPC endpoint outside dev mode. Prefer the dataplane TLS triad. |
 | `FLOWPLANE_RLS_ADMIN_URL` | server | — | no | HTTP admin URL of the rate-limit service. When set, the CP starts the `rls_sync` worker that pushes the full policy set to the RLS on the reconcile loop. |
 | `FLOWPLANE_RLS_RECONCILE_SECS` | server | `60` | no ¹⁶ | Seconds between CP→RLS reconcile pushes. Clamped to `1..=60`. |
 | `FLOWPLANE_DATAPLANE_TLS_CERT` | server | — | no ¹⁷ | Client certificate PEM the injected `rate_limit_cluster` presents to the RLS (Envoy→RLS mTLS). |
@@ -99,7 +100,7 @@ Enforcement timing varies: rows ¹–⁵ are validated at **server startup** (`f
 | ¹² | `FLOWPLANE_AGENT_QUEUE_CAP` | Clamped to `1..=16384`. |
 | ¹³ | `FLOWPLANE_BOOTSTRAP_TOKEN`, `FLOWPLANE_BOOTSTRAP_TOKEN_FILE` | Required on the **first** boot of an uninitialized, non-dev instance: with no token (and without the `yes-this-is-local-only` opt-in) the server **fails closed** and does not start. Already-initialized instances ignore these. Supply the **same** token to every replica. See [How-to: bootstrap the first admin](../how-to/bootstrap-platform.md). |
 | ¹⁴ | `FLOWPLANE_OIDC_CA_BUNDLE` | When set, the file must exist and parse as one or more PEM certificates; an unreadable, non-PEM, or zero-certificate bundle **fails server startup closed** (`invalid_config`) rather than silently falling back to bundled-roots-only trust. Trust is additive — bundled webpki roots are never disabled. |
-| ¹⁵ | `FLOWPLANE_RLS_GRPC_URL` | Validated at server startup: `host:port` where host is an IP literal or DNS name and port is `1..=65535`. A malformed value **fails startup closed**. |
+| ¹⁵ | `FLOWPLANE_RLS_GRPC_URL` | Validated at server startup: `host:port` where host is an IP literal or DNS name and port is `1..=65535`. A malformed value **fails startup closed**. In non-dev/default mode, setting this URL without the dataplane TLS triad also **fails startup closed** unless `FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT=true` is set as an explicit security override. |
 | ¹⁶ | `FLOWPLANE_RLS_RECONCILE_SECS` | Parsed as a positive integer and **clamped to `1..=60`**; zero/invalid/unset fall back to `60`. The knob may only *lower* the cadence (e.g. for tests) — it can never raise the reconcile interval past the documented 60 s convergence backstop. |
 | ¹⁷ | `FLOWPLANE_DATAPLANE_TLS_CERT`, `_KEY`, `_CLIENT_CA` | All-or-none triad. With none set, the injected `rate_limit_cluster` dials the RLS in **plaintext h2c (dev only)**; in production set all three so the Envoy→RLS hop is mTLS. |
 
@@ -113,7 +114,8 @@ api_tls_cert        api_tls_key          xds_tls_cert        xds_tls_key
 xds_tls_client_ca   api_insecure         dev_mode            oidc_issuer
 oidc_audience       oidc_jwks_uri        oidc_ca_bundle      log_format
 log_filter          otlp_endpoint        dev_token_path      rls_admin_url
-rls_grpc_url        dataplane_tls_cert   dataplane_tls_key   dataplane_tls_client_ca
+rls_grpc_url        rls_grpc_allow_production_plaintext
+dataplane_tls_cert  dataplane_tls_key    dataplane_tls_client_ca
 ```
 
 `FLOWPLANE_RLS_RECONCILE_SECS` is **env-only** (no TOML key).

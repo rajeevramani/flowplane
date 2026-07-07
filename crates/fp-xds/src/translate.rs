@@ -673,8 +673,9 @@ pub fn cluster_to_proto_with_ai(
 pub struct RlsClusterConfig {
     /// gRPC endpoint of the first-party RLS — `host:port` (an optional scheme is stripped).
     pub grpc_url: String,
-    /// mTLS material; `None` => plaintext h2c (dev only). All three paths are present together
-    /// (the config layer fails closed on a partial set).
+    /// mTLS material. `None` means the config layer has already validated either dev mode or the
+    /// explicit production plaintext security override. All three paths are present together (the
+    /// config layer fails closed on a partial set).
     pub tls: Option<RlsClusterTls>,
 }
 
@@ -4659,16 +4660,16 @@ mod rls_cluster_tests {
     }
 
     #[test]
-    fn no_tls_means_no_transport_socket() {
+    fn validated_plaintext_override_input_has_no_transport_socket() {
         let cluster = rls_cluster_to_proto(&cfg("rls.internal:8081", None)).expect("synthesize");
         assert!(
             cluster.transport_socket.is_none(),
-            "plaintext h2c: transport_socket must be None"
+            "prevalidated plaintext h2c input: transport_socket must be None"
         );
     }
 
     #[test]
-    fn tls_some_emits_mtls_transport_socket_with_certs_and_trusted_ca() {
+    fn validated_tls_material_emits_mtls_transport_socket_with_certs_and_trusted_ca() {
         let cluster = rls_cluster_to_proto(&cfg("rls.internal:8081", Some(sample_tls())))
             .expect("synthesize");
 
