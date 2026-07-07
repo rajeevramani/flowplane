@@ -4,7 +4,7 @@
 //! thin: it parses Envoy protobufs into the domain `ObservationIngest` shape and delegates all
 //! tenancy, quota, merge, TTL, and counter rules to storage.
 
-use crate::ads::TeamResolver;
+use crate::ads::{PeerIdentity, TeamResolver};
 use chrono::{DateTime, SecondsFormat, Utc};
 use envoy_types::pb::envoy::config::core::v3::{
     header_value_option, HeaderMap, HeaderValue, HeaderValueOption, RequestMethod,
@@ -380,7 +380,8 @@ impl ExternalProcessor for LearningCaptureService {
         request: Request<Streaming<ProcessingRequest>>,
     ) -> Result<Response<Self::ProcessStream>, Status> {
         if is_ai_processor(request.metadata()) {
-            let context = ai_context(request.metadata())?;
+            let identity = resolve_peer_identity(&request, &self.resolver, "ai-extproc").await?;
+            let context = ai_context(request.metadata(), identity)?;
             return Ok(Response::new(ReceiverStream::new(ai_process_stream(
                 self.pool.clone(),
                 request.into_inner(),
@@ -513,8 +514,16 @@ fn is_ai_processor(metadata: &MetadataMap) -> bool {
         == Some("true")
 }
 
-fn ai_context(metadata: &MetadataMap) -> Result<Option<AiExtProcContext>, Status> {
-    let team_id = optional_metadata_uuid(metadata, "x-flowplane-team-id")?;
+fn ai_context(
+    metadata: &MetadataMap,
+    identity: PeerIdentity,
+) -> Result<Option<AiExtProcContext>, Status> {
+    let claimed_team_id = metadata_uuid(metadata, "x-flowplane-team-id").map(TeamId::from)?;
+    if claimed_team_id != identity.team_id {
+        return Err(Status::permission_denied(
+            "AI processor team_id does not match the client certificate",
+        ));
+    }
     let listener_id = optional_metadata_uuid(metadata, "x-flowplane-listener-id")?;
     let route_config_id = optional_metadata_uuid(metadata, "x-flowplane-route-config-id")?;
     let provider_id = optional_metadata_uuid(metadata, "x-flowplane-ai-provider-id")?;
@@ -523,7 +532,6 @@ fn ai_context(metadata: &MetadataMap) -> Result<Option<AiExtProcContext>, Status
     let backend_position_chain =
         optional_metadata_string(metadata, "x-flowplane-ai-backend-position-chain")?;
     match (
-        team_id,
         listener_id,
         route_config_id,
         provider_id,
@@ -531,9 +539,9 @@ fn ai_context(metadata: &MetadataMap) -> Result<Option<AiExtProcContext>, Status
         provider_chain,
         backend_position_chain,
     ) {
-        (Some(team_id), Some(listener_id), Some(route_config_id), None, None, None, None) => {
+        (Some(listener_id), Some(route_config_id), None, None, None, None) => {
             Ok(Some(AiExtProcContext {
-                team_id: TeamId::from(team_id),
+                team_id: identity.team_id,
                 listener_id: Some(ListenerId::from(listener_id)),
                 route_config_id: RouteConfigId::from(route_config_id),
                 provider_id: None,
@@ -541,24 +549,17 @@ fn ai_context(metadata: &MetadataMap) -> Result<Option<AiExtProcContext>, Status
                 failover_chain: Vec::new(),
             }))
         }
+        (None, Some(route_config_id), Some(provider_id), Some(backend_position), None, None) => {
+            Ok(Some(AiExtProcContext {
+                team_id: identity.team_id,
+                listener_id: None,
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: Some(AiProviderId::from(provider_id)),
+                backend_position: Some(backend_position),
+                failover_chain: Vec::new(),
+            }))
+        }
         (
-            Some(team_id),
-            None,
-            Some(route_config_id),
-            Some(provider_id),
-            Some(backend_position),
-            None,
-            None,
-        ) => Ok(Some(AiExtProcContext {
-            team_id: TeamId::from(team_id),
-            listener_id: None,
-            route_config_id: RouteConfigId::from(route_config_id),
-            provider_id: Some(AiProviderId::from(provider_id)),
-            backend_position: Some(backend_position),
-            failover_chain: Vec::new(),
-        })),
-        (
-            Some(team_id),
             None,
             Some(route_config_id),
             None,
@@ -566,14 +567,13 @@ fn ai_context(metadata: &MetadataMap) -> Result<Option<AiExtProcContext>, Status
             Some(provider_chain),
             Some(backend_position_chain),
         ) => Ok(Some(AiExtProcContext {
-            team_id: TeamId::from(team_id),
+            team_id: identity.team_id,
             listener_id: None,
             route_config_id: RouteConfigId::from(route_config_id),
             provider_id: None,
             backend_position: None,
             failover_chain: parse_ai_failover_chain(&provider_chain, &backend_position_chain)?,
         })),
-        (None, None, None, None, None, None, None) => Ok(None),
         _ => Err(Status::invalid_argument(
             "AI processor metadata must include either router or upstream context",
         )),
@@ -613,22 +613,8 @@ async fn capture_context<T>(
 ) -> Result<CaptureContext, Status> {
     let metadata = request.metadata();
     let claimed_team_id = TeamId::from(metadata_uuid(metadata, "x-flowplane-team-id")?);
-    let peer_spiffe = request
-        .peer_certs()
-        .and_then(|certs| {
-            certs
-                .first()
-                .and_then(|der| crate::server::spiffe_uri_from_der(der.as_ref()))
-        })
-        .or_else(|| {
-            request
-                .extensions()
-                .get::<crate::server::PeerSpiffe>()
-                .map(|p| p.0.clone())
-        });
-    let identity = resolver
-        .resolve(&format!("team={claimed_team_id}"), peer_spiffe.as_deref())
-        .await?;
+    let identity =
+        resolve_peer_identity(request, resolver, &format!("team={claimed_team_id}")).await?;
     if identity.team_id != claimed_team_id {
         return Err(Status::permission_denied(
             "capture team_id does not match the client certificate",
@@ -667,6 +653,27 @@ async fn capture_context<T>(
         listener_id: optional_metadata_uuid(metadata, "x-flowplane-listener-id")?
             .map(ListenerId::from),
     }))
+}
+
+async fn resolve_peer_identity<T>(
+    request: &Request<T>,
+    resolver: &Arc<dyn TeamResolver>,
+    node_id: &str,
+) -> Result<PeerIdentity, Status> {
+    let peer_spiffe = request
+        .peer_certs()
+        .and_then(|certs| {
+            certs
+                .first()
+                .and_then(|der| crate::server::spiffe_uri_from_der(der.as_ref()))
+        })
+        .or_else(|| {
+            request
+                .extensions()
+                .get::<crate::server::PeerSpiffe>()
+                .map(|p| p.0.clone())
+        });
+    resolver.resolve(node_id, peer_spiffe.as_deref()).await
 }
 
 fn metadata_uuid(metadata: &MetadataMap, key: &'static str) -> Result<Uuid, Status> {
@@ -2171,7 +2178,8 @@ fn status_from_domain(err: DomainError) -> Status {
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::ads::PeerIdentity;
+    use crate::ads::{CertRegistryResolver, PeerIdentity};
+    use crate::server::PeerSpiffe;
     use envoy_types::pb::envoy::config::core::v3::{HeaderValue, RequestMethod};
     use envoy_types::pb::envoy::data::accesslog::v3::{
         HttpRequestProperties, HttpResponseProperties,
@@ -2241,6 +2249,126 @@ mod tests {
         }
     }
 
+    struct FailingTeamResolver {
+        status: Code,
+    }
+
+    #[tonic::async_trait]
+    impl TeamResolver for FailingTeamResolver {
+        async fn resolve(
+            &self,
+            _node_id: &str,
+            _peer_spiffe: Option<&str>,
+        ) -> Result<PeerIdentity, Status> {
+            Err(Status::new(self.status, "resolver failed"))
+        }
+    }
+
+    fn peer_identity(team_id: TeamId) -> PeerIdentity {
+        PeerIdentity {
+            team_id,
+            dataplane_id: None,
+            certificate_id: None,
+        }
+    }
+
+    fn ai_metadata_request(
+        team_id: TeamId,
+        route_config_id: Uuid,
+        provider_id: Uuid,
+        backend_position: i32,
+        spiffe: Option<&str>,
+    ) -> Request<()> {
+        let mut request = Request::new(());
+        let metadata = request.metadata_mut();
+        metadata.insert(
+            "x-flowplane-team-id",
+            team_id.to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-route-config-id",
+            route_config_id.to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-ai-provider-id",
+            provider_id.to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-ai-backend-position",
+            backend_position
+                .to_string()
+                .parse()
+                .expect("metadata value"),
+        );
+        if let Some(spiffe) = spiffe {
+            request
+                .extensions_mut()
+                .insert(PeerSpiffe(spiffe.to_string()));
+        }
+        request
+    }
+
+    fn ai_request_headers(path: &str) -> ProcessingRequest {
+        ProcessingRequest {
+            request: Some(processing_request::Request::RequestHeaders(
+                envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                    headers: Some(HeaderMap {
+                        headers: vec![
+                            HeaderValue {
+                                key: ":path".into(),
+                                value: path.into(),
+                                raw_value: Vec::new(),
+                            },
+                            HeaderValue {
+                                key: "x-request-id".into(),
+                                value: Uuid::now_v7().to_string(),
+                                raw_value: Vec::new(),
+                            },
+                        ],
+                    }),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    async fn seed_dataplane_certificate(
+        pool: &sqlx::PgPool,
+        team: fp_domain::authz::TeamRef,
+        spiffe: &str,
+        revoked: bool,
+    ) {
+        let mut tx = pool.begin().await.expect("tx");
+        let dataplane = fp_storage::repos::dataplanes::create_dataplane(
+            &mut tx,
+            team,
+            &format!("dp-{}", Uuid::now_v7()),
+            "",
+        )
+        .await
+        .expect("dataplane");
+        let cert = fp_storage::repos::dataplanes::register_certificate(
+            &mut tx,
+            team.id,
+            dataplane.id,
+            spiffe,
+            &format!("serial-{}", Uuid::now_v7()),
+            Utc::now() + chrono::Duration::hours(1),
+            None,
+        )
+        .await
+        .expect("certificate");
+        if revoked {
+            sqlx::query("UPDATE proxy_certificates SET revoked_at = now() WHERE id = $1")
+                .bind(cert.id.as_uuid())
+                .execute(&mut *tx)
+                .await
+                .expect("revoke");
+        }
+        tx.commit().await.expect("commit");
+    }
+
     fn capture_request(team_id: TeamId) -> Request<()> {
         let mut request = Request::new(());
         let metadata = request.metadata_mut();
@@ -2295,20 +2423,97 @@ mod tests {
 
     #[test]
     fn ai_context_requires_complete_identity_metadata() {
+        let team_id = Uuid::now_v7();
         let mut request = Request::new(());
         request.metadata_mut().insert(
             "x-flowplane-team-id",
-            Uuid::now_v7().to_string().parse().expect("metadata value"),
+            team_id.to_string().parse().expect("metadata value"),
         );
 
-        let err = ai_context(request.metadata()).expect_err("partial metadata");
+        let err = ai_context(request.metadata(), peer_identity(TeamId::from(team_id)))
+            .expect_err("partial metadata");
 
         assert_eq!(err.code(), Code::InvalidArgument);
         assert!(err.message().contains("router or upstream context"));
     }
 
     #[test]
-    fn ai_context_reads_complete_identity_metadata() {
+    fn ai_context_rejects_missing_team_after_peer_identity_is_resolved() {
+        let route_config_id = Uuid::now_v7();
+        let listener_id = Uuid::now_v7();
+        let mut request = Request::new(());
+        let metadata = request.metadata_mut();
+        metadata.insert(
+            "x-flowplane-listener-id",
+            listener_id.to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-route-config-id",
+            route_config_id.to_string().parse().expect("metadata value"),
+        );
+
+        let err = ai_context(
+            request.metadata(),
+            peer_identity(TeamId::from(Uuid::now_v7())),
+        )
+        .expect_err("missing team metadata");
+
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert!(err.message().contains("x-flowplane-team-id"));
+    }
+
+    #[test]
+    fn ai_context_rejects_metadata_team_mismatch() {
+        let claimed_team_id = Uuid::now_v7();
+        let bound_team_id = TeamId::from(Uuid::now_v7());
+        let listener_id = Uuid::now_v7();
+        let route_config_id = Uuid::now_v7();
+        let mut request = Request::new(());
+        let metadata = request.metadata_mut();
+        metadata.insert(
+            "x-flowplane-team-id",
+            claimed_team_id.to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-listener-id",
+            listener_id.to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-route-config-id",
+            route_config_id.to_string().parse().expect("metadata value"),
+        );
+
+        let err = ai_context(request.metadata(), peer_identity(bound_team_id))
+            .expect_err("team mismatch");
+
+        assert_eq!(err.code(), Code::PermissionDenied);
+        assert_eq!(
+            err.message(),
+            "AI processor team_id does not match the client certificate"
+        );
+    }
+
+    #[tokio::test]
+    async fn ai_peer_identity_resolver_failure_fails_before_metadata_parse() {
+        let resolver = Arc::new(FailingTeamResolver {
+            status: Code::Unauthenticated,
+        }) as Arc<dyn TeamResolver>;
+        let mut request = Request::new(());
+        request.metadata_mut().insert(
+            "x-flowplane-team-id",
+            "not-a-uuid".parse().expect("metadata value"),
+        );
+
+        let err = resolve_peer_identity(&request, &resolver, "ai-extproc")
+            .await
+            .expect_err("resolver failure");
+
+        assert_eq!(err.code(), Code::Unauthenticated);
+        assert_eq!(err.message(), "resolver failed");
+    }
+
+    #[test]
+    fn ai_context_reads_complete_identity_metadata_for_matching_team() {
         let team_id = Uuid::now_v7();
         let listener_id = Uuid::now_v7();
         let route_config_id = Uuid::now_v7();
@@ -2327,7 +2532,7 @@ mod tests {
             route_config_id.to_string().parse().expect("metadata value"),
         );
 
-        let context = ai_context(request.metadata())
+        let context = ai_context(request.metadata(), peer_identity(TeamId::from(team_id)))
             .expect("context parse")
             .expect("context present");
 
@@ -2362,7 +2567,7 @@ mod tests {
         );
         metadata.insert("x-flowplane-ai-backend-position", "0".parse().unwrap());
 
-        let context = ai_context(request.metadata())
+        let context = ai_context(request.metadata(), peer_identity(TeamId::from(team_id)))
             .expect("context parse")
             .expect("context present");
 
@@ -2404,7 +2609,7 @@ mod tests {
             "0,1".parse().expect("metadata value"),
         );
 
-        let context = ai_context(request.metadata())
+        let context = ai_context(request.metadata(), peer_identity(TeamId::from(team_id)))
             .expect("context parse")
             .expect("context present");
 
@@ -2421,6 +2626,233 @@ mod tests {
                 (AiProviderId::from(provider_b), 1)
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn ai_cert_registry_identity_allows_same_team_credential_injection() {
+        let _guard = crate::snapshot::ENV_LOCK.lock().await;
+        let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        use aes_gcm::aead::Aead;
+        use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+        use base64::Engine as _;
+
+        let key = *b"12345678901234567890123456789012";
+        std::env::set_var("FLOWPLANE_SECRET_ENCRYPTION_KEY_ID", "default");
+        std::env::set_var(
+            "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+            String::from_utf8_lossy(&key).to_string(),
+        );
+        let pool = fp_storage::connect(&url, 4).await.expect("connect");
+        fp_storage::migrate(&pool).await.expect("migrate");
+        let org = identity::create_org(&pool, &format!("org-{}", Uuid::now_v7()), "")
+            .await
+            .expect("org");
+        let team = identity::create_team(&pool, org.id, &format!("team-{}", Uuid::now_v7()), "")
+            .await
+            .expect("team");
+        let team_ref = fp_domain::authz::TeamRef {
+            id: team.id,
+            org_id: org.id,
+        };
+        let spiffe = format!(
+            "spiffe://flowplane.test/team/mismatch/proxy/{}",
+            Uuid::now_v7()
+        );
+        seed_dataplane_certificate(&pool, team_ref, &spiffe, false).await;
+
+        let secret_value = "Bearer cert-bound";
+        let spec = SecretSpec::GenericSecret {
+            secret: base64::engine::general_purpose::STANDARD.encode(secret_value),
+        };
+        let plaintext = serde_json::to_vec(&spec).expect("secret json");
+        let nonce = [17_u8; 12];
+        let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher");
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
+            .expect("encrypt");
+
+        let secret_id = Uuid::now_v7();
+        let provider_id = Uuid::now_v7();
+        let route_id = Uuid::now_v7();
+        let route_config_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO secrets \
+             (id, team_id, org_id, name, description, secret_type, configuration_encrypted, nonce, encryption_key_id) \
+             VALUES ($1, $2, $3, 'ai-cert-key', '', 'generic_secret', $4, $5, 'default')",
+        )
+        .bind(secret_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(ciphertext)
+        .bind(nonce.to_vec())
+        .execute(&pool)
+        .await
+        .expect("secret");
+        sqlx::query(
+            "INSERT INTO ai_providers \
+             (id, team_id, org_id, name, kind, base_url, path_prefix, credential_secret_id, auth_header) \
+             VALUES ($1, $2, $3, 'openai-cert-bound', 'openai', 'https://api.openai.com', NULL, $4, 'authorization')",
+        )
+        .bind(provider_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(secret_id)
+        .execute(&pool)
+        .await
+        .expect("provider");
+        sqlx::query(
+            "INSERT INTO route_configs (id, team_id, org_id, name, spec) \
+             VALUES ($1, $2, $3, 'ai-cert-routes', '{}'::jsonb)",
+        )
+        .bind(route_config_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("route config");
+        let route_spec = serde_json::json!({
+            "listener_port": 19200,
+            "path": "/v1/chat/completions",
+            "backends": [{
+                "provider_id": provider_id,
+                "models": [],
+                "weight": 1,
+                "priority": 0
+            }]
+        });
+        sqlx::query(
+            "INSERT INTO ai_routes \
+             (id, team_id, org_id, name, spec, cluster_names, route_config_name, listener_name) \
+             VALUES ($1, $2, $3, 'ai-cert-route', $4, ARRAY['ai-cert-b1'], 'ai-cert-routes', 'ai-cert-listener')",
+        )
+        .bind(route_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(route_spec)
+        .execute(&pool)
+        .await
+        .expect("ai route");
+        sqlx::query(
+            "INSERT INTO ai_route_backends (ai_route_id, team_id, provider_id, position) \
+             VALUES ($1, $2, $3, 0)",
+        )
+        .bind(route_id)
+        .bind(team.id.as_uuid())
+        .bind(provider_id)
+        .execute(&pool)
+        .await
+        .expect("backend");
+
+        let resolver = Arc::new(CertRegistryResolver::new(pool.clone())) as Arc<dyn TeamResolver>;
+        let request = ai_metadata_request(team.id, route_config_id, provider_id, 0, Some(&spiffe));
+        let identity = resolve_peer_identity(&request, &resolver, "ai-extproc")
+            .await
+            .expect("identity");
+        let context = ai_context(request.metadata(), identity)
+            .expect("metadata")
+            .expect("context");
+        let mut rx = ai_process_stream(
+            pool.clone(),
+            tokio_stream::iter(vec![Ok(ai_request_headers("/v1/chat/completions"))]),
+            Some(context),
+        );
+
+        let response = rx.recv().await.expect("credential response").expect("ok");
+        let processing_response::Response::RequestHeaders(headers) =
+            response.response.expect("response")
+        else {
+            panic!("expected request headers response");
+        };
+        let set_headers = headers
+            .response
+            .expect("common response")
+            .header_mutation
+            .expect("header mutation")
+            .set_headers;
+        let auth = set_headers
+            .iter()
+            .filter_map(|option| option.header.as_ref())
+            .find(|header| header.key.eq_ignore_ascii_case("authorization"))
+            .expect("authorization header");
+        assert_eq!(auth.raw_value, secret_value.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn ai_cert_registry_mismatch_and_missing_or_revoked_fail_closed_before_context() {
+        let _guard = crate::snapshot::ENV_LOCK.lock().await;
+        let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let pool = fp_storage::connect(&url, 4).await.expect("connect");
+        fp_storage::migrate(&pool).await.expect("migrate");
+        let org = identity::create_org(&pool, &format!("org-{}", Uuid::now_v7()), "")
+            .await
+            .expect("org");
+        let team = identity::create_team(&pool, org.id, &format!("team-{}", Uuid::now_v7()), "")
+            .await
+            .expect("team");
+        let other_team =
+            identity::create_team(&pool, org.id, &format!("team-{}", Uuid::now_v7()), "")
+                .await
+                .expect("other team");
+        let team_ref = fp_domain::authz::TeamRef {
+            id: team.id,
+            org_id: org.id,
+        };
+        let resolver = Arc::new(CertRegistryResolver::new(pool.clone())) as Arc<dyn TeamResolver>;
+        let route_config_id = Uuid::now_v7();
+        let provider_id = Uuid::now_v7();
+
+        let active_spiffe = format!(
+            "spiffe://flowplane.test/team/active/proxy/{}",
+            Uuid::now_v7()
+        );
+        seed_dataplane_certificate(&pool, team_ref, &active_spiffe, false).await;
+        let mismatch_request = ai_metadata_request(
+            other_team.id,
+            route_config_id,
+            provider_id,
+            0,
+            Some(&active_spiffe),
+        );
+        let identity = resolve_peer_identity(&mismatch_request, &resolver, "ai-extproc")
+            .await
+            .expect("identity");
+        let err = ai_context(mismatch_request.metadata(), identity).expect_err("team mismatch");
+        assert_eq!(err.code(), Code::PermissionDenied);
+
+        let missing_request = ai_metadata_request(
+            team.id,
+            route_config_id,
+            provider_id,
+            0,
+            Some("spiffe://flowplane.test/team/missing/proxy/not-registered"),
+        );
+        let err = resolve_peer_identity(&missing_request, &resolver, "ai-extproc")
+            .await
+            .expect_err("missing registry row");
+        assert_eq!(err.code(), Code::Unauthenticated);
+
+        let revoked_spiffe = format!(
+            "spiffe://flowplane.test/team/revoked/proxy/{}",
+            Uuid::now_v7()
+        );
+        seed_dataplane_certificate(&pool, team_ref, &revoked_spiffe, true).await;
+        let revoked_request = ai_metadata_request(
+            team.id,
+            route_config_id,
+            provider_id,
+            0,
+            Some(&revoked_spiffe),
+        );
+        let err = resolve_peer_identity(&revoked_request, &resolver, "ai-extproc")
+            .await
+            .expect_err("revoked registry row");
+        assert_eq!(err.code(), Code::Unauthenticated);
     }
 
     #[tokio::test]
