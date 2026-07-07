@@ -301,7 +301,7 @@ async fn retention_policy_is_a_single_versioned_row_per_team() {
     );
 
     let mut tx = w.pool.begin().await.expect("begin");
-    let created = ai_trace::set_retention_policy(&mut tx, w.team_ref(w.team_a), 7)
+    let created = ai_trace::set_retention_policy(&mut tx, w.team_ref(w.team_a), 7, None)
         .await
         .expect("set");
     tx.commit().await.expect("commit");
@@ -310,7 +310,7 @@ async fn retention_policy_is_a_single_versioned_row_per_team() {
     assert_eq!(created.team_id, w.team_a);
 
     let mut tx = w.pool.begin().await.expect("begin");
-    let replaced = ai_trace::set_retention_policy(&mut tx, w.team_ref(w.team_a), 14)
+    let replaced = ai_trace::set_retention_policy(&mut tx, w.team_ref(w.team_a), 14, None)
         .await
         .expect("replace");
     tx.commit().await.expect("commit replace");
@@ -335,6 +335,63 @@ async fn retention_policy_is_a_single_versioned_row_per_team() {
         .is_none());
 }
 
+#[tokio::test]
+async fn retention_policy_conditional_replace_enforces_expected_revision() {
+    let Some(w) = world().await else { return };
+
+    let mut tx = w.pool.begin().await.expect("begin");
+    let created = ai_trace::set_retention_policy(&mut tx, w.team_ref(w.team_a), 7, None)
+        .await
+        .expect("create");
+    tx.commit().await.expect("commit create");
+
+    let mut tx = w.pool.begin().await.expect("begin match");
+    let replaced =
+        ai_trace::set_retention_policy(&mut tx, w.team_ref(w.team_a), 14, Some(created.version))
+            .await
+            .expect("matching revision replaces");
+    tx.commit().await.expect("commit match");
+    assert_eq!(replaced.id, created.id);
+    assert_eq!(replaced.trace_ttl_days, 14);
+    assert_eq!(replaced.version, created.version + 1);
+
+    let mut tx = w.pool.begin().await.expect("begin stale");
+    let err =
+        ai_trace::set_retention_policy(&mut tx, w.team_ref(w.team_a), 21, Some(created.version))
+            .await
+            .expect_err("stale revision fails");
+    tx.commit().await.expect("commit stale tx");
+    assert_eq!(err.code, fp_domain::ErrorCode::RevisionMismatch);
+
+    let fetched = ai_trace::get_retention_policy(&w.pool, w.team_a)
+        .await
+        .expect("get after stale")
+        .expect("policy remains");
+    assert_eq!(fetched.id, created.id);
+    assert_eq!(fetched.trace_ttl_days, 14);
+    assert_eq!(fetched.version, replaced.version);
+}
+
+#[tokio::test]
+async fn retention_policy_conditional_replace_missing_row_does_not_create() {
+    let Some(w) = world().await else { return };
+
+    let mut tx = w.pool.begin().await.expect("begin");
+    let err = ai_trace::set_retention_policy(&mut tx, w.team_ref(w.team_a), 7, Some(1))
+        .await
+        .expect_err("missing row with precondition fails");
+    tx.commit().await.expect("commit");
+    assert_eq!(err.code, fp_domain::ErrorCode::RevisionMismatch);
+
+    assert!(
+        ai_trace::get_retention_policy(&w.pool, w.team_a)
+            .await
+            .expect("get absent")
+            .is_none(),
+        "conditional replace must not create a policy row"
+    );
+}
+
 // Slice s5 (design AC 13): with a team policy of N days, a NEW trace row's expires_at equals
 // created_at + N days; the no-policy 30-day default is covered by
 // `expires_at_defaults_to_thirty_days_after_created_at_without_policy_row` above.
@@ -342,7 +399,7 @@ async fn retention_policy_is_a_single_versioned_row_per_team() {
 async fn insert_time_ttl_honors_a_preset_policy() {
     let Some(w) = world().await else { return };
     let mut tx = w.pool.begin().await.expect("begin");
-    ai_trace::set_retention_policy(&mut tx, w.team_ref(w.team_a), 7)
+    ai_trace::set_retention_policy(&mut tx, w.team_ref(w.team_a), 7, None)
         .await
         .expect("set policy");
     tx.commit().await.expect("commit");

@@ -15,8 +15,8 @@
 use chrono::Duration;
 use fp_domain::authz::TeamRef;
 use fp_domain::{
-    AiProviderId, AiRetentionPolicy, AiTraceEvent, DomainError, DomainResult, ListenerId,
-    RouteConfigId, TeamId,
+    AiProviderId, AiRetentionPolicy, AiTraceEvent, DomainError, DomainResult, ErrorCode,
+    ListenerId, RouteConfigId, TeamId,
 };
 use serde_json::Value;
 use sqlx::postgres::PgRow;
@@ -238,7 +238,29 @@ pub async fn set_retention_policy(
     tx: &mut Transaction<'_, Postgres>,
     team: TeamRef,
     trace_ttl_days: i32,
+    expected_version: Option<i64>,
 ) -> DomainResult<AiRetentionPolicy> {
+    if let Some(expected_version) = expected_version {
+        let row = sqlx::query(&format!(
+            "UPDATE ai_retention_policies \
+             SET trace_ttl_days = $3, \
+                 version = version + 1, \
+                 updated_at = now() \
+             WHERE team_id = $1 AND version = $2 \
+             RETURNING {RETENTION_COLUMNS}"
+        ))
+        .bind(team.id.as_uuid())
+        .bind(expected_version)
+        .bind(trace_ttl_days)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| DomainError::internal(format!("set AI retention policy: {e}")))?;
+        return match row {
+            Some(row) => Ok(retention_policy_from_row(&row)),
+            None => retention_revision_mismatch(tx, team.id, expected_version).await,
+        };
+    }
+
     let row = sqlx::query(&format!(
         "INSERT INTO ai_retention_policies (id, team_id, org_id, trace_ttl_days) \
          VALUES ($1, $2, $3, $4) \
@@ -256,6 +278,35 @@ pub async fn set_retention_policy(
     .await
     .map_err(|e| DomainError::internal(format!("set AI retention policy: {e}")))?;
     Ok(retention_policy_from_row(&row))
+}
+
+async fn retention_revision_mismatch<T>(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    expected_version: i64,
+) -> DomainResult<T> {
+    let current: Option<i64> =
+        sqlx::query_scalar("SELECT version FROM ai_retention_policies WHERE team_id = $1")
+            .bind(team_id.as_uuid())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| DomainError::internal(format!("set AI retention policy: recheck: {e}")))?;
+    Err(match current {
+        Some(version) => DomainError::new(
+            ErrorCode::RevisionMismatch,
+            format!(
+                "AI retention policy is at revision {version}, you supplied {expected_version}"
+            ),
+        )
+        .with_hint("re-read the retention policy and retry with the current revision"),
+        None => DomainError::new(
+            ErrorCode::RevisionMismatch,
+            format!(
+                "AI retention policy has no stored revision yet, you supplied {expected_version}"
+            ),
+        )
+        .with_hint("create the retention policy without a revision precondition"),
+    })
 }
 
 /// The expiry sweep: delete every trace row whose `expires_at <= as_of`, across all teams,

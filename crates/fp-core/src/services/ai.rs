@@ -561,6 +561,7 @@ pub async fn set_retention_policy(
     ctx: &PrincipalCtx,
     team: TeamRef,
     trace_ttl_days: i32,
+    expected_version: Option<i64>,
     request_id: RequestId,
 ) -> DomainResult<AiRetentionPolicy> {
     authorize(
@@ -577,7 +578,8 @@ pub async fn set_retention_policy(
         .begin()
         .await
         .map_err(crate::services::db_err("set AI retention policy: begin"))?;
-    let policy = ai_trace::set_retention_policy(&mut tx, team, trace_ttl_days).await?;
+    let policy =
+        ai_trace::set_retention_policy(&mut tx, team, trace_ttl_days, expected_version).await?;
     audit::record_in_tx(
         &mut tx,
         &mutation_audit(

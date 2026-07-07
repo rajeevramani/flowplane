@@ -55,6 +55,49 @@ async fn principal_ctx(pool: &PgPool, subject: &str) -> PrincipalCtx {
     }
 }
 
+async fn ai_usage_writer_ctx(
+    pool: &PgPool,
+    org_id: fp_domain::OrgId,
+    team_id: fp_domain::TeamId,
+) -> PrincipalCtx {
+    let subject = unique("sub-ai-retention-writer");
+    let user = identity::upsert_user_by_subject(pool, &subject, "writer@a.test", "Writer")
+        .await
+        .expect("writer");
+    identity::add_org_membership(pool, user, org_id, OrgRole::Member)
+        .await
+        .expect("member");
+    identity::add_grant(
+        pool,
+        user,
+        org_id,
+        team_id,
+        Resource::AiUsage,
+        Action::Update,
+        None,
+    )
+    .await
+    .expect("grant ai usage update");
+    principal_ctx(pool, &subject).await
+}
+
+async fn ai_retention_success_audit_count(
+    pool: &PgPool,
+    team_id: fp_domain::TeamId,
+    request_id: RequestId,
+) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log \
+         WHERE team_id = $1 AND request_id = $2 \
+           AND action = 'ai_retention.set' AND outcome = 'success'",
+    )
+    .bind(team_id.as_uuid())
+    .bind(request_id.as_uuid())
+    .fetch_one(pool)
+    .await
+    .expect("audit count")
+}
+
 /// Seed one trace row for `team_id` and return its request_id.
 async fn seed_trace_row(pool: &PgPool, team_id: fp_domain::TeamId) -> String {
     let request_id = uuid::Uuid::now_v7().to_string();
@@ -79,6 +122,203 @@ async fn seed_trace_row(pool: &PgPool, team_id: fp_domain::TeamId) -> String {
     .await
     .expect("seed trace row");
     request_id
+}
+
+#[tokio::test]
+async fn retention_set_writes_policy_and_success_audit_in_one_service_mutation() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+
+    let org = identity::create_org(&pool, &unique("org-retention"), "")
+        .await
+        .expect("org");
+    let team = identity::create_team(&pool, org.id, &unique("team-retention"), "")
+        .await
+        .expect("team");
+    let team_ref = identity::resolve_team_ref(&pool, team.id)
+        .await
+        .expect("q")
+        .expect("team ref");
+    let writer_ctx = ai_usage_writer_ctx(&pool, org.id, team.id).await;
+    let request_id = RequestId::generate();
+
+    let policy = fp_core::services::ai::set_retention_policy(
+        &pool,
+        &writer_ctx,
+        team_ref,
+        10,
+        None,
+        request_id,
+    )
+    .await
+    .expect("retention set");
+
+    assert_eq!(policy.trace_ttl_days, 10);
+    assert_eq!(policy.version, 1);
+    assert_eq!(
+        ai_retention_success_audit_count(&pool, team.id, request_id).await,
+        1,
+        "successful mutation records exactly one success audit row"
+    );
+    assert!(
+        ai_trace::get_retention_policy(&pool, team.id)
+            .await
+            .expect("get policy")
+            .is_some(),
+        "policy write is committed with the success audit"
+    );
+}
+
+#[tokio::test]
+async fn retention_set_requires_ai_usage_update_before_storage_mutation() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+
+    let org = identity::create_org(&pool, &unique("org-retention-authz"), "")
+        .await
+        .expect("org");
+    let team = identity::create_team(&pool, org.id, &unique("team-retention-authz"), "")
+        .await
+        .expect("team");
+    let team_ref = identity::resolve_team_ref(&pool, team.id)
+        .await
+        .expect("q")
+        .expect("team ref");
+    let subject = unique("sub-ai-retention-reader");
+    let user = identity::upsert_user_by_subject(&pool, &subject, "reader@a.test", "Reader")
+        .await
+        .expect("reader");
+    identity::add_org_membership(&pool, user, org.id, OrgRole::Member)
+        .await
+        .expect("member");
+    let ctx = principal_ctx(&pool, &subject).await;
+    let request_id = RequestId::generate();
+
+    let err =
+        fp_core::services::ai::set_retention_policy(&pool, &ctx, team_ref, 10, None, request_id)
+            .await
+            .expect_err("missing AiUsage Update grant denies");
+
+    assert_eq!(err.code, ErrorCode::Forbidden);
+    assert!(
+        ai_trace::get_retention_policy(&pool, team.id)
+            .await
+            .expect("get policy")
+            .is_none(),
+        "authorization denial must happen before storage mutation"
+    );
+}
+
+#[tokio::test]
+async fn retention_set_validates_ttl_before_storage_mutation_and_success_audit() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+
+    let org = identity::create_org(&pool, &unique("org-retention-ttl"), "")
+        .await
+        .expect("org");
+    let team = identity::create_team(&pool, org.id, &unique("team-retention-ttl"), "")
+        .await
+        .expect("team");
+    let team_ref = identity::resolve_team_ref(&pool, team.id)
+        .await
+        .expect("q")
+        .expect("team ref");
+    let writer_ctx = ai_usage_writer_ctx(&pool, org.id, team.id).await;
+    let request_id = RequestId::generate();
+
+    let err = fp_core::services::ai::set_retention_policy(
+        &pool,
+        &writer_ctx,
+        team_ref,
+        0,
+        None,
+        request_id,
+    )
+    .await
+    .expect_err("invalid TTL fails");
+
+    assert_eq!(err.code, ErrorCode::ValidationFailed);
+    assert!(
+        ai_trace::get_retention_policy(&pool, team.id)
+            .await
+            .expect("get policy")
+            .is_none(),
+        "TTL validation must happen before storage mutation"
+    );
+    assert_eq!(
+        ai_retention_success_audit_count(&pool, team.id, request_id).await,
+        0,
+        "validation failure must not record ai_retention.set success audit"
+    );
+}
+
+#[tokio::test]
+async fn retention_set_stale_revision_leaves_policy_and_records_no_success_audit() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+
+    let org = identity::create_org(&pool, &unique("org-retention-stale"), "")
+        .await
+        .expect("org");
+    let team = identity::create_team(&pool, org.id, &unique("team-retention-stale"), "")
+        .await
+        .expect("team");
+    let team_ref = identity::resolve_team_ref(&pool, team.id)
+        .await
+        .expect("q")
+        .expect("team ref");
+    let writer_ctx = ai_usage_writer_ctx(&pool, org.id, team.id).await;
+    let created = fp_core::services::ai::set_retention_policy(
+        &pool,
+        &writer_ctx,
+        team_ref,
+        10,
+        None,
+        RequestId::generate(),
+    )
+    .await
+    .expect("create");
+    let replaced = fp_core::services::ai::set_retention_policy(
+        &pool,
+        &writer_ctx,
+        team_ref,
+        20,
+        Some(created.version),
+        RequestId::generate(),
+    )
+    .await
+    .expect("matching replace");
+    let stale_request_id = RequestId::generate();
+
+    let err = fp_core::services::ai::set_retention_policy(
+        &pool,
+        &writer_ctx,
+        team_ref,
+        30,
+        Some(created.version),
+        stale_request_id,
+    )
+    .await
+    .expect_err("stale revision fails");
+
+    assert_eq!(err.code, ErrorCode::RevisionMismatch);
+    let fetched = ai_trace::get_retention_policy(&pool, team.id)
+        .await
+        .expect("get policy")
+        .expect("policy");
+    assert_eq!(fetched.id, created.id);
+    assert_eq!(fetched.trace_ttl_days, 20);
+    assert_eq!(fetched.version, replaced.version);
+    assert_eq!(
+        ai_retention_success_audit_count(&pool, team.id, stale_request_id).await,
+        0,
+        "stale revision must not record ai_retention.set success audit"
+    );
 }
 
 #[tokio::test]

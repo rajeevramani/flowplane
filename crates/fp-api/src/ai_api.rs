@@ -710,7 +710,7 @@ pub async fn put_ai_retention(
 ) -> Result<Json<AiRetentionView>, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
-        ai_svc::set_retention_policy(&state.pool, &ctx, team, body.trace_ttl_days, rid).await
+        ai_svc::set_retention_policy(&state.pool, &ctx, team, body.trace_ttl_days, None, rid).await
     };
     run.await
         .map(|policy| Json(shape_retention_view(Some(policy))))
