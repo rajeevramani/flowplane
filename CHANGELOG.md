@@ -10,7 +10,7 @@ upgrade of an earlier Flowplane line — there is no in-place migration path fro
 version. `1.0.0` is its first stable release and the point at which the public REST API,
 CLI surface, and configuration contract become subject to semantic versioning.
 
-## [Unreleased]
+## [2.2.0] - 2026-07-07
 
 ### Added
 
