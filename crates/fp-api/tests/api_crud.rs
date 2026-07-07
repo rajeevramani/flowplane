@@ -2293,4 +2293,103 @@ async fn ai_retention_crud_authz_and_audit_over_http() {
             .await
             .expect("policy row");
     assert_eq!(ttl, 14);
+
+    // #226 optimistic concurrency (If-Match). The policy is at revision 2 / ttl 14 here,
+    // untouched by all the rejected attempts above.
+    let put_if_match = |token: &str, body: serde_json::Value, revision: i64| {
+        Request::builder()
+            .method("PUT")
+            .uri(&path)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header("if-match", revision.to_string())
+            .body(Body::from(body.to_string()))
+            .expect("put if-match request")
+    };
+    // A stale revision (1, current is 2) is rejected with 409 and writes nothing.
+    let response = app
+        .clone()
+        .oneshot(put_if_match(
+            &admin_token,
+            serde_json::json!({"trace_ttl_days": 21}),
+            1,
+        ))
+        .await
+        .expect("put stale");
+    assert_eq!(
+        response.status(),
+        StatusCode::CONFLICT,
+        "a stale If-Match must be rejected, not silently last-writer-win"
+    );
+    assert_eq!(
+        audit_rows().await,
+        2,
+        "a rejected stale write commits no audit row"
+    );
+    let response = app
+        .clone()
+        .oneshot(get(&admin_token))
+        .await
+        .expect("get after stale");
+    assert_eq!(
+        json_of(response).await["trace_ttl_days"],
+        14,
+        "the stale write left the stored policy untouched"
+    );
+    // The current revision (2) succeeds and bumps to 3.
+    let response = app
+        .clone()
+        .oneshot(put_if_match(
+            &admin_token,
+            serde_json::json!({"trace_ttl_days": 21}),
+            2,
+        ))
+        .await
+        .expect("put current revision");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["trace_ttl_days"], 21);
+    assert_eq!(body["revision"], 3);
+    assert_eq!(audit_rows().await, 3);
+    // Omitting If-Match still creates-or-replaces (the revision is optional), bumping to 4.
+    let response = app
+        .clone()
+        .oneshot(put(&admin_token, serde_json::json!({"trace_ttl_days": 28})))
+        .await
+        .expect("put without if-match");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_of(response).await["revision"], 4);
+
+    // A present-but-malformed If-Match is a validation error, NOT treated as absent — it must
+    // never fall through to a silent create-or-replace. Policy stays at revision 4.
+    let malformed = Request::builder()
+        .method("PUT")
+        .uri(&path)
+        .header("authorization", format!("Bearer {admin_token}"))
+        .header("content-type", "application/json")
+        .header("if-match", "not-a-revision")
+        .body(Body::from(
+            serde_json::json!({"trace_ttl_days": 9}).to_string(),
+        ))
+        .expect("malformed if-match request");
+    let response = app
+        .clone()
+        .oneshot(malformed)
+        .await
+        .expect("put malformed if-match");
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "a present-but-malformed If-Match must be rejected, not treated as absent"
+    );
+    let response = app
+        .clone()
+        .oneshot(get(&admin_token))
+        .await
+        .expect("get after malformed");
+    assert_eq!(
+        json_of(response).await["revision"],
+        4,
+        "the malformed-If-Match write must not have changed the policy"
+    );
 }

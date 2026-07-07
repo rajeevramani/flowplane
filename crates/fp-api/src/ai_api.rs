@@ -2,7 +2,7 @@
 
 use crate::error::ApiError;
 use crate::extract::ApiJson;
-use crate::resources::{resolve_team, revision_from, ListQuery, Page};
+use crate::resources::{optional_revision_from, resolve_team, revision_from, ListQuery, Page};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::HeaderMap;
@@ -698,7 +698,10 @@ pub async fn get_ai_retention(
 /// Existing rows keep the expiry they were stamped with; only new rows use the new TTL.
 #[utoipa::path(put, path = "/api/v1/teams/{team}/ai/retention",
     tag = "AI",
-    params(("team" = String, Path, description = "Team name or UUID")),
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("If-Match" = Option<i64>, Header, description = "Current retention revision; omit to create or replace, supply to guard against a concurrent change"),
+    ),
     request_body = SetAiRetentionBody,
     responses((status = 200, body = AiRetentionView)))]
 pub async fn put_ai_retention(
@@ -706,11 +709,21 @@ pub async fn put_ai_retention(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<SetAiRetentionBody>,
 ) -> Result<Json<AiRetentionView>, ApiError> {
     let run = async {
+        let expected_version = optional_revision_from(&headers)?;
         let team = resolve_team(&state, &ctx, &team).await?;
-        ai_svc::set_retention_policy(&state.pool, &ctx, team, body.trace_ttl_days, None, rid).await
+        ai_svc::set_retention_policy(
+            &state.pool,
+            &ctx,
+            team,
+            body.trace_ttl_days,
+            expected_version,
+            rid,
+        )
+        .await
     };
     run.await
         .map(|policy| Json(shape_retention_view(Some(policy))))
