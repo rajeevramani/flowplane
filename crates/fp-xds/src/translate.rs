@@ -2221,7 +2221,7 @@ pub fn listener_to_proto_with_learning_and_ai(
         ..Default::default()
     });
 
-    let manager = hcm::HttpConnectionManager {
+    let mut manager = hcm::HttpConnectionManager {
         codec_type: listener_codec_type(spec) as i32,
         stat_prefix: name.to_string(),
         route_specifier: Some(hcm::http_connection_manager::RouteSpecifier::Rds(
@@ -2239,6 +2239,30 @@ pub fn listener_to_proto_with_learning_and_ai(
         always_set_request_id_in_response: true,
         ..Default::default()
     };
+    if ai.is_some() {
+        // AI listeners: the server owns x-request-id — a client-supplied id is never
+        // preserved, so a caller cannot choose or collide another request's trace key.
+        //
+        // Envoy only *regenerates* a supplied x-request-id on an *edge request* (one whose
+        // downstream peer is not "internal"); otherwise it merely generates an id when none is
+        // present. Both settings below are required, and both are AI-scoped so non-AI listener
+        // output stays byte-identical:
+        //   1. use_remote_address = true makes the request an edge request. Without it Envoy
+        //      never regenerates a supplied id, for ANY peer address.
+        //   2. internal_address_config with an explicit non-matching CIDR (reserved 240.0.0.0/4,
+        //      which no real client peer occupies) declares that no client is internal. An
+        //      *empty* cidr_ranges does NOT achieve this: Envoy falls back to its default
+        //      (loopback + RFC1918 treated as internal), so loopback/internal callers would keep
+        //      their supplied id. Verified behaviorally against Envoy 1.38 — see
+        //      scripts/e2e/18-p1f-ai-trace.sh AC14.
+        manager.preserve_external_request_id = false;
+        manager.use_remote_address = Some(bool_value(true));
+        manager.internal_address_config =
+            Some(hcm::http_connection_manager::InternalAddressConfig {
+                unix_sockets: false,
+                cidr_ranges: vec![cidr_range("240.0.0.0/4")],
+            });
+    }
     let transport_socket = spec
         .tls_context
         .as_ref()
@@ -3937,6 +3961,128 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(names, vec!["envoy.filters.http.router"]);
+    }
+
+    #[test]
+    fn ai_listener_pins_server_owned_request_identity() {
+        let spec = ListenerSpec {
+            address: "0.0.0.0".into(),
+            port: 10000,
+            public_base_url: None,
+            protocol: ListenerProtocol::Http,
+            route_config: Some("ai-chat-routes".into()),
+            http_filters: Vec::new(),
+            access_logs: Vec::new(),
+            tls_context: None,
+        };
+        let ai = AiProcessorMetadata {
+            team_id: uuid::Uuid::now_v7(),
+            listener_id: uuid::Uuid::now_v7(),
+            route_config_id: uuid::Uuid::now_v7(),
+        };
+
+        let proto =
+            listener_to_proto_with_learning_and_ai("ai-chat-listener", &spec, &[], Some(&ai))
+                .expect("translate");
+        let manager = match &proto.filter_chains[0].filters[0].config_type {
+            Some(lst::filter::ConfigType::TypedConfig(any)) => {
+                hcm::HttpConnectionManager::decode(any.value.as_slice()).expect("hcm")
+            }
+            _ => panic!("expected typed HCM"),
+        };
+
+        assert!(!manager.preserve_external_request_id);
+        // Regenerating a supplied x-request-id requires an edge request: use_remote_address
+        // true + an internal-address set that excludes every real client peer (reserved
+        // 240.0.0.0/4). An empty cidr_ranges falls back to Envoy's default (loopback/RFC1918
+        // internal) and would NOT regenerate. Behaviorally verified by 18-p1f-ai-trace.sh AC14.
+        assert_eq!(manager.use_remote_address, Some(bool_value(true)));
+        assert_eq!(
+            manager.internal_address_config,
+            Some(hcm::http_connection_manager::InternalAddressConfig {
+                unix_sockets: false,
+                cidr_ranges: vec![cidr_range("240.0.0.0/4")],
+            }),
+            "AI listener must declare no client peer internal via a non-matching CIDR"
+        );
+        assert_eq!(manager.generate_request_id, Some(bool_value(true)));
+        assert!(manager.always_set_request_id_in_response);
+    }
+
+    #[test]
+    fn non_ai_listener_omits_internal_address_config() {
+        let spec = ListenerSpec {
+            address: "0.0.0.0".into(),
+            port: 10000,
+            public_base_url: None,
+            protocol: ListenerProtocol::Http,
+            route_config: Some("routes".into()),
+            http_filters: Vec::new(),
+            access_logs: Vec::new(),
+            tls_context: None,
+        };
+
+        let manager = hcm_of(&spec);
+        assert!(!manager.preserve_external_request_id);
+        assert!(
+            manager.internal_address_config.is_none(),
+            "non-AI listeners must not carry the AI-only internal_address_config"
+        );
+        assert!(
+            manager.use_remote_address.is_none(),
+            "non-AI listeners must not carry the AI-only use_remote_address"
+        );
+        assert_eq!(manager.generate_request_id, Some(bool_value(true)));
+        assert!(manager.always_set_request_id_in_response);
+    }
+
+    #[test]
+    fn non_ai_listener_hcm_bytes_match_pre_ai_identity_baseline() {
+        let spec = ListenerSpec {
+            address: "0.0.0.0".into(),
+            port: 10000,
+            public_base_url: None,
+            protocol: ListenerProtocol::Http,
+            route_config: Some("routes".into()),
+            http_filters: Vec::new(),
+            access_logs: Vec::new(),
+            tls_context: None,
+        };
+        let proto = listener_to_proto("edge", &spec).expect("translate");
+        let actual = match &proto.filter_chains[0].filters[0].config_type {
+            Some(lst::filter::ConfigType::TypedConfig(any)) => any.value.clone(),
+            _ => panic!("expected typed HCM"),
+        };
+
+        // The exact HCM emitted for this spec before AI request-identity pinning:
+        // no internal_address_config, preserve_external_request_id at proto default.
+        // Byte equality proves non-AI listener output is unchanged.
+        let expected = hcm::HttpConnectionManager {
+            codec_type: hcm::http_connection_manager::CodecType::Http1 as i32,
+            stat_prefix: "edge".into(),
+            route_specifier: Some(hcm::http_connection_manager::RouteSpecifier::Rds(
+                hcm::Rds {
+                    route_config_name: "routes".into(),
+                    config_source: Some(ads_config_source()),
+                },
+            )),
+            http_filters: vec![hcm::HttpFilter {
+                name: "envoy.filters.http.router".to_string(),
+                config_type: Some(hcm::http_filter::ConfigType::TypedConfig(any(
+                    ROUTER_TYPE_URL,
+                    &Router::default(),
+                ))),
+                ..Default::default()
+            }],
+            generate_request_id: Some(bool_value(true)),
+            always_set_request_id_in_response: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            actual,
+            expected.encode_to_vec(),
+            "non-AI listener HCM bytes drifted from the pre-AI-identity baseline"
+        );
     }
 
     #[test]

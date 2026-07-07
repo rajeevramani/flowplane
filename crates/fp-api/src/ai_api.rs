@@ -2,7 +2,7 @@
 
 use crate::error::ApiError;
 use crate::extract::ApiJson;
-use crate::resources::{resolve_team, revision_from, ListQuery, Page};
+use crate::resources::{optional_revision_from, resolve_team, revision_from, ListQuery, Page};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::HeaderMap;
@@ -10,8 +10,8 @@ use axum::Json;
 use fp_core::services::ai as ai_svc;
 use fp_core::PrincipalCtx;
 use fp_domain::{
-    AiBudget, AiBudgetSpec, AiProvider, AiProviderSpec, AiRoute, AiRouteSpec, AiUsageSummary,
-    RequestId,
+    AiBudget, AiBudgetSpec, AiProvider, AiProviderSpec, AiRoute, AiRouteSpec, AiTraceEvent,
+    AiUsageSummary, RequestId,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -508,6 +508,228 @@ pub async fn delete_ai_budget(
         .map_err(|e| ApiError::new(e, rid))
 }
 
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AiTraceParams {
+    /// The server-generated `x-request-id` returned on the AI data-plane response.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    /// W3C trace id from an inbound `traceparent` (non-unique, list-queryable).
+    #[serde(default)]
+    pub trace_id: Option<String>,
+    #[serde(default = "default_trace_limit")]
+    pub limit: i64,
+}
+
+fn default_trace_limit() -> i64 {
+    50
+}
+
+/// One correlated trace row: the per-request hop timeline plus its top-level correlation ids.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AiTraceEventView {
+    pub id: uuid::Uuid,
+    pub request_id: String,
+    pub trace_id: Option<String>,
+    pub route_config_id: uuid::Uuid,
+    pub listener_id: Option<uuid::Uuid>,
+    pub provider_id: Option<uuid::Uuid>,
+    pub model: Option<String>,
+    pub status_code: Option<i32>,
+    /// The first hop (in timeline order) whose outcome is a failure, if any.
+    pub failure_hop: Option<String>,
+    /// Timeline of `{hop, started_at, ended_at, outcome, origin, failed, detail}` entries.
+    #[schema(value_type = Object)]
+    pub hops: serde_json::Value,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<AiTraceEvent> for AiTraceEventView {
+    fn from(value: AiTraceEvent) -> Self {
+        Self {
+            id: value.id,
+            request_id: value.request_id,
+            trace_id: value.trace_id,
+            route_config_id: value.route_config_id.as_uuid(),
+            listener_id: value.listener_id.map(|id| id.as_uuid()),
+            provider_id: value.provider_id.map(|id| id.as_uuid()),
+            model: value.model,
+            status_code: value.status_code,
+            failure_hop: value.failure_hop,
+            hops: value.hops,
+            created_at: value.created_at,
+            expires_at: value.expires_at,
+        }
+    }
+}
+
+/// Present exactly when an id-filtered query matched no row: distinguishes "no trace row
+/// found" (and names the request classes that are never traced) from an empty list.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AiTraceMiss {
+    pub message: String,
+    pub hint: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AiTraceResponse {
+    pub traces: Vec<AiTraceEventView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub miss: Option<AiTraceMiss>,
+}
+
+/// The request classes that never produce a trace row (design Risk 5): the hint a miss
+/// carries so an operator can tell "never traced" from "wrong id".
+const NEVER_TRACED_HINT: &str =
+    "no trace row exists for this id; requests that never complete HTTP processing at the AI \
+     listener are never traced: TCP/TLS-level failures, client disconnect before request \
+     headers, and pre-ExtProc declared-filter denials";
+
+/// Clamp the caller's limit to the repo's supported window (1..=500), defaulting to 50.
+fn trace_limit(limit: i64) -> i64 {
+    limit.clamp(1, 500)
+}
+
+/// A miss (id filter given, nothing matched) is distinguishable from an empty unfiltered
+/// list: only the miss carries the `miss` payload naming the never-traced classes.
+fn shape_trace_response(events: Vec<AiTraceEvent>, id_filtered: bool) -> AiTraceResponse {
+    let miss = (id_filtered && events.is_empty()).then(|| AiTraceMiss {
+        message: "no trace row found".into(),
+        hint: NEVER_TRACED_HINT.into(),
+    });
+    AiTraceResponse {
+        traces: events.into_iter().map(AiTraceEventView::from).collect(),
+        miss,
+    }
+}
+
+/// Correlated hop timeline for AI data-plane requests, newest first.
+#[utoipa::path(get, path = "/api/v1/teams/{team}/ai/trace",
+    tag = "AI",
+    params(("team" = String, Path, description = "Team name or UUID"), AiTraceParams),
+    responses((status = 200, body = AiTraceResponse)))]
+pub async fn get_ai_trace(
+    State(state): State<AppState>,
+    Path(team): Path<String>,
+    Query(params): Query<AiTraceParams>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<AiTraceResponse>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        ai_svc::trace_events(
+            &state.pool,
+            &ctx,
+            team,
+            fp_storage::repos::ai_trace::AiTraceQuery {
+                request_id: params.request_id.as_deref(),
+                trace_id: params.trace_id.as_deref(),
+                limit: trace_limit(params.limit),
+            },
+            rid,
+        )
+        .await
+    };
+    let events = run.await.map_err(|e| ApiError::new(e, rid))?;
+    let id_filtered = params.request_id.is_some() || params.trace_id.is_some();
+    Ok(Json(shape_trace_response(events, id_filtered)))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetAiRetentionBody {
+    /// Days a new trace row lives before the expiry sweep removes it (1–365).
+    pub trace_ttl_days: i32,
+}
+
+/// The retention policy in force for the team's AI trace rows. `is_default: true` means no
+/// team policy row exists and the built-in 30-day default applies (`revision`/`updated_at`
+/// absent); a stored policy carries its revision and update time.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AiRetentionView {
+    pub trace_ttl_days: i32,
+    pub is_default: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// The effective policy: the team's row when present, the built-in default otherwise.
+fn shape_retention_view(policy: Option<fp_domain::AiRetentionPolicy>) -> AiRetentionView {
+    match policy {
+        Some(policy) => AiRetentionView {
+            trace_ttl_days: policy.trace_ttl_days,
+            is_default: false,
+            revision: Some(policy.version),
+            updated_at: Some(policy.updated_at),
+        },
+        None => AiRetentionView {
+            trace_ttl_days: fp_storage::repos::ai_trace::DEFAULT_AI_TRACE_TTL_DAYS,
+            is_default: true,
+            revision: None,
+            updated_at: None,
+        },
+    }
+}
+
+/// Effective AI trace retention policy for the team.
+#[utoipa::path(get, path = "/api/v1/teams/{team}/ai/retention",
+    tag = "AI",
+    params(("team" = String, Path, description = "Team name or UUID")),
+    responses((status = 200, body = AiRetentionView)))]
+pub async fn get_ai_retention(
+    State(state): State<AppState>,
+    Path(team): Path<String>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<AiRetentionView>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        ai_svc::get_retention_policy(&state.pool, &ctx, team, rid).await
+    };
+    run.await
+        .map(|policy| Json(shape_retention_view(policy)))
+        .map_err(|e| ApiError::new(e, rid))
+}
+
+/// Set the team's AI trace retention policy (create-or-replace; one policy per team).
+/// Existing rows keep the expiry they were stamped with; only new rows use the new TTL.
+#[utoipa::path(put, path = "/api/v1/teams/{team}/ai/retention",
+    tag = "AI",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("If-Match" = Option<i64>, Header, description = "Current retention revision; omit to create or replace, supply to guard against a concurrent change"),
+    ),
+    request_body = SetAiRetentionBody,
+    responses((status = 200, body = AiRetentionView)))]
+pub async fn put_ai_retention(
+    State(state): State<AppState>,
+    Path(team): Path<String>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<SetAiRetentionBody>,
+) -> Result<Json<AiRetentionView>, ApiError> {
+    let run = async {
+        let expected_version = optional_revision_from(&headers)?;
+        let team = resolve_team(&state, &ctx, &team).await?;
+        ai_svc::set_retention_policy(
+            &state.pool,
+            &ctx,
+            team,
+            body.trace_ttl_days,
+            expected_version,
+            rid,
+        )
+        .await
+    };
+    run.await
+        .map(|policy| Json(shape_retention_view(Some(policy))))
+        .map_err(|e| ApiError::new(e, rid))
+}
+
 #[utoipa::path(get, path = "/api/v1/teams/{team}/ai/usage",
     tag = "AI",
     params(("team" = String, Path, description = "Team name or UUID"), AiUsageQuery),
@@ -536,4 +758,110 @@ pub async fn get_ai_usage(
         .await
     };
     run.await.map(Json).map_err(|e| ApiError::new(e, rid))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn trace_event(request_id: &str) -> AiTraceEvent {
+        AiTraceEvent {
+            id: uuid::Uuid::now_v7(),
+            team_id: fp_domain::TeamId::from(uuid::Uuid::now_v7()),
+            request_id: request_id.to_string(),
+            trace_id: None,
+            route_config_id: fp_domain::RouteConfigId::from(uuid::Uuid::now_v7()),
+            listener_id: None,
+            provider_id: None,
+            model: Some("gpt-5".into()),
+            status_code: Some(200),
+            failure_hop: None,
+            hops: serde_json::json!([
+                {"hop": "route_match", "outcome": "matched", "origin": "listener", "failed": false}
+            ]),
+            created_at: chrono::Utc::now(),
+            expires_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn id_filtered_miss_carries_the_never_traced_hint() {
+        let shaped = shape_trace_response(Vec::new(), true);
+        assert!(shaped.traces.is_empty());
+        let miss = shaped
+            .miss
+            .expect("miss payload on an id-filtered empty result");
+        assert_eq!(miss.message, "no trace row found");
+        // The hint must name every never-traced class from design Risk 5.
+        for class in [
+            "TCP/TLS-level failures",
+            "client disconnect before request headers",
+            "pre-ExtProc declared-filter denials",
+        ] {
+            assert!(
+                miss.hint.contains(class),
+                "hint must name the never-traced class {class:?}, got: {}",
+                miss.hint
+            );
+        }
+    }
+
+    #[test]
+    fn unfiltered_empty_list_is_a_plain_empty_success_without_miss() {
+        let shaped = shape_trace_response(Vec::new(), false);
+        assert!(shaped.traces.is_empty());
+        assert!(shaped.miss.is_none());
+        // Distinguishable on the wire: no `miss` key at all for the empty success.
+        let json = serde_json::to_value(&shaped).unwrap();
+        assert_eq!(json, serde_json::json!({ "traces": [] }));
+    }
+
+    #[test]
+    fn hits_render_the_hop_timeline_and_never_a_miss() {
+        let shaped = shape_trace_response(vec![trace_event("req-1")], true);
+        assert!(shaped.miss.is_none());
+        assert_eq!(shaped.traces.len(), 1);
+        assert_eq!(shaped.traces[0].request_id, "req-1");
+        assert_eq!(shaped.traces[0].hops[0]["hop"], "route_match");
+    }
+
+    #[test]
+    fn trace_limit_clamps_to_the_repo_window() {
+        assert_eq!(default_trace_limit(), 50);
+        assert_eq!(trace_limit(default_trace_limit()), 50);
+        assert_eq!(trace_limit(0), 1);
+        assert_eq!(trace_limit(-5), 1);
+        assert_eq!(trace_limit(25), 25);
+        assert_eq!(trace_limit(10_000), 500);
+    }
+
+    #[test]
+    fn retention_view_distinguishes_stored_policy_from_builtin_default() {
+        // No policy row: the 30-day default, flagged as such, with no revision/updated_at
+        // keys on the wire at all.
+        let default_view = shape_retention_view(None);
+        assert_eq!(default_view.trace_ttl_days, 30);
+        assert!(default_view.is_default);
+        let json = serde_json::to_value(&default_view).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "trace_ttl_days": 30, "is_default": true })
+        );
+
+        // Stored policy: its TTL, revision, and update time; is_default false.
+        let updated_at = chrono::Utc::now();
+        let stored = shape_retention_view(Some(fp_domain::AiRetentionPolicy {
+            id: uuid::Uuid::now_v7(),
+            team_id: fp_domain::TeamId::from(uuid::Uuid::now_v7()),
+            trace_ttl_days: 7,
+            version: 3,
+            created_at: updated_at,
+            updated_at,
+        }));
+        assert_eq!(stored.trace_ttl_days, 7);
+        assert!(!stored.is_default);
+        assert_eq!(stored.revision, Some(3));
+        assert_eq!(stored.updated_at, Some(updated_at));
+    }
 }

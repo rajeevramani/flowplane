@@ -29,7 +29,7 @@ Booleans accept `true`/`1`/`yes` and `false`/`0`/`no`. Invalid server values fai
 | `FLOWPLANE_XDS_TLS_CLIENT_CA` | server | — | no ³ | CA bundle dataplane client certs must chain to. |
 | `FLOWPLANE_LOG_FORMAT` | server | `json` | no | Log format: `json` or `pretty`. |
 | `FLOWPLANE_LOG` | server | `info` | no | `tracing` env-filter directive. |
-| `FLOWPLANE_OTLP_ENDPOINT` | server | — | no | OTLP trace export endpoint; unset disables export. |
+| `FLOWPLANE_OTLP_ENDPOINT` | server | — | no | OTLP trace export endpoint; unset disables export. When set, AI gateway hop timelines are also exported as spans (one span per hop, nested under a per-request span); export is best-effort and never affects request handling or trace-row persistence. |
 | `FLOWPLANE_DEV_MODE` | server | `false` | no ⁴ | In-process OIDC issuer + seeded resources; needs the `dev-oidc` build feature. |
 | `FLOWPLANE_DEV_MODE_ACK` | server | — | no ⁴ | In release builds, dev mode requires this to equal `yes-this-is-not-production`. |
 | `FLOWPLANE_DEV_TOKEN_PATH` | server | — | no | Dev mode only: also write the per-boot dev bearer token to this file (it is otherwise only logged), so a sibling/init container can read it. Ignored outside dev mode. |

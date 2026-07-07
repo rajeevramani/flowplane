@@ -11,12 +11,12 @@ use fp_domain::gateway::route_config::{
     RouteConfigSpec, RouteRule, VirtualHost, WeightedClusterTarget,
 };
 use fp_domain::{
-    validate_ai_budget_name, validate_ai_provider_name, validate_ai_route_name, AiBudget,
-    AiBudgetSpec, AiProvider, AiProviderSpec, AiRoute, AiRouteMaterializedResources, AiRouteSpec,
-    AiUsageSummary, DomainError, DomainResult, RequestId, AI_MODEL_HEADER,
-    DEFAULT_AI_ROUTE_TIMEOUT_SECS,
+    ai_error_envelope, validate_ai_budget_name, validate_ai_provider_name, validate_ai_route_name,
+    validate_trace_ttl_days, AiBudget, AiBudgetSpec, AiProvider, AiProviderSpec, AiRetentionPolicy,
+    AiRoute, AiRouteMaterializedResources, AiRouteSpec, AiTraceEvent, AiUsageSummary, DomainError,
+    DomainResult, RequestId, AI_MODEL_HEADER, DEFAULT_AI_ROUTE_TIMEOUT_SECS,
 };
-use fp_storage::repos::{ai, audit, clusters as cluster_repo, gateway as gateway_repo};
+use fp_storage::repos::{ai, ai_trace, audit, clusters as cluster_repo, gateway as gateway_repo};
 use reqwest::Url;
 use sqlx::PgPool;
 use std::collections::BTreeMap;
@@ -526,6 +526,76 @@ pub async fn usage_summary(
 ) -> DomainResult<Vec<AiUsageSummary>> {
     authorize(pool, ctx, Resource::AiUsage, Action::Read, team, request_id).await?;
     ai::usage_summary(pool, team.id, query).await
+}
+
+/// Team-scoped read of AI trace rows: authorization happens before any repo read, and the
+/// repo query is scoped by the resolved team id, so a foreign request_id can never match.
+pub async fn trace_events(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    query: ai_trace::AiTraceQuery<'_>,
+    request_id: RequestId,
+) -> DomainResult<Vec<AiTraceEvent>> {
+    authorize(pool, ctx, Resource::AiUsage, Action::Read, team, request_id).await?;
+    ai_trace::list_trace_events(pool, team.id, query).await
+}
+
+/// The team's AI trace retention policy row; `None` means the built-in 30-day default is in
+/// force. Guarded by the same resource the trace read uses.
+pub async fn get_retention_policy(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    request_id: RequestId,
+) -> DomainResult<Option<AiRetentionPolicy>> {
+    authorize(pool, ctx, Resource::AiUsage, Action::Read, team, request_id).await?;
+    ai_trace::get_retention_policy(pool, team.id).await
+}
+
+/// Create-or-replace the team's AI trace retention policy (PUT semantics: one row per team).
+/// Affects only rows inserted after the change — existing rows keep the expiry they were
+/// stamped with.
+pub async fn set_retention_policy(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    trace_ttl_days: i32,
+    expected_version: Option<i64>,
+    request_id: RequestId,
+) -> DomainResult<AiRetentionPolicy> {
+    authorize(
+        pool,
+        ctx,
+        Resource::AiUsage,
+        Action::Update,
+        team,
+        request_id,
+    )
+    .await?;
+    validate_trace_ttl_days(trace_ttl_days)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("set AI retention policy: begin"))?;
+    let policy =
+        ai_trace::set_retention_policy(&mut tx, team, trace_ttl_days, expected_version).await?;
+    audit::record_in_tx(
+        &mut tx,
+        &mutation_audit(
+            ctx,
+            request_id,
+            team,
+            "ai_retention.set",
+            "ai-retention",
+            "trace",
+        ),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("set AI retention policy: commit"))?;
+    Ok(policy)
 }
 
 pub async fn update_route(
@@ -1197,10 +1267,10 @@ fn no_eligible_backend_route(path: &str) -> RouteRule {
             redirect: None,
             direct_response: Some(DirectResponseAction {
                 status: 400,
-                body: Some(
-                    r#"{"code":"no_eligible_ai_backend","message":"no eligible AI backend for requested model"}"#
-                        .into(),
-                ),
+                body: Some(ai_error_envelope(
+                    "no_eligible_ai_backend",
+                    "no eligible AI backend for requested model",
+                )),
             }),
             prefix_rewrite: None,
             template_rewrite: None,
@@ -1458,5 +1528,38 @@ mod tests {
         assert_eq!(weighted[1].cluster, names.cluster_names[1]);
         assert_eq!(weighted[1].weight, 7);
         assert!(default_route.action.retry_policy.is_none());
+    }
+
+    #[test]
+    fn no_eligible_backend_route_keeps_direct_response_body() {
+        let spec = route_spec(vec![AiRouteBackend {
+            provider_id: fp_domain::id::AiProviderId::generate(),
+            models: vec!["gpt-5".into()],
+            model_override: None,
+            weight: 1,
+            priority: 0,
+        }]);
+        let names = materialized_names("llm", &spec).expect("names");
+        let targets = ai_route_targets("llm", &spec).expect("targets");
+        let route_config = ai_route_config_spec(&spec, &targets, &names).expect("route config");
+
+        let route = route_config.virtual_hosts[0]
+            .routes
+            .iter()
+            .find(|route| route.name == "no-eligible-backend")
+            .expect("no eligible backend route");
+        let direct_response = route
+            .action
+            .direct_response
+            .as_ref()
+            .expect("direct response");
+
+        assert_eq!(direct_response.status, 400);
+        assert_eq!(
+            direct_response.body.as_deref(),
+            Some(
+                r#"{"code":"no_eligible_ai_backend","message":"no eligible AI backend for requested model"}"#
+            )
+        );
     }
 }

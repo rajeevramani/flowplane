@@ -2,6 +2,7 @@
 //! governance tables are org-keyed with the same explicitness.
 
 pub mod ai;
+pub mod ai_trace;
 pub mod api_lifecycle;
 pub mod audit;
 pub mod bootstrap;

@@ -107,14 +107,15 @@ fn openapi_document_covers_every_registered_operation() {
     // + 2 expose shortcut operations.
     // + 2 route-generation plan operations.
     // + 5 AI provider operations + 5 AI route operations.
-    // + 5 AI budget operations + 1 AI usage operation.
+    // + 5 AI budget operations + 1 AI usage operation + 1 AI trace operation.
+    // + 2 AI retention operations (GET/PUT).
     // + 1 RLS force-repush admin operation.
     // + 14 rate-limit CRUD operations (5 domain + 5 policy + 4 override).
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 110,
-        "expected 110 documented operations, got {operations}"
+        operations, 113,
+        "expected 113 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     let schemas = json["components"]["schemas"].as_object().expect("schemas");
@@ -148,6 +149,8 @@ fn openapi_document_covers_every_registered_operation() {
         "/api/v1/teams/{team}/learning-discovery-sessions/{session}/spec-versions",
         "/api/v1/teams/{team}/ai/providers",
         "/api/v1/teams/{team}/ai/routes",
+        "/api/v1/teams/{team}/ai/trace",
+        "/api/v1/teams/{team}/ai/retention",
         "/api/v1/teams/{team}/xds/status",
         "/api/v1/teams/{team}/ops/trace",
     ] {
@@ -1776,5 +1779,617 @@ async fn malformed_json_body_returns_validation_envelope() {
     assert!(
         body.get("request_id").and_then(|v| v.as_str()).is_some(),
         "envelope must carry request_id, got: {body}"
+    );
+}
+
+// Slice s4 (ai-gateway-e2e-trace): team-scoped AI trace retrieval over HTTP through the
+// real middleware stack — correlated hop timeline on a hit, a distinguishable miss with
+// the never-traced-classes hint, cross-org 404, and missing-grant 403.
+#[tokio::test]
+async fn ai_trace_retrieval_over_http() {
+    let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+        eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let pool = fp_storage::connect(&url, 4).await.expect("connect");
+    fp_storage::migrate(&pool).await.expect("migrate");
+
+    let issuer = DevIssuer::generate().expect("issuer");
+    let validator = fp_core::OidcValidator::new(issuer.oidc_config());
+    validator
+        .load_jwks_json(issuer.jwks_json())
+        .await
+        .expect("jwks");
+
+    // Org A: an admin (implicit team access) and a member holding only an unrelated grant.
+    let org_a = identity::create_org(&pool, &unique("org-a"), "")
+        .await
+        .expect("org a");
+    let team = identity::create_team(&pool, org_a.id, &unique("team"), "")
+        .await
+        .expect("team");
+    let admin_sub = unique("sub-admin");
+    let admin_token = issuer
+        .mint(&admin_sub, "trace-admin@test", "Trace Admin", 600)
+        .expect("mint admin");
+    let admin = identity::upsert_user_by_subject(&pool, &admin_sub, "trace-admin@test", "A")
+        .await
+        .expect("admin");
+    identity::add_org_membership(&pool, admin, org_a.id, OrgRole::Admin)
+        .await
+        .expect("admin member");
+
+    let member_sub = unique("sub-member");
+    let member_token = issuer
+        .mint(&member_sub, "trace-member@test", "Trace Member", 600)
+        .expect("mint member");
+    let member = identity::upsert_user_by_subject(&pool, &member_sub, "trace-member@test", "M")
+        .await
+        .expect("member");
+    identity::add_org_membership(&pool, member, org_a.id, OrgRole::Member)
+        .await
+        .expect("member membership");
+    identity::add_grant(
+        &pool,
+        member,
+        org_a.id,
+        team.id,
+        fp_domain::authz::Resource::AiProviders,
+        fp_domain::authz::Action::Read,
+        None,
+    )
+    .await
+    .expect("unrelated grant");
+
+    // Org B: an admin of a different org (cross-org caller).
+    let org_b = identity::create_org(&pool, &unique("org-b"), "")
+        .await
+        .expect("org b");
+    let outsider_sub = unique("sub-outsider");
+    let outsider_token = issuer
+        .mint(&outsider_sub, "trace-outsider@test", "Outsider", 600)
+        .expect("mint outsider");
+    let outsider =
+        identity::upsert_user_by_subject(&pool, &outsider_sub, "trace-outsider@test", "O")
+            .await
+            .expect("outsider");
+    identity::add_org_membership(&pool, outsider, org_b.id, OrgRole::Admin)
+        .await
+        .expect("outsider member");
+
+    // Seed one trace row for the team (the write path is slice s2's; here it is fixture data).
+    let request_id = uuid::Uuid::now_v7().to_string();
+    fp_storage::repos::ai_trace::upsert_trace_event(
+        &pool,
+        &fp_storage::repos::ai_trace::AiTraceEventUpsert {
+            team_id: team.id,
+            request_id: request_id.clone(),
+            trace_id: Some("0af7651916cd43dd8448eb211c80319c".into()),
+            route_config_id: fp_domain::RouteConfigId::from(uuid::Uuid::now_v7()),
+            listener_id: None,
+            provider_id: None,
+            model: Some("gpt-5".into()),
+            status_code: Some(200),
+            hops: serde_json::json!([
+                {"hop": "route_match", "started_at": "2026-07-04T00:00:00.100Z",
+                 "ended_at": "2026-07-04T00:00:00.200Z", "outcome": "matched",
+                 "origin": "listener", "failed": false, "detail": {}},
+                {"hop": "upstream", "started_at": "2026-07-04T00:00:00.300Z",
+                 "ended_at": "2026-07-04T00:00:00.900Z", "outcome": "ok",
+                 "origin": "upstream", "failed": false, "detail": {"status": 200}}
+            ]),
+        },
+    )
+    .await
+    .expect("seed trace row");
+
+    let app = fp_api::build_router(fp_api::AppState {
+        pool,
+        prometheus: PrometheusBuilder::new().build_recorder().handle(),
+        version: "test",
+        validator: Some(std::sync::Arc::new(validator)),
+        write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+        xds_readiness: None,
+        discovery_forwarding_policy: Default::default(),
+        rls_repush: None,
+        rls_grpc_configured: false,
+    });
+    let request = |token: &str, path: &str| {
+        Request::builder()
+            .method("GET")
+            .uri(path)
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("request")
+    };
+
+    // Hit: correlated hop timeline, no miss payload.
+    let response = app
+        .clone()
+        .oneshot(request(
+            &admin_token,
+            &format!(
+                "/api/v1/teams/{}/ai/trace?request_id={request_id}",
+                team.name
+            ),
+        ))
+        .await
+        .expect("trace hit");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    let traces = body["traces"].as_array().expect("traces");
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0]["request_id"], request_id);
+    assert_eq!(traces[0]["trace_id"], "0af7651916cd43dd8448eb211c80319c");
+    let hops = traces[0]["hops"].as_array().expect("hops");
+    assert_eq!(hops[0]["hop"], "route_match");
+    assert_eq!(hops[1]["hop"], "upstream");
+    assert!(
+        body.get("miss").is_none(),
+        "hit must not carry a miss: {body}"
+    );
+
+    // trace_id filter returns the same row.
+    let response = app
+        .clone()
+        .oneshot(request(
+            &admin_token,
+            &format!(
+                "/api/v1/teams/{}/ai/trace?trace_id=0af7651916cd43dd8448eb211c80319c&limit=5",
+                team.name
+            ),
+        ))
+        .await
+        .expect("trace by trace_id");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert!(body["traces"]
+        .as_array()
+        .expect("traces")
+        .iter()
+        .any(|t| t["request_id"] == request_id.as_str()));
+
+    // Miss: unknown request_id → distinguishable "no trace row found" with the hint naming
+    // the never-traced classes (design Risk 5).
+    let response = app
+        .clone()
+        .oneshot(request(
+            &admin_token,
+            &format!(
+                "/api/v1/teams/{}/ai/trace?request_id={}",
+                team.name,
+                uuid::Uuid::now_v7()
+            ),
+        ))
+        .await
+        .expect("trace miss");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert!(body["traces"].as_array().expect("traces").is_empty());
+    assert_eq!(body["miss"]["message"], "no trace row found");
+    let hint = body["miss"]["hint"].as_str().expect("miss hint");
+    for class in [
+        "TCP/TLS-level failures",
+        "client disconnect before request headers",
+        "pre-ExtProc declared-filter denials",
+    ] {
+        assert!(hint.contains(class), "hint must name {class:?}: {hint}");
+    }
+
+    // Cross-org: an org-B token querying team A's request_id gets 404 (org-boundary
+    // mapping) and zero rows — denied in the service before any repo read.
+    let response = app
+        .clone()
+        .oneshot(request(
+            &outsider_token,
+            &format!(
+                "/api/v1/teams/{}/ai/trace?request_id={request_id}",
+                team.name
+            ),
+        ))
+        .await
+        .expect("cross-org trace");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = json_of(response).await;
+    assert!(
+        body.get("traces").is_none(),
+        "denial must return no rows: {body}"
+    );
+
+    // Missing grant: a same-org member with other team grants but without (ai-usage, read)
+    // gets 403 naming the missing grant.
+    let response = app
+        .clone()
+        .oneshot(request(
+            &member_token,
+            &format!(
+                "/api/v1/teams/{}/ai/trace?request_id={request_id}",
+                team.name
+            ),
+        ))
+        .await
+        .expect("missing-grant trace");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = json_of(response).await;
+    assert_eq!(body["code"], "forbidden");
+    assert!(
+        body["message"]
+            .as_str()
+            .expect("message")
+            .contains("ai-usage:read"),
+        "403 must name the missing grant: {body}"
+    );
+}
+
+// Slice s5 (ai-gateway-e2e-trace): retention policy surface over HTTP through the real
+// middleware stack — GET enforces (ai-usage, read), PUT enforces (ai-usage, update) with the
+// budget-CRUD mutation shape (authorize, validate, tx, audit row), cross-org 404, and the
+// default-vs-stored policy view.
+#[tokio::test]
+async fn ai_retention_crud_authz_and_audit_over_http() {
+    let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+        eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let pool = fp_storage::connect(&url, 4).await.expect("connect");
+    fp_storage::migrate(&pool).await.expect("migrate");
+
+    let issuer = DevIssuer::generate().expect("issuer");
+    let validator = fp_core::OidcValidator::new(issuer.oidc_config());
+    validator
+        .load_jwks_json(issuer.jwks_json())
+        .await
+        .expect("jwks");
+
+    // Org A: an admin, a reader holding only (ai-usage, read), and a member holding only an
+    // unrelated grant.
+    let org_a = identity::create_org(&pool, &unique("org-a"), "")
+        .await
+        .expect("org a");
+    let team = identity::create_team(&pool, org_a.id, &unique("team"), "")
+        .await
+        .expect("team");
+    let admin_sub = unique("sub-admin");
+    let admin_token = issuer
+        .mint(&admin_sub, "ret-admin@test", "Retention Admin", 600)
+        .expect("mint admin");
+    let admin = identity::upsert_user_by_subject(&pool, &admin_sub, "ret-admin@test", "A")
+        .await
+        .expect("admin");
+    identity::add_org_membership(&pool, admin, org_a.id, OrgRole::Admin)
+        .await
+        .expect("admin member");
+
+    let reader_sub = unique("sub-reader");
+    let reader_token = issuer
+        .mint(&reader_sub, "ret-reader@test", "Retention Reader", 600)
+        .expect("mint reader");
+    let reader = identity::upsert_user_by_subject(&pool, &reader_sub, "ret-reader@test", "R")
+        .await
+        .expect("reader");
+    identity::add_org_membership(&pool, reader, org_a.id, OrgRole::Member)
+        .await
+        .expect("reader membership");
+    identity::add_grant(
+        &pool,
+        reader,
+        org_a.id,
+        team.id,
+        fp_domain::authz::Resource::AiUsage,
+        fp_domain::authz::Action::Read,
+        None,
+    )
+    .await
+    .expect("reader grant");
+
+    let member_sub = unique("sub-member");
+    let member_token = issuer
+        .mint(&member_sub, "ret-member@test", "Retention Member", 600)
+        .expect("mint member");
+    let member = identity::upsert_user_by_subject(&pool, &member_sub, "ret-member@test", "M")
+        .await
+        .expect("member");
+    identity::add_org_membership(&pool, member, org_a.id, OrgRole::Member)
+        .await
+        .expect("member membership");
+    identity::add_grant(
+        &pool,
+        member,
+        org_a.id,
+        team.id,
+        fp_domain::authz::Resource::AiProviders,
+        fp_domain::authz::Action::Read,
+        None,
+    )
+    .await
+    .expect("unrelated grant");
+
+    // Org B: an admin of a different org (cross-org caller).
+    let org_b = identity::create_org(&pool, &unique("org-b"), "")
+        .await
+        .expect("org b");
+    let outsider_sub = unique("sub-outsider");
+    let outsider_token = issuer
+        .mint(&outsider_sub, "ret-outsider@test", "Outsider", 600)
+        .expect("mint outsider");
+    let outsider = identity::upsert_user_by_subject(&pool, &outsider_sub, "ret-outsider@test", "O")
+        .await
+        .expect("outsider");
+    identity::add_org_membership(&pool, outsider, org_b.id, OrgRole::Admin)
+        .await
+        .expect("outsider member");
+
+    let app = fp_api::build_router(fp_api::AppState {
+        pool: pool.clone(),
+        prometheus: PrometheusBuilder::new().build_recorder().handle(),
+        version: "test",
+        validator: Some(std::sync::Arc::new(validator)),
+        write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+        xds_readiness: None,
+        discovery_forwarding_policy: Default::default(),
+        rls_repush: None,
+        rls_grpc_configured: false,
+    });
+    let path = format!("/api/v1/teams/{}/ai/retention", team.name);
+    let get = |token: &str| {
+        Request::builder()
+            .method("GET")
+            .uri(&path)
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("get request")
+    };
+    let put = |token: &str, body: serde_json::Value| {
+        Request::builder()
+            .method("PUT")
+            .uri(&path)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("put request")
+    };
+    let audit_rows = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_log \
+             WHERE team_id = $1 AND action = 'ai_retention.set' AND outcome = 'success'",
+        )
+        .bind(team.id.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .expect("audit count")
+    };
+
+    // No policy row yet: GET reports the built-in 30-day default.
+    let response = app
+        .clone()
+        .oneshot(get(&admin_token))
+        .await
+        .expect("get default");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["trace_ttl_days"], 30);
+    assert_eq!(body["is_default"], true);
+    assert!(body.get("revision").is_none(), "default has no revision");
+
+    // PUT creates the policy (mutation shape: authorize, validate, tx, audit row).
+    let response = app
+        .clone()
+        .oneshot(put(&admin_token, serde_json::json!({"trace_ttl_days": 7})))
+        .await
+        .expect("put create");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["trace_ttl_days"], 7);
+    assert_eq!(body["is_default"], false);
+    assert_eq!(body["revision"], 1);
+    assert_eq!(
+        audit_rows().await,
+        1,
+        "PUT must commit exactly one audit row"
+    );
+
+    // GET now reads the stored policy.
+    let response = app
+        .clone()
+        .oneshot(get(&admin_token))
+        .await
+        .expect("get stored");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["trace_ttl_days"], 7);
+    assert_eq!(body["is_default"], false);
+
+    // PUT replaces (one policy per team) and bumps the revision; second audit row.
+    let response = app
+        .clone()
+        .oneshot(put(&admin_token, serde_json::json!({"trace_ttl_days": 14})))
+        .await
+        .expect("put replace");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["trace_ttl_days"], 14);
+    assert_eq!(body["revision"], 2);
+    assert_eq!(audit_rows().await, 2);
+
+    // Validation fails closed BEFORE any write: out-of-bounds TTLs are rejected and leave
+    // no audit row behind.
+    for bad_ttl in [0, -1, 366] {
+        let response = app
+            .clone()
+            .oneshot(put(
+                &admin_token,
+                serde_json::json!({"trace_ttl_days": bad_ttl}),
+            ))
+            .await
+            .expect("put invalid");
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "trace_ttl_days {bad_ttl} must be rejected"
+        );
+    }
+    assert_eq!(audit_rows().await, 2, "rejected PUTs must not audit");
+
+    // (ai-usage, read) alone: GET allowed, PUT denied naming the update grant.
+    let response = app
+        .clone()
+        .oneshot(get(&reader_token))
+        .await
+        .expect("reader get");
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app
+        .clone()
+        .oneshot(put(&reader_token, serde_json::json!({"trace_ttl_days": 5})))
+        .await
+        .expect("reader put");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = json_of(response).await;
+    assert!(
+        body["message"]
+            .as_str()
+            .expect("message")
+            .contains("ai-usage:update"),
+        "403 must name the missing update grant: {body}"
+    );
+
+    // Unrelated grant only: GET denied naming the read grant.
+    let response = app
+        .clone()
+        .oneshot(get(&member_token))
+        .await
+        .expect("member get");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = json_of(response).await;
+    assert!(
+        body["message"]
+            .as_str()
+            .expect("message")
+            .contains("ai-usage:read"),
+        "403 must name the missing read grant: {body}"
+    );
+
+    // Cross-org: 404 per the org-boundary mapping, for both verbs.
+    let response = app
+        .clone()
+        .oneshot(get(&outsider_token))
+        .await
+        .expect("outsider get");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let response = app
+        .clone()
+        .oneshot(put(
+            &outsider_token,
+            serde_json::json!({"trace_ttl_days": 5}),
+        ))
+        .await
+        .expect("outsider put");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // The stored policy is untouched by every denied/rejected attempt above.
+    let ttl: i32 =
+        sqlx::query_scalar("SELECT trace_ttl_days FROM ai_retention_policies WHERE team_id = $1")
+            .bind(team.id.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("policy row");
+    assert_eq!(ttl, 14);
+
+    // #226 optimistic concurrency (If-Match). The policy is at revision 2 / ttl 14 here,
+    // untouched by all the rejected attempts above.
+    let put_if_match = |token: &str, body: serde_json::Value, revision: i64| {
+        Request::builder()
+            .method("PUT")
+            .uri(&path)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header("if-match", revision.to_string())
+            .body(Body::from(body.to_string()))
+            .expect("put if-match request")
+    };
+    // A stale revision (1, current is 2) is rejected with 409 and writes nothing.
+    let response = app
+        .clone()
+        .oneshot(put_if_match(
+            &admin_token,
+            serde_json::json!({"trace_ttl_days": 21}),
+            1,
+        ))
+        .await
+        .expect("put stale");
+    assert_eq!(
+        response.status(),
+        StatusCode::CONFLICT,
+        "a stale If-Match must be rejected, not silently last-writer-win"
+    );
+    assert_eq!(
+        audit_rows().await,
+        2,
+        "a rejected stale write commits no audit row"
+    );
+    let response = app
+        .clone()
+        .oneshot(get(&admin_token))
+        .await
+        .expect("get after stale");
+    assert_eq!(
+        json_of(response).await["trace_ttl_days"],
+        14,
+        "the stale write left the stored policy untouched"
+    );
+    // The current revision (2) succeeds and bumps to 3.
+    let response = app
+        .clone()
+        .oneshot(put_if_match(
+            &admin_token,
+            serde_json::json!({"trace_ttl_days": 21}),
+            2,
+        ))
+        .await
+        .expect("put current revision");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["trace_ttl_days"], 21);
+    assert_eq!(body["revision"], 3);
+    assert_eq!(audit_rows().await, 3);
+    // Omitting If-Match still creates-or-replaces (the revision is optional), bumping to 4.
+    let response = app
+        .clone()
+        .oneshot(put(&admin_token, serde_json::json!({"trace_ttl_days": 28})))
+        .await
+        .expect("put without if-match");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_of(response).await["revision"], 4);
+
+    // A present-but-malformed If-Match is a validation error, NOT treated as absent — it must
+    // never fall through to a silent create-or-replace. Policy stays at revision 4.
+    let malformed = Request::builder()
+        .method("PUT")
+        .uri(&path)
+        .header("authorization", format!("Bearer {admin_token}"))
+        .header("content-type", "application/json")
+        .header("if-match", "not-a-revision")
+        .body(Body::from(
+            serde_json::json!({"trace_ttl_days": 9}).to_string(),
+        ))
+        .expect("malformed if-match request");
+    let response = app
+        .clone()
+        .oneshot(malformed)
+        .await
+        .expect("put malformed if-match");
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "a present-but-malformed If-Match must be rejected, not treated as absent"
+    );
+    let response = app
+        .clone()
+        .oneshot(get(&admin_token))
+        .await
+        .expect("get after malformed");
+    assert_eq!(
+        json_of(response).await["revision"],
+        4,
+        "the malformed-If-Match write must not have changed the policy"
     );
 }

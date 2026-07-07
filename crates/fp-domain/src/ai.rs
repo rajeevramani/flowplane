@@ -1,7 +1,7 @@
 //! AI gateway provider resources (S10).
 
 use crate::error::{DomainError, DomainResult};
-use crate::id::{AiBudgetId, AiProviderId, AiRouteId, RouteConfigId, SecretId, TeamId};
+use crate::id::{AiBudgetId, AiProviderId, AiRouteId, ListenerId, RouteConfigId, SecretId, TeamId};
 use crate::validate_name;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -20,6 +20,14 @@ pub struct AiProvider {
 pub const AI_MODEL_HEADER: &str = "x-flowplane-ai-model";
 pub const DEFAULT_AI_ROUTE_TIMEOUT_SECS: u32 = 120;
 pub const MAX_AI_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+
+pub fn ai_error_envelope(code: &str, message: &str) -> String {
+    serde_json::json!({
+        "code": code,
+        "message": message,
+    })
+    .to_string()
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AiRoute {
@@ -180,6 +188,59 @@ pub struct AiUsageSummary {
     pub completion_tokens: u64,
     pub total_tokens: u64,
     pub event_count: u64,
+}
+
+/// One end-to-end trace row per AI data-plane request, keyed by the server-owned
+/// `x-request-id`. Hop detail is carried only in `hops` (a JSON array of
+/// `{hop, started_at, ended_at, outcome, origin, detail}` entries) — there is no
+/// relational hop projection, and by construction no prompt/completion/credential
+/// payload field exists anywhere in the row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct AiTraceEvent {
+    #[schema(value_type = uuid::Uuid)]
+    pub id: uuid::Uuid,
+    #[schema(value_type = uuid::Uuid)]
+    pub team_id: TeamId,
+    pub request_id: String,
+    pub trace_id: Option<String>,
+    #[schema(value_type = uuid::Uuid)]
+    pub route_config_id: RouteConfigId,
+    #[schema(value_type = Option<uuid::Uuid>)]
+    pub listener_id: Option<ListenerId>,
+    #[schema(value_type = Option<uuid::Uuid>)]
+    pub provider_id: Option<AiProviderId>,
+    pub model: Option<String>,
+    pub status_code: Option<i32>,
+    pub failure_hop: Option<String>,
+    #[schema(value_type = Object)]
+    pub hops: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Per-team AI trace retention policy: the TTL stamped onto new `ai_trace_events` rows at
+/// insert time. At most one row per team; absence means the built-in 30-day default applies.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AiRetentionPolicy {
+    pub id: uuid::Uuid,
+    pub team_id: TeamId,
+    pub trace_ttl_days: i32,
+    pub version: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+pub const MAX_AI_TRACE_TTL_DAYS: i32 = 365;
+
+/// Bounds mirror `raw_observation_ttl_days` (1..=365): a zero/negative TTL would expire rows
+/// at insert, and an unbounded one defeats retention entirely.
+pub fn validate_trace_ttl_days(days: i32) -> DomainResult<()> {
+    if !(1..=MAX_AI_TRACE_TTL_DAYS).contains(&days) {
+        return Err(DomainError::validation(format!(
+            "trace_ttl_days must be between 1 and {MAX_AI_TRACE_TTL_DAYS}, got {days}"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -527,6 +588,26 @@ fn usage_from_sse_event(event: &str) -> Option<OpenAiTokenUsage> {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trace_ttl_days_bounds_are_explicit() {
+        assert!(validate_trace_ttl_days(1).is_ok());
+        assert!(validate_trace_ttl_days(30).is_ok());
+        assert!(validate_trace_ttl_days(MAX_AI_TRACE_TTL_DAYS).is_ok());
+        assert!(validate_trace_ttl_days(0).is_err());
+        assert!(validate_trace_ttl_days(-7).is_err());
+        assert!(validate_trace_ttl_days(MAX_AI_TRACE_TTL_DAYS + 1).is_err());
+    }
+
+    #[test]
+    fn ai_error_envelope_round_trips_embedded_quotes() {
+        let message = r#"AI budget "hard-stop" exceeded for model "gpt-5""#;
+        let envelope = ai_error_envelope("flowplane_ai_budget_exceeded", message);
+
+        let parsed: serde_json::Value = serde_json::from_str(&envelope).expect("json envelope");
+        assert_eq!(parsed["code"], "flowplane_ai_budget_exceeded");
+        assert_eq!(parsed["message"], message);
+    }
 
     #[test]
     fn provider_spec_rejects_unsupported_kind_and_bad_url() {

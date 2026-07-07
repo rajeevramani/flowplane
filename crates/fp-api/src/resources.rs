@@ -68,6 +68,33 @@ pub fn revision_from(headers: &HeaderMap) -> DomainResult<i64> {
         })
 }
 
+/// Optional revision from `If-Match`, for create-or-replace endpoints where the header is
+/// optional: absent → `None` (create or replace); present → `Some(n)` (must match the current
+/// revision). A present-but-malformed header is an error rather than being silently ignored, so
+/// a client that meant to guard a write never falls through to a last-writer-wins replace.
+pub fn optional_revision_from(headers: &HeaderMap) -> DomainResult<Option<i64>> {
+    let Some(value) = headers.get(axum::http::header::IF_MATCH) else {
+        return Ok(None);
+    };
+    // The header IS present: it must be a valid integer revision. Anything unparseable —
+    // non-UTF-8, empty (`If-Match: ""`), or non-numeric — is an error, never a silent
+    // fall-through to a last-writer-wins replace (that is what an *omitted* header means).
+    value
+        .to_str()
+        .ok()
+        .map(|v| v.trim().trim_matches('"'))
+        .filter(|v| !v.is_empty())
+        .and_then(|v| v.parse::<i64>().ok())
+        .map(Some)
+        .ok_or_else(|| {
+            DomainError::new(
+                ErrorCode::ValidationFailed,
+                "If-Match must be an integer revision",
+            )
+            .with_hint("send If-Match: <revision>, or omit it to create or replace")
+        })
+}
+
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ListQuery {
     /// Max items (default 50, cap 500).

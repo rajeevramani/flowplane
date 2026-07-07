@@ -720,8 +720,25 @@ async fn ai_cluster_metadata(
     .map_err(|err| DomainError::internal(format!("list AI cluster metadata: {err}")))?;
     let mut out = HashMap::with_capacity(rows.len());
     for row in rows {
+        // `cluster_names[position + 1]` is NULL when a backend position has no matching
+        // materialized cluster name (short/misaligned cluster_names array). That is a data
+        // gap for an incompletely materialized route, not a fatal condition — skip it and
+        // keep priming, mirroring the undecryptable-secret resilience elsewhere in rebuild.
+        // Row::get would panic on the NULL, taking down snapshot priming (and startup).
+        let cluster_name: Option<String> = row.try_get("cluster_name").map_err(|err| {
+            DomainError::internal(format!("decode AI cluster metadata cluster_name: {err}"))
+        })?;
+        let Some(cluster_name) = cluster_name else {
+            let position: i32 = row.try_get("position").unwrap_or_default();
+            tracing::warn!(
+                team = %team_id,
+                position,
+                "skipping AI cluster metadata: backend position has no materialized cluster name"
+            );
+            continue;
+        };
         out.insert(
-            row.get("cluster_name"),
+            cluster_name,
             translate::AiUpstreamProcessorMetadata {
                 team_id: team_id.as_uuid(),
                 route_config_id: RouteConfigId::from(row.get::<uuid::Uuid, _>("route_config_id"))
@@ -1058,8 +1075,14 @@ pub const XDS_CONSUMER: &str = "xds-snapshot";
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use envoy_types::pb::envoy::config::common::mutation_rules::v3 as mutation_rules;
+    use envoy_types::pb::envoy::config::core::v3 as envoy_core;
     use envoy_types::pb::envoy::config::listener::v3 as lst;
+    use envoy_types::pb::envoy::extensions::filters::http::ext_proc::v3 as ext_proc;
+    use envoy_types::pb::envoy::extensions::filters::http::router::v3::Router;
     use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3 as hcm;
+    use envoy_types::pb::envoy::r#type::matcher::v3 as matcher_type;
+    use envoy_types::pb::google::protobuf as wkt;
     use fp_core::{GrantSet, PrincipalCtx};
     use fp_domain::api_lifecycle::{ApiDefinitionSpec, ApiRouteBindingSpec, CaptureSessionSpec};
     use fp_domain::authz::TeamRef;
@@ -1951,5 +1974,389 @@ mod tests {
         let fixed = cache.team(team.id).await.endpoints;
         assert_ne!(fixed.resources, initial.resources);
         assert_ne!(fixed.resources, updated.resources);
+    }
+
+    // -------- ai-gateway-e2e-trace s1: server-owned x-request-id on AI listeners --------
+    //
+    // DB-backed: an AI route materialized through fp-core services (secret + provider +
+    // route → owner_kind 'ai' listener row) must come out of rebuild_team with the
+    // request-identity fields pinned on its HCM. Skips when FLOWPLANE_TEST_DATABASE_URL
+    // is unset; ENV_LOCK serializes FLOWPLANE_SECRET_ENCRYPTION_KEY (shared process env).
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn materialized_ai_listener_snapshot_pins_server_owned_request_identity() {
+        use fp_domain::{AiProviderKind, AiProviderSpec, AiRouteBackend, AiRouteSpec};
+
+        let _guard = ENV_LOCK.lock().await;
+        let Some((pool, team, _, ctx, _)) = world().await else {
+            return;
+        };
+        std::env::set_var(
+            "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+            "12345678901234567890123456789012",
+        );
+
+        let secret = fp_core::services::secrets::create_secret(
+            &pool,
+            &ctx,
+            team,
+            fp_core::services::secrets::SecretWrite {
+                name: &unique("ai-key"),
+                description: "",
+                spec: SecretSpec::GenericSecret {
+                    secret: "aGVsbG8=".into(),
+                },
+                expires_at: None,
+            },
+            RequestId::generate(),
+        )
+        .await
+        .expect("secret");
+        let provider = fp_core::services::ai::create_provider(
+            &pool,
+            &ctx,
+            team,
+            &unique("provider"),
+            AiProviderSpec {
+                kind: AiProviderKind::OpenaiCompatible,
+                base_url: "https://upstream.example".into(),
+                path_prefix: Some("/v1".into()),
+                credential_secret_id: secret.id,
+                models: vec!["gpt-5".into()],
+                auth_header: "authorization".into(),
+            },
+            RequestId::generate(),
+        )
+        .await
+        .expect("provider");
+
+        // Unique per-test listener port: this is product state in the shared test
+        // PostgreSQL, not a bound socket, but uniqueness keeps parallel runs disjoint.
+        let port = 20000 + (uuid::Uuid::now_v7().as_u128() % 10_000) as u16;
+        let route_name = unique("ai-route");
+        fp_core::services::ai::create_route(
+            &pool,
+            &ctx,
+            team,
+            &route_name,
+            AiRouteSpec {
+                listener_port: port,
+                path: "/v1/chat/completions".into(),
+                backends: vec![AiRouteBackend {
+                    provider_id: provider.id,
+                    models: vec!["gpt-5".into()],
+                    model_override: None,
+                    weight: 1,
+                    priority: 0,
+                }],
+            },
+            RequestId::generate(),
+        )
+        .await
+        .expect("ai route");
+
+        let cache = SnapshotCache::new();
+        cache.rebuild_team(&pool, team.id).await.expect("rebuild");
+        let snap = cache.team(team.id).await;
+
+        let listener_name = format!("ai-{route_name}-listener");
+        let listener = snap
+            .listeners
+            .resources
+            .iter()
+            .map(|any| {
+                assert_eq!(any.type_url, LISTENER_TYPE_URL);
+                lst::Listener::decode(any.value.as_slice()).expect("decode listener")
+            })
+            .find(|listener| listener.name == listener_name)
+            .expect("materialized AI listener in snapshot");
+        let hcm_bytes = match &listener.filter_chains[0].filters[0].config_type {
+            Some(lst::filter::ConfigType::TypedConfig(any)) => any.value.clone(),
+            _ => panic!("expected typed HCM"),
+        };
+        let manager = hcm::HttpConnectionManager::decode(hcm_bytes.as_slice()).expect("decode hcm");
+
+        // Pinned request-identity fields (ai-gateway-e2e-trace s1), asserted
+        // explicitly for a readable failure before the whole-proto compare.
+        assert!(!manager.preserve_external_request_id);
+        assert_eq!(
+            manager.use_remote_address,
+            Some(wkt::BoolValue { value: true }),
+            "AI listener HCM must set use_remote_address so requests are edge requests"
+        );
+        assert_eq!(
+            manager.internal_address_config,
+            Some(hcm::http_connection_manager::InternalAddressConfig {
+                unix_sockets: false,
+                cidr_ranges: vec![envoy_core::CidrRange {
+                    address_prefix: "240.0.0.0".to_string(),
+                    prefix_len: Some(wkt::UInt32Value { value: 4 }),
+                }],
+            }),
+            "AI listener HCM must declare no client peer internal via a non-matching CIDR"
+        );
+        assert!(
+            manager
+                .generate_request_id
+                .as_ref()
+                .expect("generate_request_id")
+                .value
+        );
+        assert!(manager.always_set_request_id_in_response);
+
+        // The ext_proc initial metadata carries the materialized row ids.
+        let listener_id: uuid::Uuid =
+            sqlx::query_scalar("SELECT id FROM listeners WHERE team_id = $1 AND name = $2")
+                .bind(team.id.as_uuid())
+                .bind(&listener_name)
+                .fetch_one(&pool)
+                .await
+                .expect("listener row id");
+        let route_config_name = format!("ai-{route_name}-routes");
+        let route_config_id: uuid::Uuid =
+            sqlx::query_scalar("SELECT id FROM route_configs WHERE team_id = $1 AND name = $2")
+                .bind(team.id.as_uuid())
+                .bind(&route_config_name)
+                .fetch_one(&pool)
+                .await
+                .expect("route config row id");
+
+        // Whole-proto compare: the complete HCM expected for a materialized AI
+        // listener, spelled out field-by-field so drift anywhere in the HCM —
+        // not just the identity pins — fails this test.
+        const EXT_PROC_TYPE_NAME: &str =
+            "envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor";
+        const ROUTER_TYPE_NAME: &str = "envoy.extensions.filters.http.router.v3.Router";
+        let expected_ext_proc = ext_proc::ExternalProcessor {
+            grpc_service: Some(envoy_core::GrpcService {
+                timeout: Some(wkt::Duration {
+                    seconds: 5,
+                    nanos: 0,
+                }),
+                initial_metadata: vec![
+                    metadata_header("x-flowplane-ai-processor", "true".into()),
+                    metadata_header("x-flowplane-team-id", team.id.as_uuid().to_string()),
+                    metadata_header("x-flowplane-listener-id", listener_id.to_string()),
+                    metadata_header("x-flowplane-route-config-id", route_config_id.to_string()),
+                ],
+                target_specifier: Some(envoy_core::grpc_service::TargetSpecifier::EnvoyGrpc(
+                    envoy_core::grpc_service::EnvoyGrpc {
+                        cluster_name: "xds_cluster".to_string(),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            }),
+            failure_mode_allow: false,
+            processing_mode: Some(ext_proc::ProcessingMode {
+                request_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
+                response_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
+                request_body_mode: ext_proc::processing_mode::BodySendMode::Buffered as i32,
+                response_body_mode: ext_proc::processing_mode::BodySendMode::BufferedPartial as i32,
+                request_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
+                response_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
+            }),
+            message_timeout: Some(wkt::Duration {
+                seconds: 5,
+                nanos: 0,
+            }),
+            stat_prefix: "flowplane_ai".to_string(),
+            mutation_rules: Some(mutation_rules::HeaderMutationRules {
+                allow_all_routing: Some(wkt::BoolValue { value: true }),
+                allow_expression: Some(matcher_type::RegexMatcher {
+                    regex: "^(authorization|x-api-key|x-flowplane-ai-model|content-length|:path)$"
+                        .to_string(),
+                    engine_type: Some(matcher_type::regex_matcher::EngineType::GoogleRe2(
+                        matcher_type::regex_matcher::GoogleRe2::default(),
+                    )),
+                }),
+                ..Default::default()
+            }),
+            observability_mode: false,
+            disable_immediate_response: false,
+            route_cache_action: ext_proc::external_processor::RouteCacheAction::Default as i32,
+            ..Default::default()
+        };
+        let expected = hcm::HttpConnectionManager {
+            codec_type: hcm::http_connection_manager::CodecType::Http1 as i32,
+            stat_prefix: listener_name.clone(),
+            route_specifier: Some(hcm::http_connection_manager::RouteSpecifier::Rds(
+                hcm::Rds {
+                    route_config_name,
+                    config_source: Some(envoy_core::ConfigSource {
+                        resource_api_version: envoy_core::ApiVersion::V3 as i32,
+                        config_source_specifier: Some(
+                            envoy_core::config_source::ConfigSourceSpecifier::Ads(
+                                envoy_core::AggregatedConfigSource {},
+                            ),
+                        ),
+                        ..Default::default()
+                    }),
+                },
+            )),
+            http_filters: vec![
+                hcm::HttpFilter {
+                    name: "envoy.filters.http.ext_proc.flowplane_ai".to_string(),
+                    config_type: Some(hcm::http_filter::ConfigType::TypedConfig(wkt::Any {
+                        type_url: format!("type.googleapis.com/{EXT_PROC_TYPE_NAME}"),
+                        value: expected_ext_proc.encode_to_vec(),
+                    })),
+                    ..Default::default()
+                },
+                hcm::HttpFilter {
+                    name: "envoy.filters.http.router".to_string(),
+                    config_type: Some(hcm::http_filter::ConfigType::TypedConfig(wkt::Any {
+                        type_url: format!("type.googleapis.com/{ROUTER_TYPE_NAME}"),
+                        value: Router::default().encode_to_vec(),
+                    })),
+                    ..Default::default()
+                },
+            ],
+            generate_request_id: Some(wkt::BoolValue { value: true }),
+            always_set_request_id_in_response: true,
+            use_remote_address: Some(wkt::BoolValue { value: true }),
+            internal_address_config: Some(hcm::http_connection_manager::InternalAddressConfig {
+                unix_sockets: false,
+                cidr_ranges: vec![envoy_core::CidrRange {
+                    address_prefix: "240.0.0.0".to_string(),
+                    prefix_len: Some(wkt::UInt32Value { value: 4 }),
+                }],
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            manager, expected,
+            "materialized AI listener HCM drifted from the full expected proto"
+        );
+        assert_eq!(
+            hcm_bytes,
+            expected.encode_to_vec(),
+            "materialized AI listener HCM bytes drifted (deterministic encoding)"
+        );
+    }
+
+    /// Regression: an AI route whose `cluster_names` array is shorter than its backend
+    /// positions produces a NULL `cluster_name` in `ai_cluster_metadata`. `Row::get` used
+    /// to panic on that NULL, taking down xDS snapshot priming (and `flowplane serve`
+    /// startup). Priming must degrade — skip the gap and keep the aligned backends.
+    #[tokio::test]
+    async fn ai_cluster_metadata_skips_backend_with_no_materialized_cluster_name() {
+        use fp_domain::{AiProviderKind, AiProviderSpec};
+
+        let _guard = ENV_LOCK.lock().await;
+        let Some((pool, team, _, ctx, _)) = world().await else {
+            return;
+        };
+        std::env::set_var(
+            "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+            "12345678901234567890123456789012",
+        );
+
+        let secret = fp_core::services::secrets::create_secret(
+            &pool,
+            &ctx,
+            team,
+            fp_core::services::secrets::SecretWrite {
+                name: &unique("ai-key"),
+                description: "",
+                spec: SecretSpec::GenericSecret {
+                    secret: "aGVsbG8=".into(),
+                },
+                expires_at: None,
+            },
+            RequestId::generate(),
+        )
+        .await
+        .expect("secret");
+        let provider = fp_core::services::ai::create_provider(
+            &pool,
+            &ctx,
+            team,
+            &unique("provider"),
+            AiProviderSpec {
+                kind: AiProviderKind::OpenaiCompatible,
+                base_url: "https://upstream.example".into(),
+                path_prefix: Some("/v1".into()),
+                credential_secret_id: secret.id,
+                models: vec!["gpt-5".into()],
+                auth_header: "authorization".into(),
+            },
+            RequestId::generate(),
+        )
+        .await
+        .expect("provider");
+
+        // Malformed materialization injected via raw SQL (the create_route builder keeps
+        // cluster_names aligned with backends, so it cannot produce this gap): two backends,
+        // but a single-element cluster_names, so position 1 -> cluster_names[2] -> NULL.
+        let route_config_name = unique("cn-routes");
+        let route_id = uuid::Uuid::now_v7();
+        let aligned_cluster = unique("aligned-cluster");
+        sqlx::query(
+            "INSERT INTO route_configs (id, team_id, org_id, name, spec) \
+             VALUES ($1, $2, $3, $4, '{}'::jsonb)",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .bind(team.id.as_uuid())
+        .bind(team.org_id.as_uuid())
+        .bind(&route_config_name)
+        .execute(&pool)
+        .await
+        .expect("route config");
+        sqlx::query(
+            "INSERT INTO ai_routes \
+             (id, team_id, org_id, name, spec, cluster_names, route_config_name, listener_name) \
+             VALUES ($1, $2, $3, $4, $5, ARRAY[$6], $7, $8)",
+        )
+        .bind(route_id)
+        .bind(team.id.as_uuid())
+        .bind(team.org_id.as_uuid())
+        .bind(unique("cn-route"))
+        .bind(serde_json::json!({
+            "listener_port": 21000, "path": "/v1/chat/completions", "backends": []
+        }))
+        .bind(&aligned_cluster)
+        .bind(&route_config_name)
+        .bind(unique("cn-listener"))
+        .execute(&pool)
+        .await
+        .expect("ai route");
+        for position in [0_i32, 1_i32] {
+            sqlx::query(
+                "INSERT INTO ai_route_backends (ai_route_id, team_id, provider_id, position) \
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(route_id)
+            .bind(team.id.as_uuid())
+            .bind(provider.id.as_uuid())
+            .bind(position)
+            .execute(&pool)
+            .await
+            .expect("backend");
+        }
+
+        // Must return Ok (not panic). The team is fresh, so exactly the aligned backend
+        // survives and the NULL-cluster_name backend at position 1 is skipped.
+        let meta = ai_cluster_metadata(&pool, team.id)
+            .await
+            .expect("ai_cluster_metadata must not fail on a NULL cluster_name");
+        assert_eq!(meta.len(), 1, "only the aligned backend is kept: {meta:?}");
+        assert!(
+            meta.contains_key(&aligned_cluster),
+            "position 0's materialized cluster is kept"
+        );
+        assert_eq!(
+            meta[&aligned_cluster].backend_position, 0,
+            "the surviving entry is the aligned position-0 backend"
+        );
+    }
+
+    fn metadata_header(key: &str, value: String) -> envoy_core::HeaderValue {
+        envoy_core::HeaderValue {
+            key: key.to_string(),
+            value,
+            raw_value: Vec::new(),
+        }
     }
 }

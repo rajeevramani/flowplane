@@ -588,7 +588,7 @@ mod tests {
         // from `--help`. The union guard forces every FUTURE leaf to be classified one way or the
         // other. Pure in-process (no temp dir / network) so it is inherently parallel-safe.
 
-        // 44 SPINE leaves (space-joined paths) — each must expose a parseable example.
+        // 46 SPINE leaves (space-joined paths) — each must expose a parseable example.
         const SPINE: &[&str] = &[
             "auth login",
             "config set-context",
@@ -615,6 +615,8 @@ mod tests {
             "ai routes update",
             "ai budgets create",
             "ai budgets update",
+            "ai retention set",
+            "ai trace",
             "rate-limit domain create",
             "rate-limit domain update",
             "rate-limit policy create",
@@ -636,7 +638,7 @@ mod tests {
             "apply",
         ];
 
-        // 77 EXEMPT leaves (space-joined paths) — no example required.
+        // 78 EXEMPT leaves (space-joined paths) — no example required.
         const EXEMPT: &[&str] = &[
             "ai budgets delete",
             "ai budgets get",
@@ -644,6 +646,7 @@ mod tests {
             "ai providers delete",
             "ai providers get",
             "ai providers list",
+            "ai retention get",
             "ai routes delete",
             "ai routes get",
             "ai routes list",

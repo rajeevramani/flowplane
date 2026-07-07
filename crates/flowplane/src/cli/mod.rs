@@ -17,11 +17,12 @@ use std::time::{Duration, Instant};
 
 use client::RestClient;
 pub use commands::{
-    AiCommand, ApiCommand, ApplyCommand, AuthCommand, CertCommand, ConfigCommand,
-    DataplaneBootstrapMode, DataplaneCommand, ExposeCommand, GrantCommand, LearnCommand,
-    LearnDiscoverCommand, McpCommand, OpsCommand, OrgCommand, OrgMemberCommand, RateLimitCommand,
-    RateLimitOverrideCommand, RateLimitPolicyCommand, ResourceCommand, RouteCommand, SecretCommand,
-    StatsCommand, TeamCommand, TeamMemberCommand, UnexposeCommand, XdsCommand,
+    AiCommand, AiRetentionCommand, ApiCommand, ApplyCommand, AuthCommand, CertCommand,
+    ConfigCommand, DataplaneBootstrapMode, DataplaneCommand, ExposeCommand, GrantCommand,
+    LearnCommand, LearnDiscoverCommand, McpCommand, OpsCommand, OrgCommand, OrgMemberCommand,
+    RateLimitCommand, RateLimitOverrideCommand, RateLimitPolicyCommand, ResourceCommand,
+    RouteCommand, SecretCommand, StatsCommand, TeamCommand, TeamMemberCommand, UnexposeCommand,
+    XdsCommand,
 };
 pub use config::GlobalOptions;
 use config::{
@@ -1023,6 +1024,62 @@ pub async fn run_ai(global: GlobalOptions, command: AiCommand) -> Result<()> {
         AiCommand::Providers { command } => run_resource(global, "ai/providers", command).await,
         AiCommand::Routes { command } => run_resource(global, "ai/routes", command).await,
         AiCommand::Budgets { command } => run_resource(global, "ai/budgets", command).await,
+        AiCommand::Trace {
+            team,
+            request_id,
+            trace_id,
+            limit,
+        } => {
+            let client = RestClient::new(global)?;
+            let team = client.team(team)?;
+            let mut query = Vec::new();
+            if let Some(request_id) = request_id {
+                query.push(("request_id", request_id));
+            }
+            if let Some(trace_id) = trace_id {
+                query.push(("trace_id", trace_id));
+            }
+            query.push(("limit", limit.to_string()));
+            let query = query
+                .into_iter()
+                .map(|(key, value)| format!("{key}={}", query_component(&value)))
+                .collect::<Vec<_>>()
+                .join("&");
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!("/api/v1/teams/{team}/ai/trace?{query}"),
+                    None,
+                )
+                .await?;
+            Ok(())
+        }
+        AiCommand::Retention { command } => match command {
+            AiRetentionCommand::Get { team } => {
+                let client = RestClient::new(global)?;
+                let team = client.team(team)?;
+                client
+                    .request(
+                        reqwest::Method::GET,
+                        &format!("/api/v1/teams/{team}/ai/retention"),
+                        None,
+                    )
+                    .await?;
+                Ok(())
+            }
+            AiRetentionCommand::Set { team, days } => {
+                let client = RestClient::new(global)?;
+                let team = client.team(team)?;
+                client
+                    .request(
+                        reqwest::Method::PUT,
+                        &format!("/api/v1/teams/{team}/ai/retention"),
+                        Some(json!({ "trace_ttl_days": days })),
+                    )
+                    .await?;
+                Ok(())
+            }
+        },
         AiCommand::Usage {
             team,
             provider_id,
@@ -2585,6 +2642,8 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/ai/budgets",
         "/api/v1/teams/{team}/ai/budgets/{name}",
         "/api/v1/teams/{team}/ai/usage",
+        "/api/v1/teams/{team}/ai/trace",
+        "/api/v1/teams/{team}/ai/retention",
         "/api/v1/teams/{team}/rate-limit-domains",
         "/api/v1/teams/{team}/rate-limit-domains/{domain}",
         "/api/v1/teams/{team}/rate-limit-domains/{domain}/policies",

@@ -382,6 +382,29 @@ pub enum AiCommand {
         #[command(subcommand)]
         command: ResourceCommand,
     },
+    /// Show the correlated hop timeline for AI data-plane requests.
+    #[command(
+        after_help = "Example:\n  flowplane ai trace --team payments --request-id 018ff2ef-bfc6-7000-8000-000000000001"
+    )]
+    Trace {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Server-generated x-request-id from the AI data-plane response.
+        #[arg(long)]
+        request_id: Option<String>,
+        /// W3C trace id from an inbound traceparent header.
+        #[arg(long)]
+        trace_id: Option<String>,
+        /// Maximum number of traces to return.
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
+    /// Manage the AI trace retention policy.
+    Retention {
+        #[command(subcommand)]
+        command: AiRetentionCommand,
+    },
     /// Show AI token-usage records.
     Usage {
         /// Team scope; defaults to the active context's team.
@@ -399,6 +422,26 @@ pub enum AiCommand {
         /// Number of records to skip for pagination.
         #[arg(long, default_value_t = 0)]
         offset: i64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AiRetentionCommand {
+    /// Show the retention policy in force (team policy or the built-in 30-day default).
+    Get {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+    },
+    /// Set the team's trace TTL (create-or-replace; affects only newly captured traces).
+    #[command(after_help = "Example:\n  flowplane ai retention set --team payments --days 14")]
+    Set {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Days a new trace row lives before the expiry sweep removes it (1-365).
+        #[arg(long)]
+        days: i32,
     },
 }
 

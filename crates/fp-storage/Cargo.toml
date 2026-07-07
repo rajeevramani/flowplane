@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+chrono = { workspace = true }
 fp-domain = { workspace = true }
 metrics = { workspace = true }
 rustls = { workspace = true }
