@@ -2240,16 +2240,27 @@ pub fn listener_to_proto_with_learning_and_ai(
         ..Default::default()
     };
     if ai.is_some() {
-        // AI listeners: the server owns x-request-id. A client-supplied id is never
-        // preserved, and the explicit empty internal-address allowlist means no
-        // downstream peer is "internal", so Envoy always overwrites the request id
-        // regardless of peer address (Envoy < 1.33 treats RFC1918 peers as internal
-        // by default). AI-scoped so non-AI listener output stays byte-identical.
+        // AI listeners: the server owns x-request-id — a client-supplied id is never
+        // preserved, so a caller cannot choose or collide another request's trace key.
+        //
+        // Envoy only *regenerates* a supplied x-request-id on an *edge request* (one whose
+        // downstream peer is not "internal"); otherwise it merely generates an id when none is
+        // present. Both settings below are required, and both are AI-scoped so non-AI listener
+        // output stays byte-identical:
+        //   1. use_remote_address = true makes the request an edge request. Without it Envoy
+        //      never regenerates a supplied id, for ANY peer address.
+        //   2. internal_address_config with an explicit non-matching CIDR (reserved 240.0.0.0/4,
+        //      which no real client peer occupies) declares that no client is internal. An
+        //      *empty* cidr_ranges does NOT achieve this: Envoy falls back to its default
+        //      (loopback + RFC1918 treated as internal), so loopback/internal callers would keep
+        //      their supplied id. Verified behaviorally against Envoy 1.38 — see
+        //      scripts/e2e/18-p1f-ai-trace.sh AC14.
         manager.preserve_external_request_id = false;
+        manager.use_remote_address = Some(bool_value(true));
         manager.internal_address_config =
             Some(hcm::http_connection_manager::InternalAddressConfig {
                 unix_sockets: false,
-                cidr_ranges: Vec::new(),
+                cidr_ranges: vec![cidr_range("240.0.0.0/4")],
             });
     }
     let transport_socket = spec
@@ -3981,13 +3992,18 @@ mod tests {
         };
 
         assert!(!manager.preserve_external_request_id);
+        // Regenerating a supplied x-request-id requires an edge request: use_remote_address
+        // true + an internal-address set that excludes every real client peer (reserved
+        // 240.0.0.0/4). An empty cidr_ranges falls back to Envoy's default (loopback/RFC1918
+        // internal) and would NOT regenerate. Behaviorally verified by 18-p1f-ai-trace.sh AC14.
+        assert_eq!(manager.use_remote_address, Some(bool_value(true)));
         assert_eq!(
             manager.internal_address_config,
             Some(hcm::http_connection_manager::InternalAddressConfig {
                 unix_sockets: false,
-                cidr_ranges: Vec::new(),
+                cidr_ranges: vec![cidr_range("240.0.0.0/4")],
             }),
-            "AI listener must carry an explicit empty internal-address allowlist"
+            "AI listener must declare no client peer internal via a non-matching CIDR"
         );
         assert_eq!(manager.generate_request_id, Some(bool_value(true)));
         assert!(manager.always_set_request_id_in_response);
@@ -4011,6 +4027,10 @@ mod tests {
         assert!(
             manager.internal_address_config.is_none(),
             "non-AI listeners must not carry the AI-only internal_address_config"
+        );
+        assert!(
+            manager.use_remote_address.is_none(),
+            "non-AI listeners must not carry the AI-only use_remote_address"
         );
         assert_eq!(manager.generate_request_id, Some(bool_value(true)));
         assert!(manager.always_set_request_id_in_response);

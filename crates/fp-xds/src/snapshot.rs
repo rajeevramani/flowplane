@@ -2064,12 +2064,20 @@ mod tests {
         // explicitly for a readable failure before the whole-proto compare.
         assert!(!manager.preserve_external_request_id);
         assert_eq!(
+            manager.use_remote_address,
+            Some(wkt::BoolValue { value: true }),
+            "AI listener HCM must set use_remote_address so requests are edge requests"
+        );
+        assert_eq!(
             manager.internal_address_config,
             Some(hcm::http_connection_manager::InternalAddressConfig {
                 unix_sockets: false,
-                cidr_ranges: Vec::new(),
+                cidr_ranges: vec![envoy_core::CidrRange {
+                    address_prefix: "240.0.0.0".to_string(),
+                    prefix_len: Some(wkt::UInt32Value { value: 4 }),
+                }],
             }),
-            "AI listener HCM must pin an explicit empty internal-address allowlist"
+            "AI listener HCM must declare no client peer internal via a non-matching CIDR"
         );
         assert!(
             manager
@@ -2190,9 +2198,13 @@ mod tests {
             ],
             generate_request_id: Some(wkt::BoolValue { value: true }),
             always_set_request_id_in_response: true,
+            use_remote_address: Some(wkt::BoolValue { value: true }),
             internal_address_config: Some(hcm::http_connection_manager::InternalAddressConfig {
                 unix_sockets: false,
-                cidr_ranges: Vec::new(),
+                cidr_ranges: vec![envoy_core::CidrRange {
+                    address_prefix: "240.0.0.0".to_string(),
+                    prefix_len: Some(wkt::UInt32Value { value: 4 }),
+                }],
             }),
             ..Default::default()
         };
