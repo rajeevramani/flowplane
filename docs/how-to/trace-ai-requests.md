@@ -66,7 +66,18 @@ Expected output (a successful request; timestamps trimmed):
             "detail": { "model": "gpt-4o-mini", "listener_id": "…", "route_config_id": "…" } },
           { "hop": "auth", "origin": "listener", "outcome": "not_configured", "detail": {} },
           { "hop": "budget", "origin": "upstream", "outcome": "allowed",
-            "detail": { "mode": "enforcing", "verdict": "allowed" } },
+            "detail": {
+              "mode": "enforcing",
+              "verdict": "allowed",
+              "shadow": [
+                {
+                  "budget": "preview-team-monthly",
+                  "verdict": "would_reject",
+                  "used_units": 100000,
+                  "limit_units": 100000
+                }
+              ]
+            } },
           { "hop": "credential_injection", "origin": "upstream", "outcome": "injected",
             "detail": { "provider_id": "…", "auth_header": "authorization" } },
           { "hop": "upstream", "origin": "upstream", "outcome": "ok",
@@ -139,9 +150,12 @@ you the class:
 | `upstream` | `no_upstream_connection` | 503 | Envoy could not connect to the provider — check `base_url` and network reachability |
 | `upstream` | `client_disconnect` | — | the client dropped mid-stream; the partial row is still persisted |
 
-A **shadow** budget that would have rejected shows up on *successful* requests:
-the `budget` hop records verdict `would_reject` while the request still returns
-2xx — use it to preview an enforcement change before flipping the budget mode.
+A **shadow** budget preview that would have rejected shows up on *successful*
+requests under `budget.detail.shadow[]`. The budget hop's top-level
+`detail.mode` and `detail.verdict` describe the enforcing gate for the request,
+so a successful request can keep top-level `detail.verdict: "allowed"` while a
+shadow entry reports `detail.shadow[].verdict: "would_reject"`. Use shadow
+entries to preview an enforcement change before flipping the budget mode.
 
 ## 5. When there is no trace
 
