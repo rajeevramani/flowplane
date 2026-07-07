@@ -2236,6 +2236,122 @@ mod tests {
         );
     }
 
+    /// Regression: an AI route whose `cluster_names` array is shorter than its backend
+    /// positions produces a NULL `cluster_name` in `ai_cluster_metadata`. `Row::get` used
+    /// to panic on that NULL, taking down xDS snapshot priming (and `flowplane serve`
+    /// startup). Priming must degrade — skip the gap and keep the aligned backends.
+    #[tokio::test]
+    async fn ai_cluster_metadata_skips_backend_with_no_materialized_cluster_name() {
+        use fp_domain::{AiProviderKind, AiProviderSpec};
+
+        let _guard = ENV_LOCK.lock().await;
+        let Some((pool, team, _, ctx, _)) = world().await else {
+            return;
+        };
+        std::env::set_var(
+            "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+            "12345678901234567890123456789012",
+        );
+
+        let secret = fp_core::services::secrets::create_secret(
+            &pool,
+            &ctx,
+            team,
+            fp_core::services::secrets::SecretWrite {
+                name: &unique("ai-key"),
+                description: "",
+                spec: SecretSpec::GenericSecret {
+                    secret: "aGVsbG8=".into(),
+                },
+                expires_at: None,
+            },
+            RequestId::generate(),
+        )
+        .await
+        .expect("secret");
+        let provider = fp_core::services::ai::create_provider(
+            &pool,
+            &ctx,
+            team,
+            &unique("provider"),
+            AiProviderSpec {
+                kind: AiProviderKind::OpenaiCompatible,
+                base_url: "https://upstream.example".into(),
+                path_prefix: Some("/v1".into()),
+                credential_secret_id: secret.id,
+                models: vec!["gpt-5".into()],
+                auth_header: "authorization".into(),
+            },
+            RequestId::generate(),
+        )
+        .await
+        .expect("provider");
+
+        // Malformed materialization injected via raw SQL (the create_route builder keeps
+        // cluster_names aligned with backends, so it cannot produce this gap): two backends,
+        // but a single-element cluster_names, so position 1 -> cluster_names[2] -> NULL.
+        let route_config_name = unique("cn-routes");
+        let route_id = uuid::Uuid::now_v7();
+        let aligned_cluster = unique("aligned-cluster");
+        sqlx::query(
+            "INSERT INTO route_configs (id, team_id, org_id, name, spec) \
+             VALUES ($1, $2, $3, $4, '{}'::jsonb)",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .bind(team.id.as_uuid())
+        .bind(team.org_id.as_uuid())
+        .bind(&route_config_name)
+        .execute(&pool)
+        .await
+        .expect("route config");
+        sqlx::query(
+            "INSERT INTO ai_routes \
+             (id, team_id, org_id, name, spec, cluster_names, route_config_name, listener_name) \
+             VALUES ($1, $2, $3, $4, $5, ARRAY[$6], $7, $8)",
+        )
+        .bind(route_id)
+        .bind(team.id.as_uuid())
+        .bind(team.org_id.as_uuid())
+        .bind(unique("cn-route"))
+        .bind(serde_json::json!({
+            "listener_port": 21000, "path": "/v1/chat/completions", "backends": []
+        }))
+        .bind(&aligned_cluster)
+        .bind(&route_config_name)
+        .bind(unique("cn-listener"))
+        .execute(&pool)
+        .await
+        .expect("ai route");
+        for position in [0_i32, 1_i32] {
+            sqlx::query(
+                "INSERT INTO ai_route_backends (ai_route_id, team_id, provider_id, position) \
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(route_id)
+            .bind(team.id.as_uuid())
+            .bind(provider.id.as_uuid())
+            .bind(position)
+            .execute(&pool)
+            .await
+            .expect("backend");
+        }
+
+        // Must return Ok (not panic). The team is fresh, so exactly the aligned backend
+        // survives and the NULL-cluster_name backend at position 1 is skipped.
+        let meta = ai_cluster_metadata(&pool, team.id)
+            .await
+            .expect("ai_cluster_metadata must not fail on a NULL cluster_name");
+        assert_eq!(meta.len(), 1, "only the aligned backend is kept: {meta:?}");
+        assert!(
+            meta.contains_key(&aligned_cluster),
+            "position 0's materialized cluster is kept"
+        );
+        assert_eq!(
+            meta[&aligned_cluster].backend_position, 0,
+            "the surviving entry is the aligned position-0 backend"
+        );
+    }
+
     fn metadata_header(key: &str, value: String) -> envoy_core::HeaderValue {
         envoy_core::HeaderValue {
             key: key.to_string(),
