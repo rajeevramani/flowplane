@@ -25,10 +25,10 @@ use envoy_types::pb::envoy::service::ext_proc::v3::{
 use fp_domain::api_lifecycle::ObservationIngest;
 use fp_domain::discovery::DiscoveryObservationProvenance;
 use fp_domain::{
-    openai_usage_from_json, prepare_openai_chat_request, rewrite_openai_chat_request_model,
-    strip_synthetic_openai_usage_sse, AiProviderId, AiRouteSpec, AiTraceEvent, ApiDefinitionId,
-    CaptureSessionId, DiscoverySessionId, DomainError, ListenerId, OpenAiTokenUsage, RouteConfigId,
-    SecretSpec, TeamId, AI_MODEL_HEADER,
+    ai_error_envelope, openai_usage_from_json, prepare_openai_chat_request,
+    rewrite_openai_chat_request_model, strip_synthetic_openai_usage_sse, AiProviderId, AiRouteSpec,
+    AiTraceEvent, ApiDefinitionId, CaptureSessionId, DiscoverySessionId, DomainError, ListenerId,
+    OpenAiTokenUsage, RouteConfigId, SecretSpec, TeamId, AI_MODEL_HEADER,
 };
 use fp_storage::repos::{ai, ai_trace, api_lifecycle, discovery, identity, secrets};
 use serde_json::{json, Map, Value};
@@ -2138,7 +2138,14 @@ fn immediate_response_with_details(
                         status as i32
                     },
                 }),
-                body: message.into_bytes(),
+                headers: Some(HeaderMutation {
+                    set_headers: vec![mutation_header_value(
+                        "content-type".into(),
+                        "application/json".into(),
+                    )],
+                    ..Default::default()
+                }),
+                body: ai_error_envelope(details, &message).into_bytes(),
                 details: details.into(),
                 ..Default::default()
             },
@@ -2172,6 +2179,48 @@ mod tests {
     use envoy_types::pb::google::protobuf::UInt32Value;
     use std::collections::HashMap;
     use tonic::Code;
+
+    /// Assert an ext_proc `ImmediateResponse` carries the AI JSON error envelope
+    /// (`{"code":…,"message":…}`) with `content-type: application/json`, that its
+    /// `details` (the `%RESPONSE_CODE_DETAILS%` value) still equals the envelope
+    /// `code`, and return the envelope `message` for callers that pin it. The
+    /// `code`/`details` parity guard means every rejection path is checked for an
+    /// unchanged detail even when its human message is incidental.
+    fn assert_json_error_envelope_code(response: &ImmediateResponse, code: &str) -> String {
+        assert_eq!(response.details, code, "response-code details unchanged");
+        let envelope: Value =
+            serde_json::from_slice(&response.body).expect("immediate response body is JSON");
+        assert_eq!(envelope["code"], code, "envelope code");
+        let message = envelope["message"]
+            .as_str()
+            .expect("envelope message is a string")
+            .to_string();
+        assert!(!message.is_empty(), "envelope message is non-empty");
+        let has_json_content_type = response
+            .headers
+            .as_ref()
+            .expect("immediate response sets headers")
+            .set_headers
+            .iter()
+            .any(|option| {
+                option.header.as_ref().is_some_and(|header| {
+                    header.key.eq_ignore_ascii_case("content-type")
+                        && header.raw_value == b"application/json"
+                })
+            });
+        assert!(
+            has_json_content_type,
+            "content-type: application/json header"
+        );
+        message
+    }
+
+    /// As [`assert_json_error_envelope_code`], additionally pinning the exact
+    /// human `message`.
+    fn assert_json_error_envelope(response: &ImmediateResponse, code: &str, message: &str) {
+        let actual = assert_json_error_envelope_code(response, code);
+        assert_eq!(actual, message, "envelope message");
+    }
 
     struct FixedTeamResolver {
         team_id: TeamId,
@@ -2646,9 +2695,10 @@ mod tests {
         };
         assert_eq!(response.status.expect("status").code, 429);
         assert_eq!(response.details, "flowplane_ai_budget_exceeded");
-        assert_eq!(
-            String::from_utf8(response.body).expect("body"),
-            "AI budget \"hard-stop\" exceeded"
+        assert_json_error_envelope(
+            &response,
+            "flowplane_ai_budget_exceeded",
+            "AI budget \"hard-stop\" exceeded",
         );
 
         assert_eq!(
@@ -2897,6 +2947,9 @@ mod tests {
             response.status.expect("status").code,
             StatusCode::BadRequest as i32
         );
+        // The generic invalid-request path also speaks the JSON error envelope with a
+        // content-type: application/json header (its message is validation-dependent).
+        assert_json_error_envelope_code(&response, "flowplane_ai_request_invalid");
     }
 
     #[test]
@@ -3857,9 +3910,10 @@ mod tests {
         };
         assert_eq!(immediate.status.expect("status").code, 429);
         assert_eq!(immediate.details, "flowplane_ai_budget_exceeded");
-        assert_eq!(
-            String::from_utf8(immediate.body).expect("body"),
-            "AI budget \"hard-stop\" exceeded"
+        assert_json_error_envelope(
+            &immediate,
+            "flowplane_ai_budget_exceeded",
+            "AI budget \"hard-stop\" exceeded",
         );
     }
 
@@ -4203,9 +4257,10 @@ mod tests {
             panic!("expected budget-check immediate response");
         };
         assert_eq!(immediate.status.expect("status").code, 500);
-        assert_eq!(
-            String::from_utf8(immediate.body).expect("body"),
-            "AI budget check unavailable"
+        assert_json_error_envelope(
+            &immediate,
+            "flowplane_ai_request_invalid",
+            "AI budget check unavailable",
         );
         lock_tx.rollback().await.expect("release budget table lock");
 
@@ -4414,10 +4469,10 @@ mod tests {
                 panic!("expected credential immediate response for {expected_outcome}");
             };
             assert_eq!(immediate.status.expect("status").code, 500);
-            assert_eq!(
-                String::from_utf8(immediate.body).expect("body"),
+            assert_json_error_envelope(
+                &immediate,
+                "flowplane_ai_request_invalid",
                 "AI provider credential unavailable",
-                "the client-visible immediate response is unchanged"
             );
 
             let mut row: Option<fp_domain::AiTraceEvent> = None;
@@ -4460,6 +4515,111 @@ mod tests {
                 "credential material must never appear in the trace row"
             );
         }
+
+        // Listener-side single-eligible-backend credential failure exercises the *other*
+        // immediate-response callsite (ai_listener_request_headers_response): the context
+        // carries no provider, so the backend is resolved on the listener stream. The same
+        // JSON error-envelope contract must hold on that path too.
+        let listener_route_config_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO route_configs (id, team_id, org_id, name, spec) \
+             VALUES ($1, $2, $3, 'ai-s3-cred-listener-routes', '{}'::jsonb)",
+        )
+        .bind(listener_route_config_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("listener route config");
+        let listener_route_id = Uuid::now_v7();
+        let listener_route_spec = serde_json::json!({
+            "listener_port": 19201,
+            "path": "/v1/chat/completions",
+            "backends": [
+                {"provider_id": garbage_provider_id, "models": [], "weight": 1, "priority": 0}
+            ]
+        });
+        sqlx::query(
+            "INSERT INTO ai_routes \
+             (id, team_id, org_id, name, spec, cluster_names, route_config_name, listener_name) \
+             VALUES ($1, $2, $3, 'ai-s3-cred-listener-route', $4, ARRAY['ai-s3-cred-lb1'], 'ai-s3-cred-listener-routes', 'ai-s3-cred-listener-l')",
+        )
+        .bind(listener_route_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(listener_route_spec)
+        .execute(&pool)
+        .await
+        .expect("listener ai route");
+        sqlx::query(
+            "INSERT INTO ai_route_backends (ai_route_id, team_id, provider_id, position) \
+             VALUES ($1, $2, $3, 0)",
+        )
+        .bind(listener_route_id)
+        .bind(team.id.as_uuid())
+        .bind(garbage_provider_id)
+        .execute(&pool)
+        .await
+        .expect("listener backend");
+
+        let listener_request_id = Uuid::now_v7().to_string();
+        let listener_headers = ProcessingRequest {
+            request: Some(processing_request::Request::RequestHeaders(
+                envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                    headers: Some(HeaderMap {
+                        headers: vec![
+                            HeaderValue {
+                                key: ":path".into(),
+                                value: "/v1/chat/completions".into(),
+                                raw_value: Vec::new(),
+                            },
+                            HeaderValue {
+                                key: "x-request-id".into(),
+                                value: listener_request_id.clone(),
+                                raw_value: Vec::new(),
+                            },
+                            HeaderValue {
+                                key: AI_MODEL_HEADER.into(),
+                                value: "gpt-4o-mini".into(),
+                                raw_value: Vec::new(),
+                            },
+                        ],
+                    }),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        let mut listener_rx = ai_process_stream(
+            pool.clone(),
+            tokio_stream::iter(vec![Ok(listener_headers)]),
+            Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: Some(ListenerId::from(Uuid::now_v7())),
+                route_config_id: RouteConfigId::from(listener_route_config_id),
+                provider_id: None,
+                backend_position: None,
+                failover_chain: Vec::new(),
+            }),
+        );
+        let listener_response = listener_rx
+            .recv()
+            .await
+            .expect("listener immediate response");
+        let processing_response::Response::ImmediateResponse(listener_immediate) =
+            listener_response
+                .expect("response ok")
+                .response
+                .expect("response set")
+        else {
+            panic!("expected listener-side credential immediate response");
+        };
+        assert_eq!(listener_immediate.status.expect("status").code, 500);
+        assert_json_error_envelope(
+            &listener_immediate,
+            "flowplane_ai_request_invalid",
+            "AI provider credential unavailable",
+        );
     }
 
     // ---- Slice s6: OTLP hop spans (secondary channel) ----
@@ -5214,9 +5374,10 @@ mod tests {
             "the span timeline and the DB row describe the same request"
         );
         assert_eq!(request.fields["failure_hop"], json!("budget"));
-        assert!(
-            !request.fields.contains_key("status_code"),
-            "no response status was observed on the reject path"
+        assert_eq!(
+            request.fields["status_code"],
+            json!(429),
+            "listener-side budget rejection stamps the 429 the client received (#231)"
         );
 
         let hop_spans: Vec<&CapturedSpan> =
