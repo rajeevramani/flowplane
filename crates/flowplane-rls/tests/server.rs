@@ -28,6 +28,7 @@ use tonic::transport::server::TcpIncoming;
 use tonic::transport::{Channel, Server};
 
 use flowplane_rls::admin::{router, AdminState};
+use flowplane_rls::config::AdminCredential;
 use flowplane_rls::counter::InMemoryFixedWindow;
 use flowplane_rls::grpc::RlsService;
 use flowplane_rls::policy::PolicyCache;
@@ -46,6 +47,10 @@ struct Harness {
 
 impl Harness {
     async fn start() -> Self {
+        Self::start_with_credential(None).await
+    }
+
+    async fn start_with_credential(credential: Option<AdminCredential>) -> Self {
         let policies = Arc::new(PolicyCache::new());
         let counters = Arc::new(InMemoryFixedWindow::new());
 
@@ -54,6 +59,7 @@ impl Harness {
         let admin_addr = admin_listener.local_addr().unwrap();
         let state = AdminState {
             policies: Arc::clone(&policies),
+            credential,
         };
         tokio::spawn(async move {
             axum::serve(admin_listener, router(state)).await.unwrap();
@@ -98,6 +104,17 @@ impl Harness {
             reqwest::StatusCode::NO_CONTENT,
             "policy push must return 204 No Content"
         );
+    }
+
+    async fn push_with_bearer(&self, body: serde_json::Value, token: &str) -> reqwest::StatusCode {
+        self.http
+            .post(format!("{}/api/v1/admin/rls/policies", self.admin_base))
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status()
     }
 
     /// Issue one ShouldRateLimit call and return the overall code.
@@ -158,6 +175,84 @@ impl Harness {
             .into_inner()
             .overall_code
     }
+}
+
+#[tokio::test]
+async fn admin_policy_push_requires_credential_and_preserves_cache_on_401() {
+    let mut h = Harness::start_with_credential(Some(
+        AdminCredential::new("configured-token".to_string()).unwrap(),
+    ))
+    .await;
+
+    let original = json!({
+        "policies": [{
+            "domain": "orgA|teamA|checkout",
+            "descriptors": {"client_id": "bob"},
+            "requests_per_unit": 1,
+            "unit": "minute"
+        }]
+    });
+    assert_eq!(
+        h.push_with_bearer(original, "configured-token").await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        h.check("orgA|teamA|checkout", vec![("client_id", "bob")])
+            .await,
+        OK
+    );
+    assert_eq!(
+        h.check("orgA|teamA|checkout", vec![("client_id", "bob")])
+            .await,
+        OVER
+    );
+
+    let replacement = json!({
+        "policies": [{
+            "domain": "orgA|teamA|checkout",
+            "descriptors": {"client_id": "alice"},
+            "requests_per_unit": 1,
+            "unit": "minute"
+        }]
+    });
+    let resp = h
+        .http
+        .post(format!("{}/api/v1/admin/rls/policies", h.admin_base))
+        .json(&replacement)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    assert_eq!(
+        h.check("orgA|teamA|checkout", vec![("client_id", "alice")])
+            .await,
+        OK,
+        "unauthorized replacement must not add the alice policy"
+    );
+    assert_eq!(
+        h.check("orgA|teamA|checkout", vec![("client_id", "bob")])
+            .await,
+        OVER,
+        "unauthorized replacement must not remove the original bob policy"
+    );
+
+    assert_eq!(
+        h.push_with_bearer(replacement, "configured-token").await,
+        reqwest::StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        h.check("orgA|teamA|checkout", vec![("client_id", "alice")])
+            .await,
+        OK,
+        "authorized replacement applies the new policy"
+    );
+    assert_eq!(
+        h.check("orgA|teamA|checkout", vec![("client_id", "alice")])
+            .await,
+        OVER,
+        "authorized replacement enforces the new policy"
+    );
 }
 
 async fn connect_with_retry(addr: std::net::SocketAddr) -> RateLimitServiceClient<Channel> {

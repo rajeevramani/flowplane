@@ -196,6 +196,10 @@ pub async fn run() -> anyhow::Result<()> {
     // CP→RLS policy sync (S5): when the RLS admin URL is set, run the 60 s reconcile worker and
     // expose a force-repush kick. The first reconcile fires immediately at startup.
     let rls_repush = if let Some(admin_url) = config.rls_admin_url.clone() {
+        let admin_credential = config
+            .rls_admin_credential
+            .clone()
+            .context("RLS admin URL configured without an admin credential")?;
         let notify = Arc::new(tokio::sync::Notify::new());
         let worker_pool = pool.clone();
         let worker_notify = Arc::clone(&notify);
@@ -204,6 +208,7 @@ pub async fn run() -> anyhow::Result<()> {
         tokio::spawn(run_rls_sync(
             worker_pool,
             admin_url,
+            admin_credential,
             reconcile_secs,
             worker_notify,
             worker_shutdown,
@@ -363,6 +368,7 @@ async fn run_observability_sampler(
 async fn run_rls_sync(
     pool: sqlx::PgPool,
     admin_url: String,
+    admin_credential: fp_core::services::rls_sync::AdminCredential,
     reconcile_secs: u64,
     repush: Arc<tokio::sync::Notify>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
@@ -383,7 +389,14 @@ async fn run_rls_sync(
                 continue;
             }
         }
-        match fp_core::services::rls_sync::reconcile_once(&pool, &admin_url, &client).await {
+        match fp_core::services::rls_sync::reconcile_once(
+            &pool,
+            &admin_url,
+            Some(&admin_credential),
+            &client,
+        )
+        .await
+        {
             Ok(count) => tracing::debug!(policies = count, "rls policy reconcile pushed"),
             Err(e) => tracing::warn!("rls policy reconcile failed: {e}"),
         }

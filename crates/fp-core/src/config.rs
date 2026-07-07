@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+use crate::services::rls_sync::AdminCredential;
+
 /// Fully resolved and validated server configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerConfig {
@@ -58,6 +60,9 @@ pub struct ServerConfig {
     /// `FLOWPLANE_RLS_ADMIN_URL`. (The RLS gRPC URL that drives S6 CDS injection,
     /// `FLOWPLANE_RLS_GRPC_URL`, is a separate listener.)
     pub rls_admin_url: Option<String>,
+    /// Credential sent on CP→RLS admin policy pushes. Loaded from
+    /// `FLOWPLANE_RLS_ADMIN_TOKEN_FILE`; required when `FLOWPLANE_RLS_ADMIN_URL` is set.
+    pub rls_admin_credential: Option<AdminCredential>,
     /// Seconds between `rls_sync` reconcile pushes (S5). Defaults to 60 (the design's reconcile
     /// window) and is clamped to 1..=60 — the knob may only *lower* the interval to make automated
     /// tests converge quickly, never raise it past the documented 60 s backstop. Env
@@ -144,6 +149,7 @@ struct FileConfig {
     otlp_endpoint: Option<String>,
     dev_token_path: Option<String>,
     rls_admin_url: Option<String>,
+    rls_admin_token_file: Option<String>,
     rls_grpc_url: Option<String>,
     dataplane_tls_cert: Option<String>,
     dataplane_tls_key: Option<String>,
@@ -366,6 +372,25 @@ impl ServerConfig {
         let rls_admin_url = get("FLOWPLANE_RLS_ADMIN_URL")
             .map(str::to_owned)
             .or(file.rls_admin_url);
+        let rls_admin_token_file = get("FLOWPLANE_RLS_ADMIN_TOKEN_FILE")
+            .map(str::to_owned)
+            .or(file.rls_admin_token_file);
+        let rls_admin_credential = match rls_admin_token_file {
+            Some(path) => {
+                let raw = std::fs::read_to_string(&path).map_err(|e| {
+                    DomainError::invalid_config(format!(
+                        "cannot read FLOWPLANE_RLS_ADMIN_TOKEN_FILE {path}: {e}"
+                    ))
+                })?;
+                Some(AdminCredential::new(raw)?)
+            }
+            None => None,
+        };
+        if rls_admin_url.is_some() && rls_admin_credential.is_none() {
+            return Err(DomainError::invalid_config(
+                "FLOWPLANE_RLS_ADMIN_TOKEN_FILE is required when FLOWPLANE_RLS_ADMIN_URL is set",
+            ));
+        }
 
         let rls_grpc_url = get("FLOWPLANE_RLS_GRPC_URL")
             .map(str::to_owned)
@@ -428,6 +453,7 @@ impl ServerConfig {
             allow_logged_bootstrap_token,
             dev_token_path,
             rls_admin_url,
+            rls_admin_credential,
             rls_reconcile_secs,
             rls_grpc_url,
             dataplane_tls,
@@ -449,6 +475,7 @@ fn parse_bool(key: &str, raw: &str) -> DomainResult<bool> {
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn base_env() -> HashMap<String, String> {
         HashMap::from([
@@ -458,6 +485,19 @@ mod tests {
             ),
             ("FLOWPLANE_API_INSECURE".into(), "true".into()),
         ])
+    }
+
+    fn write_temp_token(contents: &str) -> String {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "flowplane-rls-admin-token-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::write(&path, contents).expect("write token");
+        path.to_string_lossy().into_owned()
     }
 
     #[test]
@@ -557,6 +597,37 @@ mod tests {
                 "input {bad:?} must fall back to 60"
             );
         }
+    }
+
+    #[test]
+    fn rls_admin_url_requires_token_file() {
+        let mut env = base_env();
+        env.insert(
+            "FLOWPLANE_RLS_ADMIN_URL".into(),
+            "http://127.0.0.1:8081".into(),
+        );
+        let err = ServerConfig::resolve(&env, FileConfig::default())
+            .expect_err("RLS admin URL without credential must fail closed");
+        assert_eq!(err.code, fp_domain::ErrorCode::InvalidConfig);
+        assert!(err.message.contains("FLOWPLANE_RLS_ADMIN_TOKEN_FILE"));
+    }
+
+    #[test]
+    fn rls_admin_token_file_resolves_matching_credential() {
+        let token_file = write_temp_token("sync-secret\n");
+        let mut env = base_env();
+        env.insert(
+            "FLOWPLANE_RLS_ADMIN_URL".into(),
+            "http://127.0.0.1:8081".into(),
+        );
+        env.insert("FLOWPLANE_RLS_ADMIN_TOKEN_FILE".into(), token_file);
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+        assert_eq!(
+            cfg.rls_admin_credential
+                .as_ref()
+                .map(AdminCredential::token),
+            Some("sync-secret")
+        );
     }
 
     fn oidc_env() -> HashMap<String, String> {

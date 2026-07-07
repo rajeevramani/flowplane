@@ -20,6 +20,27 @@ use sqlx::PgPool;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminCredential {
+    token: String,
+}
+
+impl AdminCredential {
+    pub fn new(token: String) -> DomainResult<Self> {
+        let token = token.trim().to_string();
+        if token.is_empty() {
+            return Err(DomainError::invalid_config(
+                "RLS admin credential token must not be empty",
+            ));
+        }
+        Ok(Self { token })
+    }
+
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+}
+
 /// Deterministic SHA-256-derived UUID for an org/team id (spec/04:345). Stable, opaque, and
 /// identical wherever it is computed — the namespace contract between the push (S5) and the
 /// Envoy-domain composition (S7).
@@ -78,18 +99,33 @@ pub async fn build_push(pool: &PgPool) -> DomainResult<PushBody> {
 pub async fn reconcile_once(
     pool: &PgPool,
     admin_url: &str,
+    credential: Option<&AdminCredential>,
     client: &reqwest::Client,
 ) -> DomainResult<usize> {
     let body = build_push(pool).await?;
+    push_policy_set(&body, admin_url, credential, client).await
+}
+
+/// Push an already-built full policy set to the RLS admin endpoint.
+pub async fn push_policy_set(
+    body: &PushBody,
+    admin_url: &str,
+    credential: Option<&AdminCredential>,
+    client: &reqwest::Client,
+) -> DomainResult<usize> {
     let count = body.policies.len();
     let url = format!(
         "{}/api/v1/admin/rls/policies",
         admin_url.trim_end_matches('/')
     );
-    let resp =
-        client.post(&url).json(&body).send().await.map_err(|e| {
-            DomainError::unavailable(format!("rls policy push to {url} failed: {e}"))
-        })?;
+    let mut request = client.post(&url).json(&body);
+    if let Some(credential) = credential {
+        request = request.bearer_auth(credential.token());
+    }
+    let resp = request
+        .send()
+        .await
+        .map_err(|e| DomainError::unavailable(format!("rls policy push to {url} failed: {e}")))?;
     if !resp.status().is_success() {
         return Err(DomainError::unavailable(format!(
             "rls policy push to {url} returned HTTP {}",

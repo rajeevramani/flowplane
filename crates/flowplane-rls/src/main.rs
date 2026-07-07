@@ -27,6 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let admin_router = admin::router(AdminState {
         policies: Arc::clone(&policies),
+        credential: config.admin_credential.clone(),
     });
     let admin_listener = tokio::net::TcpListener::bind(config.admin_listen).await?;
 

@@ -441,21 +441,26 @@ async fn identical_domains_across_teams_do_not_collapse() {
 // Acceptance 6: reconcile_once over real HTTP against a stub axum server.
 // ============================================================================================
 
-/// Shared buffer of every JSON body the stub received.
-type Captured = Arc<Mutex<Vec<serde_json::Value>>>;
+/// Shared buffer of every JSON body and Authorization header the stub received.
+type Captured = Arc<Mutex<Vec<(serde_json::Value, Option<String>)>>>;
 
 /// Spawn a stub RLS admin server on 127.0.0.1:0. `status` is returned for the policies route;
 /// the JSON body of every POST is captured into the returned buffer. Returns (addr, captured).
 async fn spawn_stub(status: axum::http::StatusCode) -> (SocketAddr, Captured) {
-    use axum::{extract::State, routing::post, Json, Router};
+    use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
 
     let captured: Captured = Arc::new(Mutex::new(Vec::new()));
 
     async fn handler(
         State((status, captured)): State<(axum::http::StatusCode, Captured)>,
+        headers: HeaderMap,
         Json(body): Json<serde_json::Value>,
     ) -> axum::http::StatusCode {
-        captured.lock().expect("lock").push(body);
+        let authorization = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        captured.lock().expect("lock").push((body, authorization));
         status
     }
 
@@ -472,6 +477,104 @@ async fn spawn_stub(status: axum::http::StatusCode) -> (SocketAddr, Captured) {
     });
 
     (addr, captured)
+}
+
+async fn spawn_auth_stub(expected_authorization: &'static str) -> (SocketAddr, Captured) {
+    use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
+
+    let captured: Captured = Arc::new(Mutex::new(Vec::new()));
+
+    async fn handler(
+        State((expected, captured)): State<(&'static str, Captured)>,
+        headers: HeaderMap,
+        Json(body): Json<serde_json::Value>,
+    ) -> axum::http::StatusCode {
+        let authorization = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let status = if authorization.as_deref() == Some(expected) {
+            axum::http::StatusCode::NO_CONTENT
+        } else {
+            axum::http::StatusCode::UNAUTHORIZED
+        };
+        captured.lock().expect("lock").push((body, authorization));
+        status
+    }
+
+    let app = Router::new()
+        .route("/api/v1/admin/rls/policies", post(handler))
+        .with_state((expected_authorization, Arc::clone(&captured)));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind stub");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve stub");
+    });
+
+    (addr, captured)
+}
+
+fn sample_push_body() -> sync::PushBody {
+    sync::PushBody {
+        policies: vec![sync::PushPolicy {
+            domain: "orgA|teamA|checkout".to_string(),
+            descriptors: [("client_id".to_string(), "bob".to_string())]
+                .into_iter()
+                .collect(),
+            requests_per_unit: 100,
+            unit: RateLimitUnit::Minute,
+        }],
+    }
+}
+
+#[tokio::test]
+async fn push_policy_set_sends_configured_admin_credential() {
+    let (addr, captured) = spawn_auth_stub("Bearer expected-token").await;
+    let client = reqwest::Client::new();
+    let credential = sync::AdminCredential::new("expected-token".to_string()).expect("credential");
+
+    let count = sync::push_policy_set(
+        &sample_push_body(),
+        &format!("http://{addr}"),
+        Some(&credential),
+        &client,
+    )
+    .await
+    .expect("matching credential must succeed");
+
+    assert_eq!(count, 1);
+    let bodies = captured.lock().expect("lock");
+    assert_eq!(
+        bodies[0].1.as_deref(),
+        Some("Bearer expected-token"),
+        "push_policy_set sends the configured credential"
+    );
+}
+
+#[tokio::test]
+async fn push_policy_set_treats_rejected_admin_credential_as_sync_failure() {
+    let (addr, captured) = spawn_auth_stub("Bearer expected-token").await;
+    let client = reqwest::Client::new();
+    let credential = sync::AdminCredential::new("wrong-token".to_string()).expect("credential");
+
+    sync::push_policy_set(
+        &sample_push_body(),
+        &format!("http://{addr}"),
+        Some(&credential),
+        &client,
+    )
+    .await
+    .expect_err("401 from RLS admin endpoint must fail the sync");
+
+    let bodies = captured.lock().expect("lock");
+    assert_eq!(
+        bodies[0].1.as_deref(),
+        Some("Bearer wrong-token"),
+        "push_policy_set sent the configured credential before surfacing rejection"
+    );
 }
 
 #[tokio::test]
@@ -500,15 +603,27 @@ async fn reconcile_once_posts_full_snapshot_and_succeeds_on_204() {
     let (addr, captured) = spawn_stub(axum::http::StatusCode::NO_CONTENT).await;
     let client = reqwest::Client::new();
 
-    let count = sync::reconcile_once(&h.pool, &format!("http://{addr}"), &client)
-        .await
-        .expect("reconcile_once over 204 must succeed");
+    let credential = sync::AdminCredential::new("sync-token".to_string()).expect("credential");
+    let count = sync::reconcile_once(
+        &h.pool,
+        &format!("http://{addr}"),
+        Some(&credential),
+        &client,
+    )
+    .await
+    .expect("reconcile_once over 204 must succeed");
     assert!(count >= 1, "returns the number of pushed policies");
 
     // The stub captured a body whose `policies` array includes OUR composed-domain entry.
     let bodies = captured.lock().expect("lock");
     assert_eq!(bodies.len(), 1, "exactly one POST per reconcile");
+    assert_eq!(
+        bodies[0].1.as_deref(),
+        Some("Bearer sync-token"),
+        "configured admin credential is sent as a bearer token"
+    );
     let policies = bodies[0]
+        .0
         .get("policies")
         .and_then(|v| v.as_array())
         .expect("body has a policies array");
@@ -535,11 +650,41 @@ async fn reconcile_once_errors_on_non_2xx_response() {
     let (addr, _captured) = spawn_stub(axum::http::StatusCode::INTERNAL_SERVER_ERROR).await;
     let client = reqwest::Client::new();
 
-    let err = sync::reconcile_once(&h.pool, &format!("http://{addr}"), &client)
-        .await
-        .expect_err("a 500 from the RLS admin endpoint must be an error");
+    let credential = sync::AdminCredential::new("sync-token".to_string()).expect("credential");
+    let err = sync::reconcile_once(
+        &h.pool,
+        &format!("http://{addr}"),
+        Some(&credential),
+        &client,
+    )
+    .await
+    .expect_err("a 500 from the RLS admin endpoint must be an error");
     // Don't over-fit the exact code, but a transport/admin failure must not masquerade as Ok.
     let _ = err;
+}
+
+#[tokio::test]
+async fn reconcile_once_errors_when_admin_credential_is_rejected() {
+    let Some(h) = harness().await else { return };
+    let (addr, captured) = spawn_auth_stub("Bearer expected-token").await;
+    let client = reqwest::Client::new();
+    let credential = sync::AdminCredential::new("wrong-token".to_string()).expect("credential");
+
+    sync::reconcile_once(
+        &h.pool,
+        &format!("http://{addr}"),
+        Some(&credential),
+        &client,
+    )
+    .await
+    .expect_err("401 from RLS admin credential rejection must fail sync");
+
+    let bodies = captured.lock().expect("lock");
+    assert_eq!(
+        bodies[0].1.as_deref(),
+        Some("Bearer wrong-token"),
+        "sync sent the configured credential and surfaced rejection"
+    );
 }
 
 #[tokio::test]
@@ -548,7 +693,8 @@ async fn reconcile_once_errors_on_unreachable_endpoint() {
     let client = reqwest::Client::new();
 
     // Loopback port 1 is reserved and never listening: the connection must fail, surfacing Err.
-    let err = sync::reconcile_once(&h.pool, "http://127.0.0.1:1", &client)
+    let credential = sync::AdminCredential::new("sync-token".to_string()).expect("credential");
+    let err = sync::reconcile_once(&h.pool, "http://127.0.0.1:1", Some(&credential), &client)
         .await
         .expect_err("an unreachable RLS admin endpoint must be an error");
     let _ = err;
