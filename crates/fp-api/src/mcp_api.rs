@@ -1610,16 +1610,7 @@ fn bind_session_team(
             rpc_error(id, -32600, "MCP session principal mismatch", rid, "authz").into_response(),
         );
     }
-    let team_id = team.id.as_uuid();
-    if let Some(bound_team_id) = session.team_id {
-        if bound_team_id != team_id {
-            return Some(
-                rpc_error(id, -32600, "MCP session team mismatch", rid, "authz").into_response(),
-            );
-        }
-    } else {
-        session.team_id = Some(team_id);
-    }
+    session.team_id = Some(team.id.as_uuid());
     session.last_seen = Instant::now();
     None
 }
@@ -2444,6 +2435,51 @@ mod tests {
         drop(guard);
 
         assert_eq!(visible_sessions(&ctx, team_a).len(), 1);
+        assert_eq!(visible_sessions(&ctx, team_b).len(), 1);
+    }
+
+    #[test]
+    fn binding_session_team_tracks_latest_authorized_team_without_rejecting_switch() {
+        let org_id = OrgId::generate();
+        let team_a = TeamRef {
+            id: TeamId::generate(),
+            org_id,
+        };
+        let team_b = TeamRef {
+            id: TeamId::generate(),
+            org_id,
+        };
+        let ctx = user(UserId::generate(), org_id);
+        let principal = principal_key(&ctx);
+        let session_id = "mcp-33333333-3333-4333-8333-333333333333";
+        let now = Instant::now();
+        let mut headers = HeaderMap::new();
+        headers.insert("mcp-session-id", HeaderValue::from_static(session_id));
+        let mut guard = sessions();
+        guard.insert(
+            session_id.into(),
+            McpSession {
+                principal: principal.clone(),
+                principal_kind: "user",
+                org_id: Some(org_id.as_uuid()),
+                team_id: None,
+                connection_id: uuid::Uuid::new_v4(),
+                created_at: now,
+                last_seen: now,
+            },
+        );
+        drop(guard);
+
+        assert!(
+            bind_session_team(&headers, &principal, team_a, None, RequestId::generate()).is_none()
+        );
+        assert_eq!(visible_sessions(&ctx, team_a).len(), 1);
+        assert_eq!(visible_sessions(&ctx, team_b).len(), 0);
+
+        assert!(
+            bind_session_team(&headers, &principal, team_b, None, RequestId::generate()).is_none()
+        );
+        assert_eq!(visible_sessions(&ctx, team_a).len(), 0);
         assert_eq!(visible_sessions(&ctx, team_b).len(), 1);
     }
 
