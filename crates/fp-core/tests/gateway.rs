@@ -727,6 +727,62 @@ mod referential {
     }
 
     #[tokio::test]
+    async fn user_route_configs_cannot_reference_ai_owned_clusters_but_ai_routes_can() {
+        let Some(w) = world().await else { return };
+        let ai_cluster_name = unique("ai-provider");
+        let owner_id = uuid::Uuid::new_v4();
+        let rid = RequestId::generate;
+
+        let mut tx = w.pool.begin().await.expect("begin");
+        fp_storage::repos::clusters::create_ai_owned(
+            &mut tx,
+            w.team,
+            owner_id,
+            &ai_cluster_name,
+            &spec("203.0.113.42"),
+        )
+        .await
+        .expect("ai cluster");
+        tx.commit().await.expect("commit ai cluster");
+
+        let err = gw::create_route_config(
+            &w.pool,
+            &w.admin,
+            w.team,
+            &unique("user-routes"),
+            rc_spec(&ai_cluster_name),
+            rid(),
+        )
+        .await
+        .expect_err("user route config must not resolve ai-owned cluster");
+        assert_eq!(err.code, ErrorCode::ValidationFailed);
+        assert!(err.message.contains(&ai_cluster_name));
+
+        let mut tx = w.pool.begin().await.expect("begin");
+        let ai_route = fp_storage::repos::gateway::create_ai_route_config(
+            &mut tx,
+            w.team,
+            owner_id,
+            &unique("ai-routes"),
+            &rc_spec(&ai_cluster_name),
+        )
+        .await
+        .expect("ai-owned route config can resolve ai-owned cluster");
+        tx.commit().await.expect("commit ai route");
+
+        let ref_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM route_config_cluster_refs \
+             WHERE team_id = $1 AND route_config_id = $2",
+        )
+        .bind(w.team.id.as_uuid())
+        .bind(ai_route.id.as_uuid())
+        .fetch_one(&w.pool)
+        .await
+        .expect("ref count");
+        assert_eq!(ref_count, 1);
+    }
+
+    #[tokio::test]
     async fn port_collisions_within_a_team_conflict() {
         let Some(w) = world().await else { return };
         let rid = RequestId::generate;

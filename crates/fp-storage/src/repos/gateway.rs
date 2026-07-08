@@ -61,18 +61,23 @@ async fn resolve_cluster_refs(
     tx: &mut Transaction<'_, Postgres>,
     team_id: TeamId,
     spec: &RouteConfigSpec,
+    cluster_owner_kind: &str,
 ) -> DomainResult<Vec<Uuid>> {
     let names: Vec<String> = spec
         .referenced_clusters()
         .into_iter()
         .map(str::to_owned)
         .collect();
-    let rows = sqlx::query("SELECT id, name FROM clusters WHERE team_id = $1 AND name = ANY($2)")
-        .bind(team_id.as_uuid())
-        .bind(&names)
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|e| DomainError::internal(format!("resolve cluster refs: {e}")))?;
+    let rows = sqlx::query(
+        "SELECT id, name FROM clusters \
+         WHERE team_id = $1 AND name = ANY($2) AND owner_kind = $3",
+    )
+    .bind(team_id.as_uuid())
+    .bind(&names)
+    .bind(cluster_owner_kind)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("resolve cluster refs: {e}")))?;
     if rows.len() != names.len() {
         let found: std::collections::HashSet<String> =
             rows.iter().map(|r| r.get::<String, _>("name")).collect();
@@ -82,10 +87,10 @@ async fn resolve_cluster_refs(
             .map(String::as_str)
             .collect();
         return Err(DomainError::validation(format!(
-            "route actions reference clusters that do not exist in this team: {}",
+            "route actions reference clusters that are not available to this route config: {}",
             missing.join(", ")
         ))
-        .with_hint("create the clusters first, then the route config"));
+        .with_hint("create user-owned clusters for user-authored route configs"));
     }
     Ok(rows.iter().map(|r| r.get::<Uuid, _>("id")).collect())
 }
@@ -153,7 +158,7 @@ async fn create_route_config_with_owner(
     owner_kind: &str,
     owner_id: Option<Uuid>,
 ) -> DomainResult<RouteConfig> {
-    let cluster_ids = resolve_cluster_refs(tx, team.id, spec).await?;
+    let cluster_ids = resolve_cluster_refs(tx, team.id, spec, owner_kind).await?;
     let spec_json = serde_json::to_value(spec)
         .map_err(|e| DomainError::internal(format!("serialize route-config spec: {e}")))?;
     let row = sqlx::query(&format!(
@@ -226,7 +231,7 @@ pub async fn update_route_config(
     spec: &RouteConfigSpec,
     expected_version: i64,
 ) -> DomainResult<RouteConfig> {
-    let cluster_ids = resolve_cluster_refs(tx, team.id, spec).await?;
+    let cluster_ids = resolve_cluster_refs(tx, team.id, spec, "user").await?;
     let spec_json = serde_json::to_value(spec)
         .map_err(|e| DomainError::internal(format!("serialize route-config spec: {e}")))?;
     let row = sqlx::query(&format!(

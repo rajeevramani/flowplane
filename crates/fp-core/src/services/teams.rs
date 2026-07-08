@@ -4,8 +4,8 @@
 //! OUTSIDE the resource-grant engine, and platform admins are NOT admitted here
 //! (spec/05 §3.2 invariant 1: tenant administration belongs to the org).
 
-use crate::authz::PrincipalCtx;
-use crate::services::{actor_of, trace_context_json};
+use crate::authz::{check_resource_access, Decision, PrincipalCtx};
+use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
 use fp_domain::{DomainError, DomainResult, ErrorCode, OrgId, RequestId, Team, TeamId, UserId};
@@ -320,9 +320,26 @@ pub async fn list_grants(
     pool: &PgPool,
     ctx: &PrincipalCtx,
     team: TeamRef,
+    request_id: RequestId,
 ) -> DomainResult<Vec<(uuid::Uuid, uuid::Uuid, String, String)>> {
     let org_id = member_org(ctx)?;
     require_same_org(team, org_id)?;
+    match check_resource_access(ctx, Resource::Grants, Action::Read, Some(team)) {
+        Decision::Allow(_) => {}
+        Decision::Deny(reason) => {
+            record_authz_denial(
+                pool,
+                ctx,
+                request_id,
+                Resource::Grants,
+                Action::Read,
+                Some(team),
+                reason,
+            )
+            .await;
+            return Err(deny_to_error(Resource::Grants, Action::Read, reason));
+        }
+    }
     identity::list_grants_for_team(pool, team.id).await
 }
 

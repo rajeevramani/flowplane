@@ -383,6 +383,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn same_org_membership_alone_cannot_read_team_grants() {
+        let org = OrgId::generate();
+        let team = TeamRef {
+            id: TeamId::generate(),
+            org_id: org,
+        };
+        let member = user(false, Some((org, OrgRole::Member)), GrantSet::default());
+        assert_eq!(
+            check_resource_access(&member, Resource::Grants, Action::Read, Some(team)),
+            Decision::Deny(Reason::NoMatchingGrant)
+        );
+
+        let granted = user(
+            false,
+            Some((org, OrgRole::Member)),
+            GrantSet::new([(Resource::Grants, Action::Read, team.id)]),
+        );
+        assert_eq!(
+            check_resource_access(&granted, Resource::Grants, Action::Read, Some(team)),
+            Decision::Allow(Reason::GrantMatch)
+        );
+    }
+
     // ---- Invariant 3 (structural agents) ----
 
     #[test]

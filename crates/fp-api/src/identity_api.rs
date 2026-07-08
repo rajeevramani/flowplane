@@ -264,7 +264,7 @@ pub async fn list_grants(
 ) -> Result<Json<Vec<GrantView>>, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
-        svc::list_grants(&state.pool, &ctx, team).await
+        svc::list_grants(&state.pool, &ctx, team, rid).await
     };
     let grants = run.await.map_err(|e| ApiError::new(e, rid))?;
     Ok(Json(

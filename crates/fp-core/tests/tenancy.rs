@@ -4,9 +4,10 @@
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
+use fp_core::services::teams as team_svc;
 use fp_core::{check_resource_access, Decision, GrantSet, PrincipalCtx, Reason};
 use fp_domain::authz::{Action, Resource};
-use fp_domain::{OrgRole, RequestId};
+use fp_domain::{ErrorCode, OrgRole, RequestId};
 use fp_storage::repos::{audit, identity};
 use sqlx::PgPool;
 
@@ -194,6 +195,100 @@ async fn grants_load_from_real_rows_and_cross_org_grants_are_unrepresentable() {
     assert!(
         !check_resource_access(&ctx, Resource::Secrets, Action::Update, Some(ref_a)).is_allowed()
     );
+}
+
+#[tokio::test]
+async fn grant_roster_reads_require_grants_read_on_requested_team() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+
+    let org = identity::create_org(&pool, &unique("org"), "")
+        .await
+        .expect("org");
+    let team_a = identity::create_team(&pool, org.id, &unique("team-a"), "")
+        .await
+        .expect("team a");
+    let team_b = identity::create_team(&pool, org.id, &unique("team-b"), "")
+        .await
+        .expect("team b");
+    let target_team = identity::resolve_team_ref(&pool, team_b.id)
+        .await
+        .expect("resolve")
+        .expect("target team");
+
+    let bob_sub = unique("sub-bob");
+    let bob = identity::upsert_user_by_subject(&pool, &bob_sub, "bob@example.test", "Bob")
+        .await
+        .expect("bob");
+    identity::add_org_membership(&pool, bob, org.id, OrgRole::Member)
+        .await
+        .expect("bob member");
+
+    let alice = identity::upsert_user_by_subject(
+        &pool,
+        &unique("sub-alice"),
+        "alice@example.test",
+        "Alice",
+    )
+    .await
+    .expect("alice");
+    identity::add_org_membership(&pool, alice, org.id, OrgRole::Member)
+        .await
+        .expect("alice member");
+    identity::add_grant(
+        &pool,
+        alice,
+        org.id,
+        team_b.id,
+        Resource::Clusters,
+        Action::Read,
+        None,
+    )
+    .await
+    .expect("seed grant");
+
+    let bob_without_grant = principal_ctx(&pool, &bob_sub).await;
+    let err = team_svc::list_grants(
+        &pool,
+        &bob_without_grant,
+        target_team,
+        RequestId::generate(),
+    )
+    .await
+    .expect_err("same-org membership alone cannot list team grants");
+    assert_eq!(err.code, ErrorCode::Forbidden);
+    assert!(err.message.contains("grants:read"));
+
+    identity::add_grant(
+        &pool,
+        bob,
+        org.id,
+        team_b.id,
+        Resource::Grants,
+        Action::Read,
+        None,
+    )
+    .await
+    .expect("bob grants read");
+    let bob_with_grant = principal_ctx(&pool, &bob_sub).await;
+    let grants = team_svc::list_grants(&pool, &bob_with_grant, target_team, RequestId::generate())
+        .await
+        .expect("grants read allows roster");
+    assert!(grants
+        .iter()
+        .any(|(_, user_id, resource, action)| *user_id == alice.as_uuid()
+            && resource == "clusters"
+            && action == "read"));
+
+    let wrong_team = identity::resolve_team_ref(&pool, team_a.id)
+        .await
+        .expect("resolve")
+        .expect("wrong team");
+    let err = team_svc::list_grants(&pool, &bob_with_grant, wrong_team, RequestId::generate())
+        .await
+        .expect_err("grant is scoped to requested team");
+    assert_eq!(err.code, ErrorCode::Forbidden);
 }
 
 #[tokio::test]

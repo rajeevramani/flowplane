@@ -31,6 +31,7 @@ struct McpSession {
     principal: String,
     principal_kind: &'static str,
     org_id: Option<uuid::Uuid>,
+    team_id: Option<uuid::Uuid>,
     connection_id: uuid::Uuid,
     created_at: Instant,
     last_seen: Instant,
@@ -144,11 +145,11 @@ pub async fn post(
         "ping" => with_session(&headers, &principal, req.id, rid, || json!({})),
         "tools/list" => match validate_session(&headers, &principal, id, rid) {
             Some(response) => response,
-            None => tools_list(&state, &ctx, req.id, req.params, rid).await,
+            None => tools_list(&state, &ctx, &headers, &principal, req.id, req.params, rid).await,
         },
         "tools/call" => match validate_session(&headers, &principal, id, rid) {
             Some(response) => response,
-            None => tools_call(&state, &ctx, req.id, req.params, rid).await,
+            None => tools_call(&state, &ctx, &headers, &principal, req.id, req.params, rid).await,
         },
         _ => rpc_error(req.id, -32601, "method not found", rid, "method").into_response(),
     };
@@ -184,7 +185,7 @@ pub async fn status(
             .await?
             .len();
         cleanup_sessions();
-        let active_sessions = visible_sessions(&ctx).len();
+        let active_sessions = visible_sessions(&ctx, team).len();
         Ok::<_, DomainError>(McpStatusView {
             transport: "streamable_http_post".into(),
             preferred_protocol_version: PREFERRED_VERSION.into(),
@@ -225,7 +226,7 @@ pub async fn connections(
         let team = resolve_team(&state, &ctx, &team).await?;
         authorize_mcp_read(&state, &ctx, team, rid).await?;
         cleanup_sessions();
-        Ok::<_, DomainError>(visible_sessions(&ctx))
+        Ok::<_, DomainError>(visible_sessions(&ctx, team))
     };
     run.await.map(Json).map_err(|e| ApiError::new(e, rid))
 }
@@ -235,6 +236,17 @@ enum ToolRisk {
     Read,
     Mutate,
     Delete,
+}
+
+enum DynamicToolError {
+    Domain(DomainError),
+    Response(Response),
+}
+
+impl From<DomainError> for DynamicToolError {
+    fn from(error: DomainError) -> Self {
+        Self::Domain(error)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -619,6 +631,7 @@ fn initialize(
             principal: principal.to_string(),
             principal_kind: metadata.kind,
             org_id: metadata.org_id,
+            team_id: None,
             connection_id: uuid::Uuid::new_v4(),
             created_at: now,
             last_seen: now,
@@ -658,6 +671,8 @@ fn notification(id: Option<Value>) -> Response {
 async fn tools_list(
     state: &AppState,
     ctx: &PrincipalCtx,
+    headers: &HeaderMap,
+    principal: &str,
     id: Option<Value>,
     params: Value,
     rid: RequestId,
@@ -666,6 +681,9 @@ async fn tools_list(
         Ok(team) => team,
         Err(e) => return rpc_error(id, -32600, e.message, rid, "validation").into_response(),
     };
+    if let Some(response) = bind_session_team(headers, principal, team, id.clone(), rid) {
+        return response;
+    }
     let tools = STATIC_TOOLS
         .iter()
         .filter(|tool| tool_allowed(ctx, tool, team))
@@ -700,6 +718,8 @@ async fn tools_list(
 async fn tools_call(
     state: &AppState,
     ctx: &PrincipalCtx,
+    headers: &HeaderMap,
+    principal: &str,
     id: Option<Value>,
     params: Value,
     rid: RequestId,
@@ -722,9 +742,23 @@ async fn tools_call(
         .cloned()
         .unwrap_or_else(|| json!({}));
     if let Some(api_tool_name) = name.strip_prefix("api_") {
-        return match execute_dynamic_tool(state, ctx, api_tool_name, arguments, rid).await {
+        return match execute_dynamic_tool(
+            state,
+            ctx,
+            DynamicToolCall {
+                headers,
+                principal,
+                api_tool_name,
+                arguments,
+                id: id.clone(),
+                rid,
+            },
+        )
+        .await
+        {
             Ok(value) => tool_result_ok(id, value).into_response(),
-            Err(e) => tool_result_error(id, e).into_response(),
+            Err(DynamicToolError::Domain(e)) => tool_result_error(id, e).into_response(),
+            Err(DynamicToolError::Response(response)) => response,
         };
     }
     let Some(tool) = static_tool(name) else {
@@ -760,6 +794,9 @@ async fn tools_call(
         )
         .into_response();
     }
+    if let Some(response) = bind_session_team(headers, principal, team, id.clone(), rid) {
+        return response;
+    }
 
     match execute_static_tool(state, ctx, tool, team, arguments, rid).await {
         Ok(value) => tool_result_ok(id, value).into_response(),
@@ -767,40 +804,49 @@ async fn tools_call(
     }
 }
 
+struct DynamicToolCall<'a> {
+    headers: &'a HeaderMap,
+    principal: &'a str,
+    api_tool_name: &'a str,
+    arguments: Value,
+    id: Option<Value>,
+    rid: RequestId,
+}
+
 async fn execute_dynamic_tool(
     state: &AppState,
     ctx: &PrincipalCtx,
-    api_tool_name: &str,
-    arguments: Value,
-    rid: RequestId,
-) -> DomainResult<Value> {
-    let team = resolve_tool_team(state, ctx, &arguments).await?;
+    call: DynamicToolCall<'_>,
+) -> Result<Value, DynamicToolError> {
+    let team = resolve_tool_team(state, ctx, &call.arguments).await?;
     if let Decision::Deny(reason) =
         check_resource_access(ctx, Resource::McpTools, Action::Execute, Some(team))
     {
         fp_core::services::record_authz_denial(
             &state.pool,
             ctx,
-            rid,
+            call.rid,
             Resource::McpTools,
             Action::Execute,
             Some(team),
             reason,
         )
         .await;
-        return Err(fp_core::services::deny_to_error(
-            Resource::McpTools,
-            Action::Execute,
-            reason,
-        ));
+        return Err(
+            fp_core::services::deny_to_error(Resource::McpTools, Action::Execute, reason).into(),
+        );
+    }
+    if let Some(response) = bind_session_team(call.headers, call.principal, team, call.id, call.rid)
+    {
+        return Err(DynamicToolError::Response(response));
     }
     let tool = fp_storage::repos::api_lifecycle::get_enabled_published_api_tool(
         &state.pool,
         team.id,
-        api_tool_name,
+        call.api_tool_name,
     )
     .await?
-    .ok_or_else(|| DomainError::not_found("api tool", api_tool_name))?;
+    .ok_or_else(|| DomainError::not_found("api tool", call.api_tool_name))?;
     let bindings = fp_storage::repos::api_lifecycle::list_route_bindings_for_api(
         &state.pool,
         team.id,
@@ -817,7 +863,7 @@ async fn execute_dynamic_tool(
             record_dynamic_tool_audit(
                 state,
                 ctx,
-                rid,
+                call.rid,
                 team,
                 &tool,
                 fp_storage::repos::audit::Outcome::Failure,
@@ -828,7 +874,8 @@ async fn execute_dynamic_tool(
                 ErrorCode::Conflict,
                 format!("api tool \"{}\" has no listener/dataplane route", tool.name),
             )
-            .with_hint("bind the API definition to a listener before calling this tool"));
+            .with_hint("bind the API definition to a listener before calling this tool")
+            .into());
         }
     };
     let listener_id = binding.listener_id.ok_or_else(|| {
@@ -840,27 +887,27 @@ async fn execute_dynamic_tool(
             .ok_or_else(|| {
                 DomainError::not_found("listener", &listener_id.as_uuid().to_string())
             })?;
-    let descriptor = match dynamic_tool_descriptor(&tool, &arguments, &listener.spec, &binding, rid)
-    {
-        Ok(descriptor) => descriptor,
-        Err(e) => {
-            record_dynamic_tool_audit(
-                state,
-                ctx,
-                rid,
-                team,
-                &tool,
-                fp_storage::repos::audit::Outcome::Failure,
-                json!({ "error": "descriptor_unavailable" }),
-            )
-            .await;
-            return Err(e);
-        }
-    };
+    let descriptor =
+        match dynamic_tool_descriptor(&tool, &call.arguments, &listener.spec, &binding, call.rid) {
+            Ok(descriptor) => descriptor,
+            Err(e) => {
+                record_dynamic_tool_audit(
+                    state,
+                    ctx,
+                    call.rid,
+                    team,
+                    &tool,
+                    fp_storage::repos::audit::Outcome::Failure,
+                    json!({ "error": "descriptor_unavailable" }),
+                )
+                .await;
+                return Err(e.into());
+            }
+        };
     record_dynamic_tool_audit(
         state,
         ctx,
-        rid,
+        call.rid,
         team,
         &tool,
         fp_storage::repos::audit::Outcome::Success,
@@ -1531,12 +1578,61 @@ async fn authorize_mcp_read(
     }
 }
 
-fn visible_sessions(ctx: &PrincipalCtx) -> Vec<McpConnectionView> {
+fn bind_session_team(
+    headers: &HeaderMap,
+    principal: &str,
+    team: TeamRef,
+    id: Option<Value>,
+    rid: RequestId,
+) -> Option<Response> {
+    let Some(session_id) = headers
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| valid_session_id(s))
+    else {
+        return Some(
+            rpc_error(
+                id,
+                -32600,
+                "missing or invalid MCP-Session-Id",
+                rid,
+                "session",
+            )
+            .into_response(),
+        );
+    };
+    let mut sessions = sessions();
+    let Some(session) = sessions.get_mut(session_id) else {
+        return Some(rpc_error(id, -32600, "unknown MCP session", rid, "session").into_response());
+    };
+    if session.principal != principal {
+        return Some(
+            rpc_error(id, -32600, "MCP session principal mismatch", rid, "authz").into_response(),
+        );
+    }
+    let team_id = team.id.as_uuid();
+    if let Some(bound_team_id) = session.team_id {
+        if bound_team_id != team_id {
+            return Some(
+                rpc_error(id, -32600, "MCP session team mismatch", rid, "authz").into_response(),
+            );
+        }
+    } else {
+        session.team_id = Some(team_id);
+    }
+    session.last_seen = Instant::now();
+    None
+}
+
+fn visible_sessions(ctx: &PrincipalCtx, team: TeamRef) -> Vec<McpConnectionView> {
     let meta = principal_metadata(ctx);
     let now = Instant::now();
+    let team_id = Some(team.id.as_uuid());
     sessions()
         .values()
-        .filter(|session| session.org_id.is_some() && session.org_id == meta.org_id)
+        .filter(|session| {
+            session.org_id.is_some() && session.org_id == meta.org_id && session.team_id == team_id
+        })
         .map(|session| McpConnectionView {
             connection_id: session.connection_id,
             principal_kind: session.principal_kind.into(),
@@ -2087,7 +2183,7 @@ mod tests {
     use axum::body::Body;
     use fp_core::GrantSet;
     use fp_domain::api_lifecycle::HttpMethod;
-    use fp_domain::{OrgId, OrgRole, UserId};
+    use fp_domain::{OrgId, OrgRole, TeamId, UserId};
     use http_body_util::BodyExt;
     use metrics_exporter_prometheus::PrometheusBuilder;
     use sqlx::postgres::PgPoolOptions;
@@ -2305,6 +2401,50 @@ mod tests {
         }));
 
         assert_eq!(schema["required"], json!(["pathParams", "team"]));
+    }
+
+    #[test]
+    fn visible_sessions_are_scoped_to_requested_team() {
+        let org_id = OrgId::generate();
+        let team_a = TeamRef {
+            id: TeamId::generate(),
+            org_id,
+        };
+        let team_b = TeamRef {
+            id: TeamId::generate(),
+            org_id,
+        };
+        let ctx = user(UserId::generate(), org_id);
+        let now = Instant::now();
+        let mut guard = sessions();
+        guard.insert(
+            "mcp-11111111-1111-4111-8111-111111111111".into(),
+            McpSession {
+                principal: principal_key(&ctx),
+                principal_kind: "user",
+                org_id: Some(org_id.as_uuid()),
+                team_id: Some(team_a.id.as_uuid()),
+                connection_id: uuid::Uuid::new_v4(),
+                created_at: now,
+                last_seen: now,
+            },
+        );
+        guard.insert(
+            "mcp-22222222-2222-4222-8222-222222222222".into(),
+            McpSession {
+                principal: principal_key(&ctx),
+                principal_kind: "user",
+                org_id: Some(org_id.as_uuid()),
+                team_id: Some(team_b.id.as_uuid()),
+                connection_id: uuid::Uuid::new_v4(),
+                created_at: now,
+                last_seen: now,
+            },
+        );
+        drop(guard);
+
+        assert_eq!(visible_sessions(&ctx, team_a).len(), 1);
+        assert_eq!(visible_sessions(&ctx, team_b).len(), 1);
     }
 
     fn user(user_id: UserId, org_id: OrgId) -> PrincipalCtx {
