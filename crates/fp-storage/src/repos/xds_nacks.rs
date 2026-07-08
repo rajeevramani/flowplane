@@ -105,3 +105,50 @@ pub async fn delete_older_than_for_team(
         .map_err(|e| DomainError::internal(format!("delete old xds nacks: {e}")))?;
     Ok(result.rows_affected())
 }
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::repos::identity;
+
+    fn unique(prefix: &str) -> String {
+        format!(
+            "{prefix}-{}",
+            &uuid::Uuid::now_v7().simple().to_string()[20..]
+        )
+    }
+
+    #[tokio::test]
+    async fn nack_history_records_node_metadata_and_quarantined_resources() {
+        let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let pool = crate::connect(&url, 8).await.expect("connect");
+        crate::migrate(&pool).await.expect("migrate");
+        let org = identity::create_org(&pool, &unique("org"), "")
+            .await
+            .expect("org");
+        let team = identity::create_team(&pool, org.id, &unique("team"), "")
+            .await
+            .expect("team");
+        let nack = NackRecord {
+            team_id: team.id,
+            node_id: "envoy-node-metadata-only".to_string(),
+            type_url: "type.googleapis.com/envoy.config.endpoint.v3.ClusterLoadAssignment"
+                .to_string(),
+            version_rejected: "42".to_string(),
+            error_message: "rejected".to_string(),
+            quarantined_resources: vec!["upstream-a".to_string()],
+        };
+
+        record(&pool, &nack).await.expect("record nack");
+        let events = list(&pool, team.id, 10).await.expect("list nacks");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].team_id, team.id);
+        assert_eq!(events[0].node_id, "envoy-node-metadata-only");
+        assert_eq!(events[0].quarantined_resources, vec!["upstream-a"]);
+    }
+}

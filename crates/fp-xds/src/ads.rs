@@ -181,6 +181,10 @@ impl Drop for AdsStreamMetrics {
     }
 }
 
+fn quarantine_dataplane_scope(identity: &PeerIdentity) -> Option<DataplaneId> {
+    identity.dataplane_id
+}
+
 impl AdsService {
     pub fn new(
         cache: Arc<SnapshotCache>,
@@ -292,6 +296,7 @@ impl AggregatedDiscoveryService for AdsService {
         tokio::spawn(async move {
             let mut stream_metrics = AdsStreamMetrics::default();
             let mut team: Option<TeamId> = None;
+            let mut dataplane_id: Option<DataplaneId> = None;
             let mut node_label = String::new();
             let mut certificate_id: Option<Uuid> = None;
             let mut states: HashMap<String, TypeState> = HashMap::new();
@@ -322,6 +327,7 @@ impl AggregatedDiscoveryService for AdsService {
                                     tracing::info!(team = %identity.team_id, node = node_id,
                                         "dataplane connected");
                                     team = Some(identity.team_id);
+                                    dataplane_id = quarantine_dataplane_scope(&identity);
                                     node_label = node_id.to_string();
                                     certificate_id = identity.certificate_id;
                                     stream_metrics.opened();
@@ -359,7 +365,7 @@ impl AggregatedDiscoveryService for AdsService {
                                 // persist the event. The cache notification wakes this very
                                 // stream to push the corrected set.
                                 let quarantined = cache
-                                    .apply_nack(team_id, &type_url, &error.message)
+                                    .apply_nack(team_id, dataplane_id, &type_url, &error.message)
                                     .await;
                                 if let Some(pool) = &nack_pool {
                                     let record = fp_storage::repos::xds_nacks::NackRecord {
@@ -388,7 +394,7 @@ impl AggregatedDiscoveryService for AdsService {
 
                         // New subscription (or re-subscribe): answer immediately.
                         state.subscribed = true;
-                        let snapshot = cache.team(team_id).await;
+                        let snapshot = cache.team_for_dataplane(team_id, dataplane_id).await;
                         if let Some(set) = snapshot.for_type_url(&type_url) {
                             let resources =
                                 resources_for_response(&type_url, set, &state.resource_names);
@@ -438,7 +444,7 @@ impl AggregatedDiscoveryService for AdsService {
                         if changed_team.is_some() && changed_team != Some(team_id) {
                             continue; // another tenant's change
                         }
-                        let snapshot = cache.team(team_id).await;
+                        let snapshot = cache.team_for_dataplane(team_id, dataplane_id).await;
                         // Push changed types in make-before-break order.
                         for type_url in TYPE_ORDER {
                             let Some(state) = states.get_mut(type_url) else { continue };
@@ -476,5 +482,33 @@ impl AggregatedDiscoveryService for AdsService {
         Err(Status::unimplemented(
             "delta xDS is not supported; configure ADS with state-of-the-world",
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quarantine_scope_uses_authenticated_dataplane_identity_not_node_id() {
+        let dataplane_id = DataplaneId::generate();
+        let identity = PeerIdentity {
+            team_id: TeamId::generate(),
+            dataplane_id: Some(dataplane_id),
+            certificate_id: Some(Uuid::now_v7()),
+        };
+
+        assert_eq!(quarantine_dataplane_scope(&identity), Some(dataplane_id));
+    }
+
+    #[test]
+    fn dev_node_id_identity_has_no_dataplane_quarantine_scope() {
+        let identity = PeerIdentity {
+            team_id: TeamId::generate(),
+            dataplane_id: None,
+            certificate_id: None,
+        };
+
+        assert_eq!(quarantine_dataplane_scope(&identity), None);
     }
 }

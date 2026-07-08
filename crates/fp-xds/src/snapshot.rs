@@ -14,7 +14,7 @@ use fp_domain::gateway::cluster::{Cluster, ClusterSpec};
 use fp_domain::gateway::listener::{Listener, ListenerSpec};
 use fp_domain::gateway::route_config::{RouteConfig, RouteConfigSpec};
 use fp_domain::{AiProviderId, ClusterId, ListenerId, RouteConfigId};
-use fp_domain::{DomainError, DomainResult, SecretSpec, TeamId};
+use fp_domain::{DataplaneId, DomainError, DomainResult, SecretSpec, TeamId};
 use prost::Message;
 use sqlx::{PgPool, Row};
 use std::collections::BTreeMap;
@@ -79,19 +79,37 @@ struct Quarantined {
     error: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct DataplaneScope(Option<DataplaneId>);
+
+#[derive(Debug, Clone, Default)]
+struct ServedState {
+    version: u64,
+    served: Vec<NamedResource>,
+}
+
+impl ServedState {
+    fn to_set(&self) -> ResourceSet {
+        ResourceSet {
+            version: self.version,
+            resources: self.served.iter().map(|r| r.any.clone()).collect(),
+        }
+    }
+}
+
 /// Internal per-type state: latest two raw generations (for NACK attribution), the
 /// quarantine map, and the served (post-quarantine) set.
 #[derive(Debug, Clone, Default)]
 struct TypeInternal {
-    version: u64,
     /// Latest translation from the database (pre-quarantine).
     raw: Vec<NamedResource>,
     /// Previous raw generation — what a NACKing dataplane last accepted, best effort.
     raw_prev: Vec<NamedResource>,
-    quarantine: HashMap<String, Quarantined>,
+    quarantines: HashMap<DataplaneScope, HashMap<String, Quarantined>>,
     /// Resources skipped during control-plane translation before Envoy ever saw them.
     translation_failures: HashMap<String, String>,
-    served: Vec<NamedResource>,
+    unscoped_served: ServedState,
+    scoped_served: HashMap<DataplaneScope, ServedState>,
 }
 
 impl TypeInternal {
@@ -113,18 +131,25 @@ impl TypeInternal {
             self.raw_prev = std::mem::replace(&mut self.raw, fresh);
         }
         let raw = &self.raw;
-        self.quarantine.retain(|name, q| {
-            raw.iter()
-                .any(|r| r.name == *name && r.any.value == q.offending)
+        self.quarantines.retain(|_, quarantines| {
+            quarantines.retain(|name, q| {
+                raw.iter()
+                    .any(|r| r.name == *name && r.any.value == q.offending)
+            });
+            !quarantines.is_empty()
         });
-        self.recompute_served() || failures_changed
+        self.recompute_all_served() || failures_changed
     }
 
-    fn recompute_served(&mut self) -> bool {
-        let served: Vec<NamedResource> = self
-            .raw
-            .iter()
-            .filter_map(|r| match self.quarantine.get(&r.name) {
+    fn served_for_raw(
+        raw: &[NamedResource],
+        quarantine: Option<&HashMap<String, Quarantined>>,
+    ) -> Vec<NamedResource> {
+        let Some(quarantine) = quarantine else {
+            return raw.to_vec();
+        };
+        raw.iter()
+            .filter_map(|r| match quarantine.get(&r.name) {
                 Some(q) if r.any.value == q.offending => {
                     q.last_good.as_ref().map(|good| NamedResource {
                         name: r.name.clone(),
@@ -133,23 +158,44 @@ impl TypeInternal {
                 }
                 _ => Some(r.clone()),
             })
-            .collect();
-        if served != self.served {
-            self.served = served;
-            self.version += 1;
+            .collect()
+    }
+
+    fn apply_served(state: &mut ServedState, served: Vec<NamedResource>) -> bool {
+        if served != state.served {
+            state.served = served;
+            state.version += 1;
             true
         } else {
             false
         }
     }
 
+    fn recompute_all_served(&mut self) -> bool {
+        let mut changed = Self::apply_served(
+            &mut self.unscoped_served,
+            Self::served_for_raw(&self.raw, None),
+        );
+        for (scope, state) in &mut self.scoped_served {
+            let quarantine = self.quarantines.get(scope);
+            changed |= Self::apply_served(state, Self::served_for_raw(&self.raw, quarantine));
+        }
+        changed
+    }
+
     /// Quarantine what changed between the two raw generations. With no previous
     /// generation (first push or post-restart prime) attribution is impossible — persist
     /// only, quarantine nothing (wait-for-fix, never blanket-quarantine a whole type).
-    fn apply_nack(&mut self, error: &str) -> (Vec<String>, bool) {
+    fn apply_nack(
+        &mut self,
+        dataplane_id: Option<DataplaneId>,
+        error: &str,
+    ) -> (Vec<String>, bool) {
         if self.raw_prev.is_empty() {
             return (Vec::new(), false);
         }
+        let scope = DataplaneScope(dataplane_id);
+        let quarantines = self.quarantines.entry(scope).or_default();
         let mut named = Vec::new();
         for resource in &self.raw {
             let previous = self.raw_prev.iter().find(|p| p.name == resource.name);
@@ -157,12 +203,11 @@ impl TypeInternal {
                 Some(p) => p.any.value != resource.any.value,
                 None => true, // newly added
             };
-            let already = self
-                .quarantine
+            let already = quarantines
                 .get(&resource.name)
                 .is_some_and(|q| q.offending == resource.any.value);
             if changed && !already {
-                self.quarantine.insert(
+                quarantines.insert(
                     resource.name.clone(),
                     Quarantined {
                         offending: resource.any.value.clone(),
@@ -176,16 +221,25 @@ impl TypeInternal {
         let served_changed = if named.is_empty() {
             false
         } else {
-            self.recompute_served()
+            let served = Self::served_for_raw(&self.raw, self.quarantines.get(&scope));
+            let state = self
+                .scoped_served
+                .entry(scope)
+                .or_insert_with(|| ServedState {
+                    version: self.unscoped_served.version,
+                    served: self.unscoped_served.served.clone(),
+                });
+            Self::apply_served(state, served)
         };
         (named, served_changed)
     }
 
-    fn to_set(&self) -> ResourceSet {
-        ResourceSet {
-            version: self.version,
-            resources: self.served.iter().map(|r| r.any.clone()).collect(),
-        }
+    fn to_set(&self, dataplane_id: Option<DataplaneId>) -> ResourceSet {
+        let scope = DataplaneScope(dataplane_id);
+        self.scoped_served
+            .get(&scope)
+            .unwrap_or(&self.unscoped_served)
+            .to_set()
     }
 }
 
@@ -257,16 +311,24 @@ impl SnapshotCache {
     }
 
     pub async fn team(&self, team_id: TeamId) -> TeamSnapshot {
+        self.team_for_dataplane(team_id, None).await
+    }
+
+    pub async fn team_for_dataplane(
+        &self,
+        team_id: TeamId,
+        dataplane_id: Option<DataplaneId>,
+    ) -> TeamSnapshot {
         self.snapshots
             .read()
             .await
             .get(&team_id)
             .map(|internal| TeamSnapshot {
-                clusters: internal.clusters.to_set(),
-                endpoints: internal.endpoints.to_set(),
-                routes: internal.routes.to_set(),
-                secrets: internal.secrets.to_set(),
-                listeners: internal.listeners.to_set(),
+                clusters: internal.clusters.to_set(dataplane_id),
+                endpoints: internal.endpoints.to_set(dataplane_id),
+                routes: internal.routes.to_set(dataplane_id),
+                secrets: internal.secrets.to_set(dataplane_id),
+                listeners: internal.listeners.to_set(dataplane_id),
             })
             .unwrap_or_default()
     }
@@ -285,12 +347,14 @@ impl SnapshotCache {
             (SECRET_TYPE_URL, &internal.secrets),
             (LISTENER_TYPE_URL, &internal.listeners),
         ] {
-            for (name, q) in &state.quarantine {
-                out.push(DegradedResource {
-                    type_url: type_url.to_string(),
-                    name: name.clone(),
-                    error: q.error.clone(),
-                });
+            for quarantines in state.quarantines.values() {
+                for (name, q) in quarantines {
+                    out.push(DegradedResource {
+                        type_url: type_url.to_string(),
+                        name: name.clone(),
+                        error: q.error.clone(),
+                    });
+                }
             }
             for (name, error) in &state.translation_failures {
                 out.push(DegradedResource {
@@ -307,7 +371,13 @@ impl SnapshotCache {
     /// A dataplane NACKed `type_url` for this team: quarantine the resources that changed
     /// since the previous generation (served set falls back to their last-good bytes) and
     /// return their names for persistence. Streams are notified when serving changed.
-    pub async fn apply_nack(&self, team_id: TeamId, type_url: &str, error: &str) -> Vec<String> {
+    pub async fn apply_nack(
+        &self,
+        team_id: TeamId,
+        dataplane_id: Option<DataplaneId>,
+        type_url: &str,
+        error: &str,
+    ) -> Vec<String> {
         let (named, changed) = {
             let mut snapshots = self.snapshots.write().await;
             let Some(state) = snapshots
@@ -316,7 +386,7 @@ impl SnapshotCache {
             else {
                 return Vec::new();
             };
-            state.apply_nack(error)
+            state.apply_nack(dataplane_id, error)
         };
         if !named.is_empty() {
             metrics::counter!("fp_xds_quarantined_resources_total").increment(named.len() as u64);
@@ -1897,7 +1967,7 @@ mod tests {
         // A NACK on the FIRST generation cannot be attributed: nothing is quarantined
         // (never blanket-quarantine a whole type).
         let quarantined = cache
-            .apply_nack(team.id, ENDPOINT_TYPE_URL, "first push rejected")
+            .apply_nack(team.id, None, ENDPOINT_TYPE_URL, "first push rejected")
             .await;
         assert!(quarantined.is_empty(), "no previous generation, no blame");
         assert!(cache.degraded(team.id).await.is_empty());
@@ -1922,6 +1992,7 @@ mod tests {
         let quarantined = cache
             .apply_nack(
                 team.id,
+                None,
                 ENDPOINT_TYPE_URL,
                 "Proto constraint validation failed",
             )
@@ -1943,7 +2014,7 @@ mod tests {
         // Re-NACKing the corrected set must not loop: nothing new to quarantine.
         let version_after_rollback = rolled_back.version;
         let again = cache
-            .apply_nack(team.id, ENDPOINT_TYPE_URL, "still unhappy")
+            .apply_nack(team.id, None, ENDPOINT_TYPE_URL, "still unhappy")
             .await;
         assert!(
             again.is_empty(),
@@ -1974,6 +2045,87 @@ mod tests {
         let fixed = cache.team(team.id).await.endpoints;
         assert_ne!(fixed.resources, initial.resources);
         assert_ne!(fixed.resources, updated.resources);
+    }
+
+    #[tokio::test]
+    async fn nack_quarantine_is_scoped_to_authenticated_dataplane() {
+        let Some((pool, team, _, ctx, _)) = world().await else {
+            return;
+        };
+        let cache = SnapshotCache::new();
+        let dataplane_a = DataplaneId::generate();
+        let dataplane_b = DataplaneId::generate();
+        let upstream = unique("upstream");
+        fp_core::services::clusters::create_cluster(
+            &pool,
+            &ctx,
+            team,
+            &upstream,
+            cluster_spec("10.0.1.1"),
+            RequestId::generate(),
+        )
+        .await
+        .expect("cluster");
+        cache.rebuild_team(&pool, team.id).await.expect("rebuild");
+        let initial_a = cache
+            .team_for_dataplane(team.id, Some(dataplane_a))
+            .await
+            .endpoints;
+        let initial_b = cache
+            .team_for_dataplane(team.id, Some(dataplane_b))
+            .await
+            .endpoints;
+        assert_eq!(initial_a.resources, initial_b.resources);
+
+        fp_core::services::clusters::update_cluster(
+            &pool,
+            &ctx,
+            team,
+            &upstream,
+            cluster_spec("10.0.1.2"),
+            1,
+            RequestId::generate(),
+        )
+        .await
+        .expect("update");
+        cache.rebuild_team(&pool, team.id).await.expect("rebuild");
+        let updated_a = cache
+            .team_for_dataplane(team.id, Some(dataplane_a))
+            .await
+            .endpoints;
+        let updated_b = cache
+            .team_for_dataplane(team.id, Some(dataplane_b))
+            .await
+            .endpoints;
+        assert_eq!(updated_a.resources, updated_b.resources);
+        assert_ne!(updated_a.resources, initial_a.resources);
+
+        let quarantined = cache
+            .apply_nack(
+                team.id,
+                Some(dataplane_a),
+                ENDPOINT_TYPE_URL,
+                "dataplane A rejected endpoint update",
+            )
+            .await;
+        assert_eq!(quarantined, vec![upstream]);
+
+        let rolled_back_a = cache
+            .team_for_dataplane(team.id, Some(dataplane_a))
+            .await
+            .endpoints;
+        let still_updated_b = cache
+            .team_for_dataplane(team.id, Some(dataplane_b))
+            .await
+            .endpoints;
+        assert_eq!(
+            rolled_back_a.resources, initial_a.resources,
+            "NACKing dataplane serves last-good bytes"
+        );
+        assert_eq!(
+            still_updated_b.resources, updated_b.resources,
+            "same-team peer dataplane is not quarantined"
+        );
     }
 
     // -------- ai-gateway-e2e-trace s1: server-owned x-request-id on AI listeners --------
