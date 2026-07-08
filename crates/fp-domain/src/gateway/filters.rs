@@ -372,7 +372,7 @@ pub struct GlobalRateLimitConfig {
     pub service_cluster: String,
     #[serde(default = "default_global_rate_limit_timeout_ms")]
     pub timeout_ms: u64,
-    #[serde(default)]
+    #[serde(default = "default_global_rate_limit_failure_mode_deny")]
     pub failure_mode_deny: bool,
     #[serde(default)]
     pub stage: u32,
@@ -392,6 +392,10 @@ pub struct GlobalRateLimitConfig {
 
 fn default_global_rate_limit_timeout_ms() -> u64 {
     20
+}
+
+fn default_global_rate_limit_failure_mode_deny() -> bool {
+    true
 }
 
 /// Default `service_cluster` = the CP-synthesized built-in rate-limit cluster (S6). When set, the
@@ -1467,7 +1471,27 @@ mod tests {
         .expect("deserialize without service_cluster");
         assert_eq!(cfg.service_cluster, "rate_limit_cluster");
         assert_eq!(cfg.service_cluster, RESERVED_RATE_LIMIT_CLUSTER);
+        assert!(
+            cfg.failure_mode_deny,
+            "first-party/default global_rate_limit filters must fail closed on RLS outage"
+        );
         // And the defaulted value must itself validate (exempt from the slug rule).
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn explicit_failure_mode_deny_false_is_preserved_for_user_authored_filters() {
+        let cfg: GlobalRateLimitConfig = serde_json::from_value(serde_json::json!({
+            "domain": "edge",
+            "service_cluster": "custom-rls",
+            "failure_mode_deny": false
+        }))
+        .expect("deserialize explicit fail-open config");
+
+        assert!(
+            !cfg.failure_mode_deny,
+            "explicit user-authored fail-open behavior must not be silently rewritten"
+        );
         assert!(cfg.validate().is_ok());
     }
 

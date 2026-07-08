@@ -20,14 +20,37 @@ use tonic::{Request, Response, Status};
 use crate::counter::{now_unix, CounterStore};
 use crate::policy::{MatchedPolicy, PolicyCache};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrpcAuthMode {
+    /// Plaintext, unauthenticated gRPC. Valid only for config-gated loopback development.
+    InsecureDevOnly,
+    /// Production path: request extensions must carry authenticated dataplane evidence.
+    RequireAuthenticatedDataplane,
+}
+
+/// Marker inserted by the authenticated transport layer after validating the Envoy/dataplane
+/// client. Unit tests insert it directly so handler authz can be tested without a live mTLS
+/// server.
+#[derive(Debug, Clone, Copy)]
+pub struct AuthenticatedDataplane;
+
 pub struct RlsService {
     pub policies: Arc<PolicyCache>,
     pub counters: Arc<dyn CounterStore>,
+    auth_mode: GrpcAuthMode,
 }
 
 impl RlsService {
-    pub fn new(policies: Arc<PolicyCache>, counters: Arc<dyn CounterStore>) -> Self {
-        Self { policies, counters }
+    pub fn new(
+        policies: Arc<PolicyCache>,
+        counters: Arc<dyn CounterStore>,
+        auth_mode: GrpcAuthMode,
+    ) -> Self {
+        Self {
+            policies,
+            counters,
+            auth_mode,
+        }
     }
 
     /// Separator between the namespace and the canonical descriptor key in the counter key. A
@@ -89,6 +112,16 @@ impl RateLimitService for RlsService {
         &self,
         request: Request<rls::RateLimitRequest>,
     ) -> Result<Response<rls::RateLimitResponse>, Status> {
+        if self.auth_mode == GrpcAuthMode::RequireAuthenticatedDataplane
+            && request
+                .extensions()
+                .get::<AuthenticatedDataplane>()
+                .is_none()
+        {
+            return Err(Status::unauthenticated(
+                "authenticated RLS dataplane client required",
+            ));
+        }
         let req = request.into_inner();
         let now = now_unix();
         let request_addend = req.hits_addend;
@@ -179,7 +212,11 @@ mod tests {
         cache.replace(PolicyPush {
             policies: vec![policy],
         });
-        RlsService::new(cache, Arc::new(InMemoryFixedWindow::new()))
+        RlsService::new(
+            cache,
+            Arc::new(InMemoryFixedWindow::new()),
+            GrpcAuthMode::InsecureDevOnly,
+        )
     }
 
     fn pushed(domain: &str, pairs: &[(&str, &str)], rpu: u64) -> PushedPolicy {
@@ -203,6 +240,75 @@ mod tests {
             descriptors,
             hits_addend: 0,
         })
+    }
+
+    #[derive(Default)]
+    struct RecordingCounter {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CounterStore for RecordingCounter {
+        fn incr(&self, _key: &str, _window_seconds: u64, hits: u64, _now_unix: u64) -> u64 {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            hits
+        }
+    }
+
+    #[tokio::test]
+    async fn production_auth_mode_rejects_unauthenticated_call_before_counter_mutation() {
+        let cache = Arc::new(PolicyCache::new());
+        cache.replace(PolicyPush {
+            policies: vec![pushed("orgA|teamA|checkout", &[("client_id", "bob")], 2)],
+        });
+        let counters = Arc::new(RecordingCounter::default());
+        let svc = RlsService::new(
+            cache,
+            counters.clone(),
+            GrpcAuthMode::RequireAuthenticatedDataplane,
+        );
+
+        let err = svc
+            .should_rate_limit(request(
+                "orgA|teamA|checkout",
+                vec![descriptor(&[("client_id", "bob")])],
+            ))
+            .await
+            .expect_err("unauthenticated production RLS call must fail");
+
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+        assert_eq!(
+            counters.calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "unauthenticated request must not increment counters"
+        );
+    }
+
+    #[tokio::test]
+    async fn production_auth_mode_accepts_authenticated_dataplane_marker() {
+        let cache = Arc::new(PolicyCache::new());
+        cache.replace(PolicyPush {
+            policies: vec![pushed("orgA|teamA|checkout", &[("client_id", "bob")], 2)],
+        });
+        let counters = Arc::new(RecordingCounter::default());
+        let svc = RlsService::new(
+            cache,
+            counters.clone(),
+            GrpcAuthMode::RequireAuthenticatedDataplane,
+        );
+        let mut req = request(
+            "orgA|teamA|checkout",
+            vec![descriptor(&[("client_id", "bob")])],
+        );
+        req.extensions_mut().insert(AuthenticatedDataplane);
+
+        let resp = svc.should_rate_limit(req).await.unwrap().into_inner();
+
+        assert_eq!(resp.overall_code, Code::Ok as i32);
+        assert_eq!(
+            counters.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "authenticated request may increment counters"
+        );
     }
 
     #[tokio::test]

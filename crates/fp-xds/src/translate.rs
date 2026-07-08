@@ -3771,6 +3771,34 @@ mod tests {
     }
 
     #[test]
+    fn global_rate_limit_translator_preserves_default_and_explicit_failure_mode() {
+        use fp_domain::gateway::filters::GlobalRateLimitConfig;
+
+        let defaulted: GlobalRateLimitConfig = serde_json::from_value(serde_json::json!({
+            "domain": "flowplane",
+            "service_cluster": "rate-limit"
+        }))
+        .expect("defaulted global_rate_limit config");
+        let defaulted_proto = global_rate_limit_to_proto(&defaulted);
+        assert!(
+            defaulted_proto.failure_mode_deny,
+            "first-party/default global_rate_limit must translate fail-closed"
+        );
+
+        let explicit_fail_open: GlobalRateLimitConfig = serde_json::from_value(serde_json::json!({
+            "domain": "flowplane",
+            "service_cluster": "custom-rls",
+            "failure_mode_deny": false
+        }))
+        .expect("explicit fail-open global_rate_limit config");
+        let explicit_proto = global_rate_limit_to_proto(&explicit_fail_open);
+        assert!(
+            !explicit_proto.failure_mode_deny,
+            "explicit user-authored fail-open config must pass through unchanged"
+        );
+    }
+
+    #[test]
     fn filter_overrides_become_typed_per_filter_config() {
         use fp_domain::gateway::filters::*;
         use fp_domain::gateway::route_config::{RouteRule, VirtualHost};

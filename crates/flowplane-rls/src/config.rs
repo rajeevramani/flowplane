@@ -1,6 +1,6 @@
-//! Process configuration, read from the environment. mTLS for the Envoy-facing gRPC and the
-//! CP-facing admin endpoint is built in S6/S7 (DataplaneTlsConfig); S4 serves plaintext, which
-//! is the dev path and is explicit here.
+//! Process configuration, read from the environment. The Envoy-facing gRPC listener is plaintext
+//! only when an explicit loopback dev escape hatch is set; otherwise startup fails closed until
+//! the scheduled server-side mTLS path is configured.
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -33,6 +33,8 @@ pub struct RlsConfig {
     /// Credential required for mutating CP→RLS admin requests. `None` is accepted only with the
     /// explicit local-only unauthenticated escape hatch on a loopback admin bind.
     pub admin_credential: Option<AdminCredential>,
+    /// True only for explicitly acknowledged loopback plaintext gRPC in local development.
+    pub allow_insecure_grpc: bool,
 }
 
 impl RlsConfig {
@@ -50,11 +52,16 @@ impl RlsConfig {
             .ok()
             .as_deref()
             == Some("yes-this-is-local-only");
+        let allow_insecure_grpc = std::env::var("FLOWPLANE_RLS_ALLOW_INSECURE_GRPC")
+            .ok()
+            .as_deref()
+            == Some("yes-this-is-local-only");
         Self::resolve(
             grpc_listen,
             admin_listen,
             admin_credential,
             allow_unauth_admin,
+            allow_insecure_grpc,
         )
     }
 
@@ -63,7 +70,23 @@ impl RlsConfig {
         admin_listen: SocketAddr,
         admin_credential: Option<AdminCredential>,
         allow_unauth_admin: bool,
+        allow_insecure_grpc: bool,
     ) -> Result<Self, String> {
+        if !allow_insecure_grpc {
+            return Err(
+                "FLOWPLANE_RLS_ALLOW_INSECURE_GRPC=yes-this-is-local-only is required for the \
+                 plaintext RLS gRPC listener; production must use authenticated Envoy/dataplane \
+                 clients or refuse this insecure configuration"
+                    .to_string(),
+            );
+        }
+        if !grpc_listen.ip().is_loopback() {
+            return Err(
+                "FLOWPLANE_RLS_ALLOW_INSECURE_GRPC=yes-this-is-local-only is only valid for a \
+                 loopback RLS gRPC bind"
+                    .to_string(),
+            );
+        }
         if admin_credential.is_none() {
             if !allow_unauth_admin {
                 return Err(
@@ -82,6 +105,7 @@ impl RlsConfig {
             grpc_listen,
             admin_listen,
             admin_credential,
+            allow_insecure_grpc,
         })
     }
 }
@@ -113,37 +137,96 @@ mod tests {
 
     #[test]
     fn rejects_non_loopback_admin_bind_without_credential_or_escape_hatch() {
-        let err = RlsConfig::resolve(addr("127.0.0.1:50051"), addr("0.0.0.0:8081"), None, false)
-            .expect_err("unsafe admin bind must fail closed");
+        let err = RlsConfig::resolve(
+            addr("127.0.0.1:50051"),
+            addr("0.0.0.0:8081"),
+            None,
+            false,
+            true,
+        )
+        .expect_err("unsafe admin bind must fail closed");
         assert!(err.contains("FLOWPLANE_RLS_ADMIN_TOKEN_FILE"));
     }
 
     #[test]
     fn rejects_non_loopback_admin_bind_with_unauth_escape_hatch() {
-        let err = RlsConfig::resolve(addr("127.0.0.1:50051"), addr("0.0.0.0:8081"), None, true)
-            .expect_err("local-only escape hatch must not apply to non-loopback binds");
+        let err = RlsConfig::resolve(
+            addr("127.0.0.1:50051"),
+            addr("0.0.0.0:8081"),
+            None,
+            true,
+            true,
+        )
+        .expect_err("local-only escape hatch must not apply to non-loopback binds");
         assert!(err.contains("loopback"));
     }
 
     #[test]
-    fn accepts_token_file_equivalent_credential_on_non_loopback_bind() {
-        let cfg = RlsConfig::resolve(
+    fn rejects_insecure_grpc_dev_gate_on_non_loopback_even_with_admin_credential() {
+        let err = RlsConfig::resolve(
             addr("0.0.0.0:50051"),
             addr("0.0.0.0:8081"),
             Some(AdminCredential::new("secret\n".to_string()).unwrap()),
             false,
+            true,
         )
-        .expect("credentialed non-loopback admin bind is allowed");
+        .expect_err("insecure gRPC escape hatch must not apply to non-loopback binds");
+        assert!(err.contains("FLOWPLANE_RLS_ALLOW_INSECURE_GRPC"));
+    }
+
+    #[test]
+    fn accepts_loopback_grpc_and_token_file_equivalent_admin_credential() {
+        let cfg = RlsConfig::resolve(
+            addr("127.0.0.1:50051"),
+            addr("0.0.0.0:8081"),
+            Some(AdminCredential::new("secret\n".to_string()).unwrap()),
+            false,
+            true,
+        )
+        .expect("credentialed admin plus explicit loopback insecure gRPC is allowed");
         assert_eq!(
             cfg.admin_credential.as_ref().map(AdminCredential::token),
             Some("secret")
         );
+        assert!(cfg.allow_insecure_grpc);
     }
 
     #[test]
     fn accepts_explicit_local_only_unauth_escape_hatch_on_loopback_bind() {
-        let cfg = RlsConfig::resolve(addr("127.0.0.1:50051"), addr("127.0.0.1:8081"), None, true)
-            .expect("loopback escape hatch is allowed");
+        let cfg = RlsConfig::resolve(
+            addr("127.0.0.1:50051"),
+            addr("127.0.0.1:8081"),
+            None,
+            true,
+            true,
+        )
+        .expect("loopback escape hatch is allowed");
         assert!(cfg.admin_credential.is_none());
+    }
+
+    #[test]
+    fn rejects_plaintext_grpc_without_explicit_dev_gate() {
+        let err = RlsConfig::resolve(
+            addr("127.0.0.1:50051"),
+            addr("127.0.0.1:8081"),
+            None,
+            true,
+            false,
+        )
+        .expect_err("production insecure RLS gRPC must fail closed");
+        assert!(err.contains("FLOWPLANE_RLS_ALLOW_INSECURE_GRPC"));
+    }
+
+    #[test]
+    fn rejects_insecure_grpc_dev_gate_on_non_loopback_bind() {
+        let err = RlsConfig::resolve(
+            addr("0.0.0.0:50051"),
+            addr("127.0.0.1:8081"),
+            None,
+            true,
+            true,
+        )
+        .expect_err("insecure gRPC dev gate must be loopback-only");
+        assert!(err.contains("loopback RLS gRPC bind"));
     }
 }

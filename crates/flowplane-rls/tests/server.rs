@@ -28,9 +28,9 @@ use tonic::transport::server::TcpIncoming;
 use tonic::transport::{Channel, Server};
 
 use flowplane_rls::admin::{router, AdminState};
-use flowplane_rls::config::AdminCredential;
+use flowplane_rls::config::{AdminCredential, RlsConfig};
 use flowplane_rls::counter::InMemoryFixedWindow;
-use flowplane_rls::grpc::RlsService;
+use flowplane_rls::grpc::{GrpcAuthMode, RlsService};
 use flowplane_rls::policy::PolicyCache;
 
 const OK: i32 = Code::Ok as i32;
@@ -66,7 +66,11 @@ impl Harness {
         });
 
         // --- gRPC server -------------------------------------------------------
-        let svc = RlsService::new(Arc::clone(&policies), counters);
+        let svc = RlsService::new(
+            Arc::clone(&policies),
+            counters,
+            GrpcAuthMode::InsecureDevOnly,
+        );
         let grpc_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let grpc_addr = grpc_listener.local_addr().unwrap();
         let incoming = TcpIncoming::from(grpc_listener);
@@ -253,6 +257,36 @@ async fn admin_policy_push_requires_credential_and_preserves_cache_on_401() {
         OVER,
         "authorized replacement enforces the new policy"
     );
+}
+
+#[test]
+fn server_config_refuses_insecure_production_grpc_even_with_port_zero() {
+    let err = RlsConfig::resolve(
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+        None,
+        true,
+        false,
+    )
+    .expect_err("plaintext gRPC without the explicit dev gate must fail closed");
+
+    assert!(err.contains("FLOWPLANE_RLS_ALLOW_INSECURE_GRPC"));
+}
+
+#[test]
+fn server_config_allows_explicit_dev_insecure_grpc_on_loopback_port_zero() {
+    let cfg = RlsConfig::resolve(
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+        None,
+        true,
+        true,
+    )
+    .expect("explicit local insecure gRPC is allowed for dev");
+
+    assert_eq!(cfg.grpc_listen.port(), 0);
+    assert!(cfg.grpc_listen.ip().is_loopback());
+    assert!(cfg.allow_insecure_grpc);
 }
 
 async fn connect_with_retry(addr: std::net::SocketAddr) -> RateLimitServiceClient<Channel> {

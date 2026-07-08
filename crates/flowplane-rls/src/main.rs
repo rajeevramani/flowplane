@@ -7,7 +7,7 @@ use envoy_types::pb::envoy::service::ratelimit::v3::rate_limit_service_server::R
 use flowplane_rls::admin::{self, AdminState};
 use flowplane_rls::config::RlsConfig;
 use flowplane_rls::counter::InMemoryFixedWindow;
-use flowplane_rls::grpc::RlsService;
+use flowplane_rls::grpc::{GrpcAuthMode, RlsService};
 use flowplane_rls::policy::PolicyCache;
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
@@ -23,7 +23,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = RlsConfig::from_env()?;
     let policies = Arc::new(PolicyCache::new());
     let counters = Arc::new(InMemoryFixedWindow::new());
-    let service = RlsService::new(Arc::clone(&policies), counters);
+    let service = RlsService::new(
+        Arc::clone(&policies),
+        counters,
+        GrpcAuthMode::InsecureDevOnly,
+    );
 
     let admin_router = admin::router(AdminState {
         policies: Arc::clone(&policies),
