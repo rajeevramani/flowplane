@@ -11,8 +11,11 @@ use fp_core::services::secrets::{self as secret_svc, SecretWrite};
 use fp_core::{GrantSet, PrincipalCtx};
 use fp_domain::authz::TeamRef;
 use fp_domain::discovery::DiscoverySessionSpec;
-use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, LbPolicy};
-use fp_domain::{AiProviderKind, AiProviderSpec, ErrorCode, OrgRole, RequestId, SecretSpec};
+use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, LbPolicy, UpstreamTlsConfig};
+use fp_domain::{
+    AiProviderKind, AiProviderSpec, AiRouteBackend, AiRouteSpec, ErrorCode, OrgRole, RequestId,
+    SecretSpec,
+};
 use fp_storage::repos::identity;
 use sqlx::PgPool;
 use std::net::{IpAddr, SocketAddr};
@@ -88,6 +91,21 @@ fn cluster_spec(host: &str, port: u16) -> ClusterSpec {
         circuit_breakers: None,
         outlier_detection: None,
     }
+}
+
+fn pinned_policy(host: &str, port: u16) -> EgressPolicy {
+    EgressPolicy::with_static_hosts(
+        Vec::new(),
+        Vec::new(),
+        vec![(
+            host.into(),
+            port,
+            vec![
+                "203.0.113.20".parse::<IpAddr>().unwrap(),
+                "203.0.113.10".parse::<IpAddr>().unwrap(),
+            ],
+        )],
+    )
 }
 
 fn discovery_input(name: String, host: &str, port: i32) -> discovery_svc::StartDiscoveryInput {
@@ -195,6 +213,191 @@ async fn allowlisted_private_cluster_persists_and_audit_records_match() {
         detail["egress_policy"]["allowlist_match"],
         serde_json::json!("127.0.0.1:8080")
     );
+}
+
+#[tokio::test]
+async fn gateway_cluster_create_and_update_persist_pinned_ip_endpoints() {
+    let Some(w) = world().await else { return };
+    let policy = pinned_policy("api.example.test", 443);
+    let name = unique("cluster");
+    let mut spec = cluster_spec("api.example.test", 443);
+    spec.use_tls = true;
+
+    let created = cluster_svc::create_cluster_with_egress_policy(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &name,
+        spec.clone(),
+        RequestId::generate(),
+        &policy,
+    )
+    .await
+    .expect("create pinned cluster");
+
+    assert_eq!(
+        endpoint_hosts(&created.spec),
+        vec!["203.0.113.10", "203.0.113.20"]
+    );
+    assert_eq!(
+        created
+            .spec
+            .upstream_tls
+            .as_ref()
+            .and_then(|tls| tls.sni.as_deref()),
+        Some("api.example.test")
+    );
+
+    spec.upstream_tls = Some(UpstreamTlsConfig {
+        sni: Some("explicit.example.test".into()),
+        validation_context_sds_secret_name: None,
+        ca_cert_file: None,
+        auto_sni_san_validation: false,
+        insecure_skip_verify: false,
+    });
+    let updated = cluster_svc::update_cluster_with_egress_policy(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &name,
+        spec,
+        created.version,
+        RequestId::generate(),
+        &policy,
+    )
+    .await
+    .expect("update pinned cluster");
+
+    assert_eq!(
+        endpoint_hosts(&updated.spec),
+        vec!["203.0.113.10", "203.0.113.20"]
+    );
+    assert_eq!(
+        updated
+            .spec
+            .upstream_tls
+            .as_ref()
+            .and_then(|tls| tls.sni.as_deref()),
+        Some("explicit.example.test")
+    );
+}
+
+#[tokio::test]
+async fn expose_persists_pinned_ip_endpoint_and_hostname_sni() {
+    let Some(w) = world().await else { return };
+    let exposed = expose_svc::expose_with_egress_policy(
+        &w.pool,
+        &w.admin,
+        w.team,
+        expose_svc::ExposeRequest {
+            name: unique("expose"),
+            upstream: "https://api.example.test".into(),
+            path: "/".into(),
+            port: Some(19083),
+            public_base_url: None,
+        },
+        RequestId::generate(),
+        &pinned_policy("api.example.test", 443),
+    )
+    .await
+    .expect("expose pinned upstream");
+
+    assert_eq!(
+        endpoint_hosts(&exposed.cluster.spec),
+        vec!["203.0.113.10", "203.0.113.20"]
+    );
+    assert_eq!(
+        exposed
+            .cluster
+            .spec
+            .upstream_tls
+            .as_ref()
+            .and_then(|tls| tls.sni.as_deref()),
+        Some("api.example.test")
+    );
+}
+
+#[tokio::test]
+async fn ai_route_materialized_provider_cluster_uses_pinned_ip_endpoint() {
+    let Some(w) = world().await else { return };
+    let secret = secret_svc::create_secret(
+        &w.pool,
+        &w.admin,
+        w.team,
+        generic_secret(&unique("ai-key")),
+        RequestId::generate(),
+    )
+    .await
+    .expect("secret");
+    let provider = ai_svc::create_provider_with_egress_policy(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &unique("provider"),
+        AiProviderSpec {
+            kind: AiProviderKind::OpenaiCompatible,
+            base_url: "https://api.example.test".into(),
+            path_prefix: Some("/v1".into()),
+            credential_secret_id: secret.id,
+            models: vec!["gpt-5".into()],
+            auth_header: "authorization".into(),
+        },
+        RequestId::generate(),
+        &pinned_policy("api.example.test", 443),
+    )
+    .await
+    .expect("provider");
+
+    let route = ai_svc::create_route_with_egress_policy(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &unique("llm"),
+        AiRouteSpec {
+            listener_port: 19084,
+            path: "/v1/chat/completions".into(),
+            backends: vec![AiRouteBackend {
+                provider_id: provider.id,
+                models: vec!["gpt-5".into()],
+                model_override: None,
+                weight: 1,
+                priority: 0,
+            }],
+        },
+        RequestId::generate(),
+        &pinned_policy("api.example.test", 443),
+    )
+    .await
+    .expect("AI route");
+
+    let cluster = cluster_svc::get_cluster(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &route.materialized.cluster_names[0],
+        RequestId::generate(),
+    )
+    .await
+    .expect("materialized provider cluster");
+    assert_eq!(
+        endpoint_hosts(&cluster.spec),
+        vec!["203.0.113.10", "203.0.113.20"]
+    );
+    assert_eq!(
+        cluster
+            .spec
+            .upstream_tls
+            .as_ref()
+            .and_then(|tls| tls.sni.as_deref()),
+        Some("api.example.test")
+    );
+}
+
+fn endpoint_hosts(spec: &ClusterSpec) -> Vec<&str> {
+    spec.endpoints
+        .iter()
+        .map(|endpoint| endpoint.host.as_str())
+        .collect()
 }
 
 #[tokio::test]

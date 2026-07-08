@@ -3,7 +3,7 @@
 //! gateway resources that xDS already understands.
 
 use crate::authz::PrincipalCtx;
-use crate::services::egress_policy::EgressPolicy;
+use crate::services::egress_policy::{EgressPolicy, EgressValidation};
 use crate::services::{clusters, gateway};
 use fp_domain::authz::TeamRef;
 use fp_domain::gateway::cluster::{Cluster, ClusterSpec, Endpoint, UpstreamTlsConfig};
@@ -86,18 +86,22 @@ pub async fn expose_with_egress_policy(
 ) -> DomainResult<ExposedService> {
     fp_domain::validate_name(&request.name)?;
     let upstream = parse_upstream(&request.upstream)?;
-    validate_expose_egress(&upstream, policy).await?;
+    let egress = validate_expose_egress(&upstream, policy).await?;
     let path = normalize_path(&request.path)?;
     let names = ExposeNames::new(&request.name);
     let public_base_url = request.public_base_url;
 
     let cluster_spec = ClusterSpec {
         aggregate_clusters: Vec::new(),
-        endpoints: vec![Endpoint {
-            host: upstream.host,
-            port: upstream.port,
-            weight: None,
-        }],
+        endpoints: egress
+            .resolved_ips
+            .iter()
+            .map(|ip| Endpoint {
+                host: ip.to_string(),
+                port: upstream.port,
+                weight: None,
+            })
+            .collect(),
         lb_policy: Default::default(),
         least_request: None,
         ring_hash: None,
@@ -461,11 +465,10 @@ fn parse_upstream(raw: &str) -> DomainResult<ParsedUpstream> {
 async fn validate_expose_egress(
     upstream: &ParsedUpstream,
     policy: &EgressPolicy,
-) -> DomainResult<()> {
+) -> DomainResult<EgressValidation> {
     policy
         .validate_host_port(&upstream.host, upstream.port, "expose upstream")
         .await
-        .map(|_| ())
 }
 
 fn normalize_path(path: &str) -> DomainResult<String> {
@@ -499,5 +502,35 @@ mod tests {
         validate_expose_egress(&upstream, &EgressPolicy::default())
             .await
             .expect_err("loopback expose upstream denied");
+    }
+
+    #[tokio::test]
+    async fn expose_template_pins_validated_ip_and_preserves_sni() {
+        let policy = EgressPolicy::with_static_hosts(
+            Vec::new(),
+            Vec::new(),
+            vec![(
+                "api.example.test".into(),
+                443,
+                vec![
+                    "203.0.113.20".parse().unwrap(),
+                    "203.0.113.10".parse().unwrap(),
+                ],
+            )],
+        );
+        let upstream = parse_upstream("https://api.example.test").expect("parse upstream");
+        let egress = validate_expose_egress(&upstream, &policy)
+            .await
+            .expect("validate upstream");
+
+        assert_eq!(
+            egress
+                .resolved_ips
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["203.0.113.10", "203.0.113.20"]
+        );
+        assert_eq!(upstream.sni, "api.example.test");
     }
 }

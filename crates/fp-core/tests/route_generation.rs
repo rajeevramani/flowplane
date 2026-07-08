@@ -1,5 +1,6 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
+use fp_core::services::egress_policy::EgressPolicy;
 use fp_core::services::route_generation;
 use fp_core::{GrantSet, PrincipalCtx};
 use fp_domain::api_lifecycle::{
@@ -10,6 +11,7 @@ use fp_domain::gateway::listener::{ListenerProtocol, ListenerSpec};
 use fp_domain::{ErrorCode, OrgRole, RequestId};
 use fp_storage::repos::{api_lifecycle, identity};
 use sqlx::PgPool;
+use std::net::IpAddr;
 
 fn unique(prefix: &str) -> String {
     format!(
@@ -77,15 +79,75 @@ async fn route_plan_apply_replays_persisted_preview() {
     .expect("dry-run plan");
 
     assert!(plan.plan.conflicts.is_empty());
-    let applied =
-        route_generation::apply_plan(&w.pool, &w.admin, w.team, plan.id, RequestId::generate())
-            .await
-            .expect("apply");
+    let applied = route_generation::apply_plan_with_egress_policy(
+        &w.pool,
+        &w.admin,
+        w.team,
+        plan.id,
+        RequestId::generate(),
+        &route_generation_policy(),
+    )
+    .await
+    .expect("apply");
 
-    assert_eq!(applied.cluster.spec, plan.plan.cluster_spec);
+    assert_eq!(
+        plan.plan.cluster_spec.endpoints[0].host, "upstream.example.test",
+        "dry-run preview remains authored provenance"
+    );
+    assert_eq!(
+        applied
+            .cluster
+            .spec
+            .endpoints
+            .iter()
+            .map(|endpoint| endpoint.host.as_str())
+            .collect::<Vec<_>>(),
+        vec!["203.0.113.10", "203.0.113.20"],
+        "apply persists deterministic pinned IP endpoints"
+    );
+    assert_eq!(
+        applied
+            .cluster
+            .spec
+            .upstream_tls
+            .as_ref()
+            .and_then(|tls| tls.sni.as_deref()),
+        Some("upstream.example.test")
+    );
     assert_eq!(applied.route_config.spec, plan.plan.route_config_spec);
     assert_eq!(applied.listener.spec, plan.plan.listener_spec);
     assert_eq!(applied.plan.status.as_str(), "applied");
+}
+
+#[tokio::test]
+async fn route_plan_apply_uses_supplied_egress_policy_for_pinning() {
+    let Some(w) = world().await else { return };
+    let spec_id = reviewed_spec(&w, &unique("learned-api")).await;
+    let plan = route_generation::create_plan(
+        &w.pool,
+        &w.admin,
+        w.team,
+        route_generation::CreateRoutePlanInput {
+            spec_version_id: spec_id,
+            listener_port: 19189,
+        },
+        RequestId::generate(),
+    )
+    .await
+    .expect("dry-run plan");
+
+    let applied = route_generation::apply_plan_with_egress_policy(
+        &w.pool,
+        &w.admin,
+        w.team,
+        plan.id,
+        RequestId::generate(),
+        &route_generation_policy(),
+    )
+    .await
+    .expect("static host policy is honored");
+
+    assert_eq!(applied.cluster.spec.endpoints[0].host, "203.0.113.10");
 }
 
 #[tokio::test]
@@ -127,10 +189,16 @@ async fn route_plan_apply_fails_on_intervening_conflict() {
     .await
     .expect("intervening listener");
 
-    let err =
-        route_generation::apply_plan(&w.pool, &w.admin, w.team, plan.id, RequestId::generate())
-            .await
-            .expect_err("apply conflict");
+    let err = route_generation::apply_plan_with_egress_policy(
+        &w.pool,
+        &w.admin,
+        w.team,
+        plan.id,
+        RequestId::generate(),
+        &route_generation_policy(),
+    )
+    .await
+    .expect_err("apply conflict");
 
     assert_eq!(err.code, ErrorCode::Conflict);
     assert_eq!(
@@ -215,10 +283,16 @@ async fn route_plan_apply_rechecks_review_state() {
 
     append_decision(&w, spec_id, SpecReviewDecision::Rejected).await;
 
-    let err =
-        route_generation::apply_plan(&w.pool, &w.admin, w.team, plan.id, RequestId::generate())
-            .await
-            .expect_err("rejected spec cannot apply");
+    let err = route_generation::apply_plan_with_egress_policy(
+        &w.pool,
+        &w.admin,
+        w.team,
+        plan.id,
+        RequestId::generate(),
+        &route_generation_policy(),
+    )
+    .await
+    .expect_err("rejected spec cannot apply");
 
     assert_eq!(err.code, ErrorCode::Conflict);
     assert_eq!(
@@ -238,6 +312,21 @@ async fn route_plan_apply_rechecks_review_state() {
 
 async fn reviewed_spec(w: &World, api_name: &str) -> fp_domain::SpecVersionId {
     learned_spec(w, api_name, Some(SpecReviewDecision::Reviewed)).await
+}
+
+fn route_generation_policy() -> EgressPolicy {
+    EgressPolicy::with_static_hosts(
+        Vec::new(),
+        Vec::new(),
+        vec![(
+            "upstream.example.test".into(),
+            443,
+            vec![
+                "203.0.113.20".parse::<IpAddr>().unwrap(),
+                "203.0.113.10".parse::<IpAddr>().unwrap(),
+            ],
+        )],
+    )
 }
 
 async fn learned_spec(

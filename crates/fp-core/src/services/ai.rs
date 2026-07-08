@@ -270,6 +270,19 @@ pub async fn create_route(
     spec: AiRouteSpec,
     request_id: RequestId,
 ) -> DomainResult<AiRoute> {
+    let policy = EgressPolicy::from_process_config().await;
+    create_route_with_egress_policy(pool, ctx, team, name, spec, request_id, &policy).await
+}
+
+pub async fn create_route_with_egress_policy(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    spec: AiRouteSpec,
+    request_id: RequestId,
+    policy: &EgressPolicy,
+) -> DomainResult<AiRoute> {
     authorize(
         pool,
         ctx,
@@ -313,7 +326,7 @@ pub async fn create_route(
     let providers = load_route_providers(pool, team, &spec).await?;
     let materialized = materialized_names(name, &spec)?;
     let materialized_events =
-        create_materialized(pool, team, name, &spec, &providers, &materialized).await?;
+        create_materialized(pool, team, name, &spec, &providers, &materialized, policy).await?;
     let mut tx = pool
         .begin()
         .await
@@ -644,6 +657,31 @@ pub async fn update_route(
     expected_version: i64,
     request_id: RequestId,
 ) -> DomainResult<AiRoute> {
+    let policy = EgressPolicy::from_process_config().await;
+    update_route_with_egress_policy(
+        pool,
+        ctx,
+        team,
+        name,
+        spec,
+        expected_version,
+        request_id,
+        &policy,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn update_route_with_egress_policy(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    spec: AiRouteSpec,
+    expected_version: i64,
+    request_id: RequestId,
+    policy: &EgressPolicy,
+) -> DomainResult<AiRoute> {
     authorize(
         pool,
         ctx,
@@ -694,7 +732,7 @@ pub async fn update_route(
     let providers = load_route_providers(pool, team, &spec).await?;
     let materialized = materialized_names(name, &spec)?;
     cleanup_materialized(pool, team, &current.materialized).await;
-    create_materialized(pool, team, name, &spec, &providers, &materialized).await?;
+    create_materialized(pool, team, name, &spec, &providers, &materialized, policy).await?;
 
     let mut tx = pool
         .begin()
@@ -991,12 +1029,13 @@ async fn create_materialized(
     spec: &AiRouteSpec,
     providers: &[AiProvider],
     names: &AiRouteMaterializedResources,
+    policy: &EgressPolicy,
 ) -> DomainResult<MaterializedResourceEvents> {
     let targets = ai_route_targets(route_name, spec)?;
     let backend_names = backend_cluster_names(names, spec.backends.len());
     let mut cluster_specs = Vec::with_capacity(names.cluster_names.len());
     for (provider, cluster_name) in providers.iter().zip(backend_names.iter()) {
-        let cluster_spec = match provider_cluster_spec(provider) {
+        let cluster_spec = match provider_cluster_spec(provider, policy).await {
             Ok(spec) => spec,
             Err(err) => return Err(err),
         };
@@ -1199,7 +1238,10 @@ async fn cleanup_materialized(pool: &PgPool, team: TeamRef, names: &AiRouteMater
     let _ = tx.commit().await;
 }
 
-fn provider_cluster_spec(provider: &AiProvider) -> DomainResult<ClusterSpec> {
+async fn provider_cluster_spec(
+    provider: &AiProvider,
+    policy: &EgressPolicy,
+) -> DomainResult<ClusterSpec> {
     let url = Url::parse(&provider.spec.base_url)
         .map_err(|_| DomainError::validation("AI provider base_url must be a valid URL"))?;
     let host = url
@@ -1210,7 +1252,7 @@ fn provider_cluster_spec(provider: &AiProvider) -> DomainResult<ClusterSpec> {
     let port = url
         .port_or_known_default()
         .ok_or_else(|| DomainError::validation("AI provider base_url must include a port"))?;
-    Ok(ClusterSpec {
+    let spec = ClusterSpec {
         endpoints: vec![Endpoint {
             host: host.clone(),
             port,
@@ -1235,7 +1277,10 @@ fn provider_cluster_spec(provider: &AiProvider) -> DomainResult<ClusterSpec> {
         health_checks: None,
         circuit_breakers: None,
         outlier_detection: None,
-    })
+    };
+    crate::services::clusters::materialize_pinned_cluster_spec(spec, policy)
+        .await
+        .map(|(spec, _)| spec)
 }
 
 fn aggregate_cluster_spec(cluster_names: Vec<String>) -> ClusterSpec {

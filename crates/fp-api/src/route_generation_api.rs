@@ -108,12 +108,13 @@ pub async fn apply_route_plan(
 ) -> Result<Json<ApplyRoutePlanView>, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
-        svc::apply_plan(
+        svc::apply_plan_with_egress_policy(
             &state.pool,
             &ctx,
             team,
             RouteGenerationPlanId::from(plan_id),
             rid,
+            &state.egress_policy,
         )
         .await
     };

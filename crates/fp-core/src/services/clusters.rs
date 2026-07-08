@@ -8,11 +8,14 @@ use crate::services::filesystem_path_policy::FilesystemPathPolicy;
 use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
-use fp_domain::gateway::cluster::{validate_cluster_name, Cluster, ClusterSpec, UpstreamTlsConfig};
+use fp_domain::gateway::cluster::{
+    validate_cluster_name, Cluster, ClusterSpec, Endpoint, UpstreamTlsConfig,
+};
 use fp_domain::{DomainResult, RequestId};
 use fp_storage::repos::{audit, clusters};
 use fp_storage::scope::TeamScope;
 use sqlx::PgPool;
+use std::net::IpAddr;
 
 async fn authorize(
     pool: &PgPool,
@@ -99,7 +102,7 @@ pub async fn create_cluster_with_policies(
     authorize(pool, ctx, Action::Create, team, request_id).await?;
     validate_cluster_name(name)?;
     spec.validate()?;
-    let egress = validate_cluster_egress(&spec, policy).await?;
+    let (spec, egress) = materialize_pinned_cluster_spec(spec, policy).await?;
     validate_cluster_filesystem_paths(&spec, file_policy)?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::Clusters).await?;
 
@@ -222,7 +225,7 @@ pub async fn update_cluster_with_policies(
 ) -> DomainResult<Cluster> {
     authorize(pool, ctx, Action::Update, team, request_id).await?;
     spec.validate()?;
-    let egress = validate_cluster_egress(&spec, policy).await?;
+    let (spec, egress) = materialize_pinned_cluster_spec(spec, policy).await?;
     validate_cluster_filesystem_paths(&spec, file_policy)?;
     let mut tx = pool
         .begin()
@@ -267,20 +270,73 @@ fn validate_cluster_filesystem_paths(
     Ok(())
 }
 
+pub(crate) async fn materialize_pinned_cluster_spec(
+    mut spec: ClusterSpec,
+    policy: &EgressPolicy,
+) -> DomainResult<(ClusterSpec, EgressValidation)> {
+    let mut validation = EgressValidation::default();
+    let mut pinned = Vec::new();
+    let should_preserve_tls_hostname = spec.use_tls || spec.upstream_tls.is_some();
+    let authored_endpoints = spec.endpoints.clone();
+    for endpoint in &authored_endpoints {
+        let endpoint_validation = policy
+            .validate_host_port(&endpoint.host, endpoint.port, "cluster endpoint")
+            .await?;
+        preserve_tls_hostname_intent(&mut spec, &endpoint.host, should_preserve_tls_hostname);
+        if validation.allowlist_match.is_none() {
+            validation.allowlist_match = endpoint_validation.allowlist_match;
+        }
+        validation
+            .resolved_ips
+            .extend(endpoint_validation.resolved_ips.iter().copied());
+        pinned.extend(
+            endpoint_validation
+                .resolved_ips
+                .into_iter()
+                .map(|ip| Endpoint {
+                    host: ip.to_string(),
+                    port: endpoint.port,
+                    weight: endpoint.weight,
+                }),
+        );
+    }
+    validation.resolved_ips.sort();
+    validation.resolved_ips.dedup();
+    spec.endpoints = pinned;
+    Ok((spec, validation))
+}
+
+#[cfg(test)]
 async fn validate_cluster_egress(
     spec: &ClusterSpec,
     policy: &EgressPolicy,
 ) -> DomainResult<EgressValidation> {
-    let mut validation = EgressValidation::default();
-    for endpoint in &spec.endpoints {
-        let endpoint_validation = policy
-            .validate_host_port(&endpoint.host, endpoint.port, "cluster endpoint")
-            .await?;
-        if validation.allowlist_match.is_none() {
-            validation.allowlist_match = endpoint_validation.allowlist_match;
+    materialize_pinned_cluster_spec(spec.clone(), policy)
+        .await
+        .map(|(_, validation)| validation)
+}
+
+fn preserve_tls_hostname_intent(spec: &mut ClusterSpec, host: &str, enabled: bool) {
+    if !enabled || host.parse::<IpAddr>().is_ok() {
+        return;
+    }
+    match &mut spec.upstream_tls {
+        Some(tls) => {
+            if tls.sni.is_none() {
+                tls.sni = Some(host.to_string());
+                tls.auto_sni_san_validation = true;
+            }
+        }
+        None => {
+            spec.upstream_tls = Some(UpstreamTlsConfig {
+                sni: Some(host.to_string()),
+                validation_context_sds_secret_name: None,
+                ca_cert_file: None,
+                auto_sni_san_validation: true,
+                insecure_skip_verify: false,
+            });
         }
     }
-    Ok(validation)
 }
 
 pub async fn delete_cluster(
@@ -398,6 +454,77 @@ mod tests {
         validate_cluster_egress(&spec("10.0.0.10", 8080), &EgressPolicy::default())
             .await
             .expect_err("private cluster endpoint denied");
+    }
+
+    #[tokio::test]
+    async fn materialized_cluster_pins_all_validated_ips_deterministically() {
+        let policy = EgressPolicy::with_static_hosts(
+            Vec::new(),
+            Vec::new(),
+            vec![(
+                "api.example.test".into(),
+                443,
+                vec![
+                    "203.0.113.20".parse().unwrap(),
+                    "203.0.113.10".parse().unwrap(),
+                ],
+            )],
+        );
+        let mut spec = spec("api.example.test", 443);
+        spec.use_tls = true;
+
+        let (pinned, validation) = materialize_pinned_cluster_spec(spec, &policy)
+            .await
+            .expect("pin cluster");
+
+        assert_eq!(
+            pinned
+                .endpoints
+                .iter()
+                .map(|endpoint| endpoint.host.as_str())
+                .collect::<Vec<_>>(),
+            vec!["203.0.113.10", "203.0.113.20"]
+        );
+        assert_eq!(
+            validation
+                .resolved_ips
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["203.0.113.10", "203.0.113.20"]
+        );
+        let tls = pinned.upstream_tls.expect("hostname TLS intent preserved");
+        assert_eq!(tls.sni.as_deref(), Some("api.example.test"));
+        assert!(tls.auto_sni_san_validation);
+    }
+
+    #[tokio::test]
+    async fn materialized_cluster_keeps_explicit_sni() {
+        let policy = EgressPolicy::with_static_hosts(
+            Vec::new(),
+            Vec::new(),
+            vec![(
+                "api.example.test".into(),
+                443,
+                vec!["203.0.113.10".parse().unwrap()],
+            )],
+        );
+        let mut spec = spec("api.example.test", 443);
+        spec.upstream_tls = Some(UpstreamTlsConfig {
+            sni: Some("origin.example.test".into()),
+            validation_context_sds_secret_name: None,
+            ca_cert_file: None,
+            auto_sni_san_validation: false,
+            insecure_skip_verify: false,
+        });
+
+        let (pinned, _) = materialize_pinned_cluster_spec(spec, &policy)
+            .await
+            .expect("pin cluster");
+
+        let tls = pinned.upstream_tls.expect("upstream tls");
+        assert_eq!(tls.sni.as_deref(), Some("origin.example.test"));
+        assert!(!tls.auto_sni_san_validation);
     }
 
     #[test]

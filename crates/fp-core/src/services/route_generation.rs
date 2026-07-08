@@ -1,6 +1,7 @@
 //! S9 route generation plans: dry-run persists concrete gateway specs; apply replays them.
 
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
+use crate::services::egress_policy::EgressPolicy;
 use crate::services::{clusters, gateway, record_authz_denial};
 use fp_domain::api_lifecycle::{SpecReviewDecision, SpecSourceKind};
 use fp_domain::authz::{Action, Resource, TeamRef};
@@ -116,6 +117,18 @@ pub async fn apply_plan(
     plan_id: RouteGenerationPlanId,
     request_id: RequestId,
 ) -> DomainResult<AppliedRoutePlan> {
+    let policy = EgressPolicy::from_process_config().await;
+    apply_plan_with_egress_policy(pool, ctx, team, plan_id, request_id, &policy).await
+}
+
+pub async fn apply_plan_with_egress_policy(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    plan_id: RouteGenerationPlanId,
+    request_id: RequestId,
+    policy: &EgressPolicy,
+) -> DomainResult<AppliedRoutePlan> {
     let plan = route_generation::get(pool, team.id, plan_id)
         .await?
         .ok_or_else(|| DomainError::not_found("route generation plan", &plan_id.to_string()))?;
@@ -144,13 +157,14 @@ pub async fn apply_plan(
         "validate route generation plan approval: commit",
     ))?;
 
-    let cluster = clusters::create_cluster(
+    let cluster = clusters::create_cluster_with_egress_policy(
         pool,
         ctx,
         team,
         &plan.plan.cluster_name,
         plan.plan.cluster_spec.clone(),
         request_id,
+        policy,
     )
     .await?;
     let route_config = match gateway::create_route_config(

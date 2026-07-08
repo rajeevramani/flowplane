@@ -2897,6 +2897,71 @@ mod tests {
     }
 
     #[test]
+    fn pinned_ip_cluster_uses_eds_socket_targets_and_preserves_hostname_tls() {
+        let spec = ClusterSpec {
+            aggregate_clusters: Vec::new(),
+            endpoints: vec![Endpoint {
+                host: "203.0.113.10".into(),
+                port: 443,
+                weight: None,
+            }],
+            lb_policy: LbPolicy::RoundRobin,
+            least_request: None,
+            ring_hash: None,
+            maglev: None,
+            dns_lookup_family: None,
+            connect_timeout_secs: 5,
+            use_tls: true,
+            upstream_tls: Some(UpstreamTlsConfig {
+                sni: Some("api.example.test".into()),
+                validation_context_sds_secret_name: None,
+                ca_cert_file: None,
+                auto_sni_san_validation: true,
+                insecure_skip_verify: false,
+            }),
+            protocol: None,
+            health_checks: None,
+            circuit_breakers: None,
+            outlier_detection: None,
+        };
+
+        let cluster = cluster_to_proto("api", &spec).expect("translate");
+        let discovery_type = match &cluster.cluster_discovery_type {
+            Some(exc::cluster::ClusterDiscoveryType::Type(t)) => {
+                exc::cluster::DiscoveryType::try_from(*t).expect("valid discovery enum")
+            }
+            other => panic!("expected an inline discovery Type, got {other:?}"),
+        };
+        assert_eq!(
+            discovery_type,
+            exc::cluster::DiscoveryType::Eds,
+            "IP-pinned clusters must not be STRICT_DNS"
+        );
+        assert!(
+            cluster.load_assignment.is_none(),
+            "EDS cluster assignment is delivered as socket endpoints, not DNS hostnames"
+        );
+        let endpoints = endpoints_to_proto("api", &spec);
+        let Some(ep::lb_endpoint::HostIdentifier::Endpoint(endpoint)) =
+            &endpoints.endpoints[0].lb_endpoints[0].host_identifier
+        else {
+            panic!("expected socket endpoint");
+        };
+        let Some(core::address::Address::SocketAddress(sa)) = endpoint
+            .address
+            .as_ref()
+            .and_then(|address| address.address.as_ref())
+        else {
+            panic!("expected socket address");
+        };
+        assert_eq!(sa.address, "203.0.113.10");
+
+        let tls = upstream_tls_context_of("api", &spec);
+        assert_eq!(tls.sni, "api.example.test");
+        assert!(tls.auto_sni_san_validation);
+    }
+
+    #[test]
     fn aggregate_cluster_translates_to_custom_cluster_type() {
         let spec = ClusterSpec {
             aggregate_clusters: vec!["ai-route-b1".into(), "ai-route-b2".into()],
