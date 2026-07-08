@@ -251,6 +251,16 @@ pub async fn ingest_raw_observation(
     input.validate()?;
     let session =
         get_session_for_update(tx, team.id, &provenance.discovery_session_id.to_string()).await?;
+    if session.status != DiscoverySessionStatus::Capturing {
+        return Err(DomainError::conflict(format!(
+            "discovery session \"{}\" is {}",
+            session.name,
+            session.status.as_str()
+        ))
+        .with_hint("only capturing discovery sessions can accept observations"));
+    }
+    let accepted_provenance =
+        accepted_discovery_provenance(tx, team.id, &session, provenance).await?;
 
     let existing = sqlx::query(&format!(
         "SELECT {RAW_COLUMNS}, {DISCOVERY_RAW_COLUMNS} \
@@ -272,15 +282,6 @@ pub async fn ingest_raw_observation(
                 "discovery observation request_id was already captured with different request metadata",
             ));
         }
-    } else if session.status != DiscoverySessionStatus::Capturing
-        && session.sample_count < i64::from(session.target_sample_count)
-    {
-        return Err(DomainError::conflict(format!(
-            "discovery session \"{}\" is {}",
-            session.name,
-            session.status.as_str()
-        ))
-        .with_hint("only capturing discovery sessions can accept new observations"));
     }
 
     let incoming_request_headers = sanitize_headers(&input.request_headers);
@@ -349,7 +350,7 @@ pub async fn ingest_raw_observation(
         || discovery_observation_path_exists(
             tx,
             team.id,
-            provenance.discovery_session_id,
+            accepted_provenance.discovery_session_id,
             &merged.path,
             &input.request_id,
         )
@@ -433,25 +434,56 @@ pub async fn ingest_raw_observation(
     .bind(merged.id.as_uuid())
     .bind(team.id.as_uuid())
     .bind(&merged.request_id)
-    .bind(provenance.discovery_session_id.as_uuid())
-    .bind(provenance.discovery_listener_id.as_uuid())
-    .bind(&provenance.observed_host)
-    .bind(&provenance.observed_sni)
-    .bind(provenance.route_matched)
-    .bind(&provenance.forwarded_upstream_host)
-    .bind(provenance.forwarded_upstream_port)
-    .bind(&provenance.forwarded_upstream_ip)
-    .bind(provenance.forwarded_upstream_tls)
+    .bind(accepted_provenance.discovery_session_id.as_uuid())
+    .bind(accepted_provenance.discovery_listener_id.as_uuid())
+    .bind(&accepted_provenance.observed_host)
+    .bind(&accepted_provenance.observed_sni)
+    .bind(accepted_provenance.route_matched)
+    .bind(&accepted_provenance.forwarded_upstream_host)
+    .bind(accepted_provenance.forwarded_upstream_port)
+    .bind(&accepted_provenance.forwarded_upstream_ip)
+    .bind(accepted_provenance.forwarded_upstream_tls)
     .execute(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("upsert discovery provenance: {e}")))?;
     update_discovery_counters(tx, team.id, session.id, quota_change).await?;
 
-    observations_for_session(tx, team.id, provenance.discovery_session_id)
+    observations_for_session(tx, team.id, accepted_provenance.discovery_session_id)
         .await?
         .into_iter()
         .find(|row| row.raw.id == merged.id)
         .ok_or_else(|| DomainError::internal("read ingested discovery observation"))
+}
+
+async fn accepted_discovery_provenance(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    session: &DiscoverySession,
+    input: &DiscoveryObservationProvenance,
+) -> DomainResult<DiscoveryObservationProvenance> {
+    let listener_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM listeners \
+         WHERE team_id = $1 AND name = $2 AND owner_kind = 'discovery' AND owner_id = $3",
+    )
+    .bind(team_id.as_uuid())
+    .bind(&session.listener_name)
+    .bind(session.id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("resolve discovery listener binding: {e}")))?
+    .ok_or_else(|| DomainError::not_found("discovery listener binding", &session.name))?;
+
+    Ok(DiscoveryObservationProvenance {
+        discovery_session_id: session.id,
+        discovery_listener_id: fp_domain::ListenerId::from(listener_id),
+        observed_host: input.observed_host.clone(),
+        observed_sni: input.observed_sni.clone(),
+        route_matched: true,
+        forwarded_upstream_host: session.upstream_host.clone(),
+        forwarded_upstream_port: session.upstream_port,
+        forwarded_upstream_ip: session.validated_upstream_ip.clone(),
+        forwarded_upstream_tls: session.upstream_tls,
+    })
 }
 
 pub async fn completed_observations_for_update(

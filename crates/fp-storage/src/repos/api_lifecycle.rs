@@ -1276,7 +1276,6 @@ pub async fn ingest_raw_observation(
         api_definition_id,
         route_config_id,
         listener_id,
-        existing.is_some(),
     )
     .await?;
     if existing.is_none() {
@@ -1483,9 +1482,8 @@ async fn validate_locked_capture_ingest_binding(
     api_definition_id: Option<ApiDefinitionId>,
     route_config_id: RouteConfigId,
     listener_id: Option<ListenerId>,
-    allow_existing_observation_merge: bool,
 ) -> DomainResult<()> {
-    if session.status != CaptureSessionStatus::Capturing && !allow_existing_observation_merge {
+    if session.status != CaptureSessionStatus::Capturing {
         return Err(DomainError::conflict(format!(
             "learning session \"{}\" is {}",
             session.name,

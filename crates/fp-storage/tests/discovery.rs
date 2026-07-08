@@ -78,6 +78,14 @@ async fn discovery_observations_persist_payload_and_provenance() {
     )
     .await
     .expect("session");
+    insert_discovery_listener(
+        &mut tx,
+        w.team_a,
+        session.id,
+        &session.listener_name,
+        listener_id,
+    )
+    .await;
     discovery::ingest_raw_observation(
         &mut tx,
         w.team_a,
@@ -98,6 +106,24 @@ async fn discovery_observations_persist_payload_and_provenance() {
     assert_eq!(rows[0].raw.capture_session_id, None);
     assert_eq!(rows[0].raw.path, "/v1/items");
     assert_eq!(rows[0].provenance.observed_host, "api-a.example.test");
+    assert_eq!(rows[0].provenance.discovery_listener_id, listener_id);
+    assert_eq!(
+        rows[0].provenance.forwarded_upstream_host,
+        session.upstream_host
+    );
+    assert_eq!(
+        rows[0].provenance.forwarded_upstream_port,
+        session.upstream_port
+    );
+    assert_eq!(
+        rows[0].provenance.forwarded_upstream_ip,
+        session.validated_upstream_ip
+    );
+    assert_eq!(
+        rows[0].provenance.forwarded_upstream_tls,
+        session.upstream_tls
+    );
+    assert!(rows[0].provenance.route_matched);
 
     let err =
         discovery::completed_observations_for_update(&mut tx, w.team_b.id, &session.id.to_string())
@@ -172,7 +198,7 @@ async fn discovery_ingest_redacts_headers_and_updates_counters() {
 }
 
 #[tokio::test]
-async fn discovery_duplicate_merge_does_not_consume_another_sample() {
+async fn discovery_duplicate_merge_rejects_after_target_completion() {
     let Some(w) = world().await else { return };
     let session_id = DiscoverySessionId::generate();
     let listener_id = ListenerId::generate();
@@ -216,27 +242,83 @@ async fn discovery_duplicate_merge_does_not_consume_another_sample() {
     body.request_body = Some("hello".into());
     body.response_body = Some("world".into());
     let mut tx = w.pool.begin().await.expect("body tx");
-    let merged = discovery::ingest_raw_observation(
+    let err = discovery::ingest_raw_observation(
         &mut tx,
         w.team_a,
         &body,
         &provenance(session.id, listener_id, "api-b.example.test"),
     )
     .await
-    .expect("body merge");
-    tx.commit().await.expect("commit body");
+    .expect_err("completed session rejects duplicate merge");
+    assert_eq!(err.code, ErrorCode::Conflict);
+    tx.rollback().await.expect("rollback rejected body");
 
-    assert_eq!(merged.raw.request_body.as_deref(), Some("hello"));
-    assert_eq!(merged.raw.response_body.as_deref(), Some("world"));
-    assert_eq!(merged.provenance.observed_host, "api-b.example.test");
     let refreshed = discovery::get(&w.pool, w.team_a.id, &session.id.to_string())
         .await
         .expect("get session")
         .expect("session");
     assert_eq!(refreshed.sample_count, 1);
     assert_eq!(refreshed.path_count, 1);
-    assert_eq!(refreshed.byte_count, 10);
+    assert_eq!(refreshed.byte_count, 0);
     assert_eq!(refreshed.drop_count, 0);
+}
+
+#[tokio::test]
+async fn discovery_duplicate_merge_ignores_forged_forwarded_upstream_metadata_while_capturing() {
+    let Some(w) = world().await else { return };
+    let session_id = DiscoverySessionId::generate();
+    let caller_listener_id = ListenerId::generate();
+    let server_listener_id = ListenerId::generate();
+    let mut tx = w.pool.begin().await.expect("tx");
+    let session =
+        create_session_with_listener(&mut tx, w.team_a, session_id, spec(), server_listener_id)
+            .await
+            .expect("session");
+    tx.commit().await.expect("commit session");
+
+    let mut forged = provenance(session.id, caller_listener_id, "api-a.example.test");
+    forged.forwarded_upstream_host = "attacker.internal.test".into();
+    forged.forwarded_upstream_port = 8443;
+    forged.forwarded_upstream_ip = "10.0.0.10".into();
+    forged.forwarded_upstream_tls = false;
+    let mut tx = w.pool.begin().await.expect("metadata tx");
+    let captured = discovery::ingest_raw_observation(
+        &mut tx,
+        w.team_a,
+        &observation("req-forged", "/forged"),
+        &forged,
+    )
+    .await
+    .expect("metadata ingest");
+    tx.commit().await.expect("commit metadata");
+
+    assert_eq!(
+        captured.provenance.discovery_listener_id,
+        server_listener_id
+    );
+    assert_eq!(captured.provenance.forwarded_upstream_host, "example.test");
+    assert_eq!(captured.provenance.forwarded_upstream_port, 443);
+    assert_eq!(captured.provenance.forwarded_upstream_ip, "93.184.216.34");
+    assert!(captured.provenance.forwarded_upstream_tls);
+
+    let mut forged_merge = forged.clone();
+    forged_merge.observed_host = "api-b.example.test".into();
+    forged_merge.forwarded_upstream_host = "metadata.service.local".into();
+    forged_merge.forwarded_upstream_ip = "169.254.169.254".into();
+    let mut body = observation("req-forged", "/forged");
+    body.metadata_seen = false;
+    body.body_seen = true;
+    body.response_body = Some("body".into());
+    let mut tx = w.pool.begin().await.expect("body tx");
+    let merged = discovery::ingest_raw_observation(&mut tx, w.team_a, &body, &forged_merge)
+        .await
+        .expect("body merge");
+    tx.commit().await.expect("commit body");
+
+    assert_eq!(merged.provenance.discovery_listener_id, server_listener_id);
+    assert_eq!(merged.provenance.observed_host, "api-b.example.test");
+    assert_eq!(merged.provenance.forwarded_upstream_host, "example.test");
+    assert_eq!(merged.provenance.forwarded_upstream_ip, "93.184.216.34");
 }
 
 #[tokio::test]
@@ -417,7 +499,17 @@ async fn create_session(
     id: DiscoverySessionId,
     spec: DiscoverySessionSpec,
 ) -> fp_domain::DomainResult<fp_domain::DiscoverySession> {
-    discovery::create(
+    create_session_with_listener(tx, team, id, spec, ListenerId::generate()).await
+}
+
+async fn create_session_with_listener(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    team: TeamRef,
+    id: DiscoverySessionId,
+    spec: DiscoverySessionSpec,
+    listener_id: ListenerId,
+) -> fp_domain::DomainResult<fp_domain::DiscoverySession> {
+    let session = discovery::create(
         tx,
         team,
         discovery::DiscoverySessionInsert {
@@ -430,7 +522,39 @@ async fn create_session(
             listener_name: &unique("listener"),
         },
     )
+    .await?;
+    insert_discovery_listener(tx, team, session.id, &session.listener_name, listener_id).await;
+    Ok(session)
+}
+
+async fn insert_discovery_listener(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    team: TeamRef,
+    session_id: DiscoverySessionId,
+    listener_name: &str,
+    listener_id: ListenerId,
+) {
+    sqlx::query(
+        "INSERT INTO listeners (id, team_id, org_id, name, spec, owner_kind, owner_id) \
+         VALUES ($1, $2, $3, $4, $5, 'discovery', $6)",
+    )
+    .bind(listener_id.as_uuid())
+    .bind(team.id.as_uuid())
+    .bind(team.org_id.as_uuid())
+    .bind(listener_name)
+    .bind(serde_json::json!({
+        "address": "0.0.0.0",
+        "port": 19080,
+        "protocol": "http",
+        "route_config": "discovery-route",
+        "http_filters": [],
+        "access_logs": [],
+        "tls_context": null
+    }))
+    .bind(session_id.as_uuid())
+    .execute(&mut **tx)
     .await
+    .expect("insert discovery listener");
 }
 
 async fn raw_count_for_session(pool: &PgPool, session_id: DiscoverySessionId) -> i64 {

@@ -1102,7 +1102,7 @@ async fn raw_observation_target_sample_count_completes_session() {
 }
 
 #[tokio::test]
-async fn raw_observation_body_can_merge_after_target_completion() {
+async fn raw_observation_body_merge_rejects_after_target_completion() {
     let Some(w) = world().await else { return };
     let route = insert_route_config(&w.pool, w.team_a, &unique("rc")).await;
     let mut tx = w.pool.begin().await.expect("tx");
@@ -1146,20 +1146,19 @@ async fn raw_observation_body_can_merge_after_target_completion() {
     body.response_status = None;
     body.response_body = Some("late-body".into());
     let mut tx = w.pool.begin().await.expect("body tx");
-    let merged = api_lifecycle::ingest_raw_observation(
+    let err = api_lifecycle::ingest_raw_observation(
         &mut tx, w.team_a, session.id, None, route, None, &body,
     )
     .await
-    .expect("late body merge");
-    tx.commit().await.expect("commit body");
+    .expect_err("completed session rejects duplicate merge");
+    assert_eq!(err.code, ErrorCode::Conflict);
+    tx.rollback().await.expect("rollback rejected body");
 
-    assert!(merged.body_seen);
-    assert_eq!(merged.response_body.as_deref(), Some("late-body"));
     let refreshed = api_lifecycle::get_capture_session(&w.pool, w.team_a.id, &session.name)
         .await
         .expect("get session")
         .expect("session");
     assert_eq!(refreshed.status, CaptureSessionStatus::Completed);
     assert_eq!(refreshed.sample_count, 1);
-    assert_eq!(refreshed.byte_count, 9);
+    assert_eq!(refreshed.byte_count, 0);
 }

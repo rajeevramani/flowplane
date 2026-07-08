@@ -188,6 +188,27 @@ async fn discovery_learning_creates_one_spec_per_host_cluster() {
     )
     .await
     .expect("session");
+    sqlx::query(
+        "INSERT INTO listeners (id, team_id, org_id, name, spec, owner_kind, owner_id) \
+         VALUES ($1, $2, $3, $4, $5, 'discovery', $6)",
+    )
+    .bind(listener_id.as_uuid())
+    .bind(w.team.id.as_uuid())
+    .bind(w.team.org_id.as_uuid())
+    .bind(&session.listener_name)
+    .bind(serde_json::json!({
+        "address": "0.0.0.0",
+        "port": 19081,
+        "protocol": "http",
+        "route_config": "discovery-route",
+        "http_filters": [],
+        "access_logs": [],
+        "tls_context": null
+    }))
+    .bind(session.id.as_uuid())
+    .execute(&mut *tx)
+    .await
+    .expect("insert discovery listener");
     for (request_id, host) in [
         ("req-a", "api-a.example.test"),
         ("req-b", "api-b.example.test"),
