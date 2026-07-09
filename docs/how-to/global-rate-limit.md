@@ -168,9 +168,10 @@ plane composes the tenant-namespaced Envoy domain for you.
 }
 ```
 
-`failure_mode_deny: false` fails **open** if the RLS is unreachable (requests proceed); set it
-`true` to fail **closed** (reject with `500`). If `FLOWPLANE_RLS_GRPC_URL` is **not** set, attaching
-this filter is rejected `400` at config time — the control plane never emits a filter pointing at a
+`failure_mode_deny` defaults to `true` (fail **closed**), so the explicit
+`failure_mode_deny: false` above intentionally overrides the safer default to fail **open** if the
+RLS is unreachable (requests proceed). If `FLOWPLANE_RLS_GRPC_URL` is **not** set, attaching this
+filter is rejected `400` at config time — the control plane never emits a filter pointing at a
 missing cluster. See the [`global_rate_limit` reference](../reference/filters.md).
 
 ## 6. Verify

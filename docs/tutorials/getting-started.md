@@ -134,6 +134,7 @@ python3 -m http.server 3001
 Now use the `expose` shortcut. In one command it creates a cluster, a route config, and a listener that route to the upstream:
 
 ```bash
+export FLOWPLANE_EGRESS_ALLOWED_DESTINATIONS=127.0.0.1:3001
 ./target/debug/flowplane expose http://127.0.0.1:3001 \
   --name local \
   --path / \
@@ -144,6 +145,7 @@ Now use the `expose` shortcut. In one command it creates a cluster, a route conf
 The flags map directly to the request the server receives:
 
 - the positional argument is the **upstream** URL,
+- `FLOWPLANE_EGRESS_ALLOWED_DESTINATIONS=127.0.0.1:3001` is a local tutorial exception that permits this loopback upstream; production deployments should use reviewed explicit destination allowlists instead of broad private-network access,
 - `--name` names the exposed service (and the resources it creates),
 - `--path` is the route match prefix (defaults to `/`),
 - `--port` is the listener port — this is the port Envoy will listen on, and it must match the `curl` you run in step 7 (`10001` here),

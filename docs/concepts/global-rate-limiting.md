@@ -101,8 +101,9 @@ fast path.
 ## Failure modes
 
 The RLS adds a gRPC round-trip per rate-limited request (`timeout_ms`, default 20 ms). When the RLS
-is slow or unreachable, each filter's `failure_mode_deny` decides: `false` fails **open** (the
-request proceeds), `true` fails **closed** (the request is rejected, default `500`). Pick per
+is slow or unreachable, each filter's `failure_mode_deny` decides: it defaults to `true`, which
+fails **closed** (the request is rejected, default `500`). Setting `failure_mode_deny: false`
+intentionally overrides that safer default to fail **open** (the request proceeds). Pick per
 listener based on whether availability or the limit matters more for that traffic.
 
 ## Deliberate limits (1.1.0 topology)

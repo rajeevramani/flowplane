@@ -48,7 +48,8 @@ Booleans accept `true`/`1`/`yes` and `false`/`0`/`no`. Invalid server values fai
 | `FLOWPLANE_CERT_ISSUER_CA_KEY_PATH` | server | — | for issuance | Issuing CA private key PEM path. |
 | `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN` | server | `flowplane.local` | no | SPIFFE trust domain for issued dataplane identities. |
 | `FLOWPLANE_UPSTREAM_CA_BUNDLE` | server | `/etc/ssl/certs/ca-certificates.crt` | no | CA bundle path Envoy uses to verify materialized TLS upstreams that name neither an SDS validation secret nor an explicit `ca_cert_file`. The control plane reads this value at xDS-translation time, but the file itself is read by Envoy/dataplane (it must exist on the dataplane host), not by the control plane. Per-cluster `insecure_skip_verify` opts a cluster out of verification. |
-| `FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS` | server | — | no | Comma-separated `IP:port` allowlist for traffic discovery (for example `10.0.0.1:8080` or `[2001:db8::1]:443`); entries that are not a valid `IP:port` are ignored. |
+| `FLOWPLANE_EGRESS_ALLOWED_DESTINATIONS` | server | — | no | Comma-separated `IP:port` allowlist for private tenant-authored upstream destinations, including `flowplane expose` and traffic discovery (for example `127.0.0.1:3001`, `10.0.0.1:8080`, or `[2001:db8::1]:443`); entries that are not a valid `IP:port` are ignored. |
+| `FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS` | server | — | no | Legacy fallback name for the same egress allowlist when `FLOWPLANE_EGRESS_ALLOWED_DESTINATIONS` is unset. Prefer `FLOWPLANE_EGRESS_ALLOWED_DESTINATIONS` for new docs and deployments. |
 | `FLOWPLANE_MCP_ALLOWED_ORIGINS` | server | `http://localhost,http://127.0.0.1,http://[::1]` | no | Comma-separated allowed `Origin` values for the MCP endpoint. |
 | `FLOWPLANE_RLS_GRPC_URL` | server | — | no ¹⁵ | gRPC `host:port` of the rate-limit service. When set, the CP injects the built-in `rate_limit_cluster` into CDS and `global_rate_limit` filters may use the default `service_cluster`. Unset ⇒ a built-in-path `global_rate_limit` filter is rejected `400` at config time. |
 | `FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT` | server | `false` | no ¹⁵ | Security override for non-dev control-plane configs that intentionally emit plaintext h2c for the RLS gRPC endpoint. This does not make the first-party `flowplane-rls` binary accept plaintext split-node binds; prefer the dataplane TLS triad. |
@@ -124,6 +125,7 @@ oidc_audience       oidc_jwks_uri        oidc_ca_bundle      log_format
 log_filter          otlp_endpoint        dev_token_path      rls_admin_url
 rls_grpc_url        rls_grpc_allow_production_plaintext
 dataplane_tls_cert  dataplane_tls_key    dataplane_tls_client_ca
+egress_allowed_destinations
 ```
 
 `FLOWPLANE_RLS_RECONCILE_SECS` is **env-only** (no TOML key).

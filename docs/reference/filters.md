@@ -213,7 +213,7 @@ end-to-end recipe.
 | `domain` | `String` | required | The **policy** domain — the limit group an operator names (matches a `rate-limit-domains` row). On the built-in path the control plane rewrites the *emitted* Envoy domain (see below); you still supply the short policy name here. |
 | `service_cluster` | `String` | optional (default `rate_limit_cluster`) | RLS cluster. Omit it to use the control-plane-injected built-in cluster; set it to one of **your** clusters to point at an external limiter. |
 | `timeout_ms` | `u64` | optional (default 20) | RLS call timeout. |
-| `failure_mode_deny` | `bool` | optional (default `false`) | On RLS error/unreachable: `false` fails **open** (request proceeds), `true` fails **closed** (request is rejected, default 500). |
+| `failure_mode_deny` | `bool` | optional (default `true`) | On RLS error/unreachable: `true` fails **closed** (request is rejected, default 500), `false` fails **open** (request proceeds). |
 | `stage` | `u32` | optional (default 0) | Rate-limit stage. |
 | `request_type` | `RateLimitRequestType` | optional (default `both`) | Which traffic the filter applies to. |
 | `stat_prefix` | `Option<String>` | optional | Stats prefix. |
