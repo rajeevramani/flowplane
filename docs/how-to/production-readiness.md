@@ -81,7 +81,7 @@ Run Envoy with that bootstrap and run `flowplane-agent` beside it in the datapla
 | Dataplane xDS/diagnostics to CP | `FLOWPLANE_XDS_ADDR`, default `:18000` | Envoy/agent -> CP | Production is mTLS-or-off. Non-loopback deployments must use the xDS TLS triad. |
 | CP to PostgreSQL | database URL | CP -> PostgreSQL | Database must not be directly internet-addressable. |
 | CP to RLS admin | `FLOWPLANE_RLS_ADMIN_URL`, commonly `http://rls.example:8081` | CP -> RLS | Used by the RLS reconcile worker to push policy. |
-| Envoy to RLS gRPC | `FLOWPLANE_RLS_GRPC_URL`, commonly `rls.example:50051` | Envoy -> RLS | Use the dataplane TLS triad for production Envoy-to-RLS mTLS when enabled. |
+| Envoy to RLS gRPC | `FLOWPLANE_RLS_GRPC_URL`, commonly `rls.example:50051` | Envoy -> RLS | Use the RLS server TLS triad plus the dataplane TLS triad for split-node Envoy-to-RLS mTLS. Plaintext `flowplane-rls` is loopback-local only. |
 | Envoy listener traffic | listener config | clients -> Envoy | Request traffic never passes through the control plane. |
 | Envoy admin | `127.0.0.1:9901` | dataplane-local only | Keep loopback-only. Product diagnostics go through `flowplane-agent`. |
 | Agent health | `127.0.0.1:19902` | dataplane-local only | Use for local process health checks on the dataplane host. |

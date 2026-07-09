@@ -1,9 +1,9 @@
 //! Process configuration, read from the environment. The Envoy-facing gRPC listener is plaintext
-//! only when an explicit loopback dev escape hatch is set; otherwise startup fails closed until
-//! the scheduled server-side mTLS path is configured.
+//! only when an explicit loopback dev escape hatch is set; split-node binds require server-side
+//! TLS plus a client CA for Envoy/dataplane client-certificate validation.
 
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdminCredential {
@@ -24,6 +24,13 @@ impl AdminCredential {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RlsGrpcTls {
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
+    pub client_ca_path: PathBuf,
+}
+
 #[derive(Debug, Clone)]
 pub struct RlsConfig {
     /// Envoy-facing gRPC `RateLimitService` listen address.
@@ -33,6 +40,9 @@ pub struct RlsConfig {
     /// Credential required for mutating CP→RLS admin requests. `None` is accepted only with the
     /// explicit local-only unauthenticated escape hatch on a loopback admin bind.
     pub admin_credential: Option<AdminCredential>,
+    /// Envoy-facing gRPC TLS material. When present, Envoy clients must present certificates
+    /// chaining to `client_ca_path`.
+    pub grpc_tls: Option<RlsGrpcTls>,
     /// True only for explicitly acknowledged loopback plaintext gRPC in local development.
     pub allow_insecure_grpc: bool,
 }
@@ -56,10 +66,12 @@ impl RlsConfig {
             .ok()
             .as_deref()
             == Some("yes-this-is-local-only");
+        let grpc_tls = resolve_grpc_tls_from_env()?;
         Self::resolve(
             grpc_listen,
             admin_listen,
             admin_credential,
+            grpc_tls,
             allow_unauth_admin,
             allow_insecure_grpc,
         )
@@ -69,23 +81,27 @@ impl RlsConfig {
         grpc_listen: SocketAddr,
         admin_listen: SocketAddr,
         admin_credential: Option<AdminCredential>,
+        grpc_tls: Option<RlsGrpcTls>,
         allow_unauth_admin: bool,
         allow_insecure_grpc: bool,
     ) -> Result<Self, String> {
-        if !allow_insecure_grpc {
-            return Err(
-                "FLOWPLANE_RLS_ALLOW_INSECURE_GRPC=yes-this-is-local-only is required for the \
-                 plaintext RLS gRPC listener; production must use authenticated Envoy/dataplane \
-                 clients or refuse this insecure configuration"
-                    .to_string(),
-            );
-        }
-        if !grpc_listen.ip().is_loopback() {
-            return Err(
-                "FLOWPLANE_RLS_ALLOW_INSECURE_GRPC=yes-this-is-local-only is only valid for a \
-                 loopback RLS gRPC bind"
-                    .to_string(),
-            );
+        if grpc_tls.is_none() {
+            if !allow_insecure_grpc {
+                return Err(
+                    "set FLOWPLANE_RLS_GRPC_TLS_CERT, FLOWPLANE_RLS_GRPC_TLS_KEY, and \
+                     FLOWPLANE_RLS_GRPC_TLS_CLIENT_CA for authenticated RLS gRPC; plaintext \
+                     requires FLOWPLANE_RLS_ALLOW_INSECURE_GRPC=yes-this-is-local-only on a \
+                     loopback bind"
+                        .to_string(),
+                );
+            }
+            if !grpc_listen.ip().is_loopback() {
+                return Err(
+                    "FLOWPLANE_RLS_ALLOW_INSECURE_GRPC=yes-this-is-local-only is only valid for a \
+                     loopback RLS gRPC bind; non-loopback binds require the RLS gRPC TLS triad"
+                        .to_string(),
+                );
+            }
         }
         if admin_credential.is_none() {
             if !allow_unauth_admin {
@@ -105,8 +121,47 @@ impl RlsConfig {
             grpc_listen,
             admin_listen,
             admin_credential,
+            grpc_tls,
             allow_insecure_grpc,
         })
+    }
+}
+
+fn resolve_grpc_tls_from_env() -> Result<Option<RlsGrpcTls>, String> {
+    let cert_path = optional_path("FLOWPLANE_RLS_GRPC_TLS_CERT")?;
+    let key_path = optional_path("FLOWPLANE_RLS_GRPC_TLS_KEY")?;
+    let client_ca_path = optional_path("FLOWPLANE_RLS_GRPC_TLS_CLIENT_CA")?;
+    resolve_grpc_tls(cert_path, key_path, client_ca_path)
+}
+
+fn resolve_grpc_tls(
+    cert_path: Option<PathBuf>,
+    key_path: Option<PathBuf>,
+    client_ca_path: Option<PathBuf>,
+) -> Result<Option<RlsGrpcTls>, String> {
+    match (cert_path, key_path, client_ca_path) {
+        (None, None, None) => Ok(None),
+        (Some(cert_path), Some(key_path), Some(client_ca_path)) => Ok(Some(RlsGrpcTls {
+            cert_path,
+            key_path,
+            client_ca_path,
+        })),
+        _ => Err(
+            "FLOWPLANE_RLS_GRPC_TLS_CERT, FLOWPLANE_RLS_GRPC_TLS_KEY, and \
+             FLOWPLANE_RLS_GRPC_TLS_CLIENT_CA must be set together"
+                .to_string(),
+        ),
+    }
+}
+
+fn optional_path(var: &str) -> Result<Option<PathBuf>, String> {
+    match std::env::var(var) {
+        Ok(path) if path.trim().is_empty() => {
+            Err(format!("{var} must not be empty when configured"))
+        }
+        Ok(path) => Ok(Some(PathBuf::from(path))),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{var} is not valid Unicode")),
     }
 }
 
@@ -135,11 +190,20 @@ mod tests {
         raw.parse().unwrap()
     }
 
+    fn tls() -> RlsGrpcTls {
+        RlsGrpcTls {
+            cert_path: "/cert.pem".into(),
+            key_path: "/key.pem".into(),
+            client_ca_path: "/client-ca.pem".into(),
+        }
+    }
+
     #[test]
     fn rejects_non_loopback_admin_bind_without_credential_or_escape_hatch() {
         let err = RlsConfig::resolve(
             addr("127.0.0.1:50051"),
             addr("0.0.0.0:8081"),
+            None,
             None,
             false,
             true,
@@ -154,6 +218,7 @@ mod tests {
             addr("127.0.0.1:50051"),
             addr("0.0.0.0:8081"),
             None,
+            None,
             true,
             true,
         )
@@ -167,6 +232,7 @@ mod tests {
             addr("0.0.0.0:50051"),
             addr("0.0.0.0:8081"),
             Some(AdminCredential::new("secret\n".to_string()).unwrap()),
+            None,
             false,
             true,
         )
@@ -180,6 +246,7 @@ mod tests {
             addr("127.0.0.1:50051"),
             addr("0.0.0.0:8081"),
             Some(AdminCredential::new("secret\n".to_string()).unwrap()),
+            None,
             false,
             true,
         )
@@ -188,6 +255,7 @@ mod tests {
             cfg.admin_credential.as_ref().map(AdminCredential::token),
             Some("secret")
         );
+        assert!(cfg.grpc_tls.is_none());
         assert!(cfg.allow_insecure_grpc);
     }
 
@@ -196,6 +264,7 @@ mod tests {
         let cfg = RlsConfig::resolve(
             addr("127.0.0.1:50051"),
             addr("127.0.0.1:8081"),
+            None,
             None,
             true,
             true,
@@ -210,11 +279,12 @@ mod tests {
             addr("127.0.0.1:50051"),
             addr("127.0.0.1:8081"),
             None,
+            None,
             true,
             false,
         )
         .expect_err("production insecure RLS gRPC must fail closed");
-        assert!(err.contains("FLOWPLANE_RLS_ALLOW_INSECURE_GRPC"));
+        assert!(err.contains("FLOWPLANE_RLS_GRPC_TLS_CERT"));
     }
 
     #[test]
@@ -223,10 +293,71 @@ mod tests {
             addr("0.0.0.0:50051"),
             addr("127.0.0.1:8081"),
             None,
+            None,
             true,
             true,
         )
         .expect_err("insecure gRPC dev gate must be loopback-only");
         assert!(err.contains("loopback RLS gRPC bind"));
+    }
+
+    #[test]
+    fn rejects_partial_grpc_tls_material() {
+        let err = resolve_grpc_tls(Some("/cert.pem".into()), None, Some("/ca.pem".into()))
+            .expect_err("partial TLS material must fail closed");
+        assert!(err.contains("FLOWPLANE_RLS_GRPC_TLS_CERT"));
+        assert!(err.contains("FLOWPLANE_RLS_GRPC_TLS_KEY"));
+        assert!(err.contains("FLOWPLANE_RLS_GRPC_TLS_CLIENT_CA"));
+    }
+
+    #[test]
+    fn accepts_complete_grpc_tls_material() {
+        let resolved = resolve_grpc_tls(
+            Some("/cert.pem".into()),
+            Some("/key.pem".into()),
+            Some("/ca.pem".into()),
+        )
+        .expect("complete TLS material is accepted");
+        assert_eq!(
+            resolved,
+            Some(RlsGrpcTls {
+                cert_path: "/cert.pem".into(),
+                key_path: "/key.pem".into(),
+                client_ca_path: "/ca.pem".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn accepts_non_loopback_grpc_when_tls_triad_is_configured() {
+        let cfg = RlsConfig::resolve(
+            addr("0.0.0.0:50051"),
+            addr("127.0.0.1:8081"),
+            None,
+            Some(tls()),
+            true,
+            false,
+        )
+        .expect("authenticated split-node gRPC bind is allowed");
+        assert_eq!(cfg.grpc_tls, Some(tls()));
+        assert!(!cfg.allow_insecure_grpc);
+    }
+
+    #[test]
+    fn keeps_admin_credential_separate_from_grpc_tls() {
+        let cfg = RlsConfig::resolve(
+            addr("0.0.0.0:50051"),
+            addr("0.0.0.0:8081"),
+            Some(AdminCredential::new("admin-secret".to_string()).unwrap()),
+            Some(tls()),
+            false,
+            false,
+        )
+        .expect("gRPC mTLS does not replace or block CP-facing admin auth");
+        assert_eq!(
+            cfg.admin_credential.as_ref().map(AdminCredential::token),
+            Some("admin-secret")
+        );
+        assert!(cfg.grpc_tls.is_some());
     }
 }

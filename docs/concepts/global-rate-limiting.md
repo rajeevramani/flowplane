@@ -26,6 +26,15 @@ The request hot path never touches the control plane — only Envoy ↔ RLS. The
 the *config* path only. That separation is deliberate: per-request work must not flow through the
 control plane.
 
+Local tutorials may run Envoy and `flowplane-rls` on the same host with loopback plaintext gRPC,
+but only with the RLS binary's explicit local-only insecure opt-in. Split-node `flowplane-rls`
+requires Envoy→RLS mTLS: configure the RLS server certificate, server key, and dataplane client CA
+with `FLOWPLANE_RLS_GRPC_TLS_CERT`, `FLOWPLANE_RLS_GRPC_TLS_KEY`, and
+`FLOWPLANE_RLS_GRPC_TLS_CLIENT_CA`, then configure the control plane's injected Envoy cluster with
+the separate `FLOWPLANE_DATAPLANE_TLS_*` client identity/trust variables. CP→RLS policy sync uses
+the HTTP admin listener and its own `FLOWPLANE_RLS_ADMIN_TOKEN_FILE`; that admin credential is not
+the Envoy→RLS mTLS identity.
+
 ## Why a separate process, not the control plane
 
 The RLS sees every rate-limited request. Folding it into the control plane would put request-path

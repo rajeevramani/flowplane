@@ -51,14 +51,20 @@ Booleans accept `true`/`1`/`yes` and `false`/`0`/`no`. Invalid server values fai
 | `FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS` | server | — | no | Comma-separated `IP:port` allowlist for traffic discovery (for example `10.0.0.1:8080` or `[2001:db8::1]:443`); entries that are not a valid `IP:port` are ignored. |
 | `FLOWPLANE_MCP_ALLOWED_ORIGINS` | server | `http://localhost,http://127.0.0.1,http://[::1]` | no | Comma-separated allowed `Origin` values for the MCP endpoint. |
 | `FLOWPLANE_RLS_GRPC_URL` | server | — | no ¹⁵ | gRPC `host:port` of the rate-limit service. When set, the CP injects the built-in `rate_limit_cluster` into CDS and `global_rate_limit` filters may use the default `service_cluster`. Unset ⇒ a built-in-path `global_rate_limit` filter is rejected `400` at config time. |
-| `FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT` | server | `false` | no ¹⁵ | Security override for private-endpoint deployments that intentionally allow plaintext h2c to the RLS gRPC endpoint outside dev mode. Prefer the dataplane TLS triad. |
+| `FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT` | server | `false` | no ¹⁵ | Security override for non-dev control-plane configs that intentionally emit plaintext h2c for the RLS gRPC endpoint. This does not make the first-party `flowplane-rls` binary accept plaintext split-node binds; prefer the dataplane TLS triad. |
 | `FLOWPLANE_RLS_ADMIN_URL` | server | — | no | HTTP admin URL of the rate-limit service. When set, the CP starts the `rls_sync` worker that pushes the full policy set to the RLS on the reconcile loop. |
 | `FLOWPLANE_RLS_RECONCILE_SECS` | server | `60` | no ¹⁶ | Seconds between CP→RLS reconcile pushes. Clamped to `1..=60`. |
 | `FLOWPLANE_DATAPLANE_TLS_CERT` | server | — | no ¹⁷ | Client certificate PEM the injected `rate_limit_cluster` presents to the RLS (Envoy→RLS mTLS). |
 | `FLOWPLANE_DATAPLANE_TLS_KEY` | server | — | no ¹⁷ | Client private key PEM for the Envoy→RLS hop. |
 | `FLOWPLANE_DATAPLANE_TLS_CLIENT_CA` | server | — | no ¹⁷ | CA bundle the injected cluster verifies the RLS server certificate against. |
-| `FLOWPLANE_RLS_GRPC_LISTEN` | rls | `0.0.0.0:50051` | no | `flowplane-rls`: Envoy-facing gRPC `RateLimitService` bind address. |
-| `FLOWPLANE_RLS_ADMIN_LISTEN` | rls | `0.0.0.0:8081` | no | `flowplane-rls`: CP-facing HTTP admin bind address (`/api/v1/admin/rls/policies`, `/healthz`, `/readyz`). |
+| `FLOWPLANE_RLS_GRPC_LISTEN` | rls | `0.0.0.0:50051` | no ¹⁸ | `flowplane-rls`: Envoy-facing gRPC `RateLimitService` bind address. |
+| `FLOWPLANE_RLS_GRPC_TLS_CERT` | rls | — | no ¹⁸ | `flowplane-rls`: server certificate PEM path for Envoy-facing gRPC TLS. |
+| `FLOWPLANE_RLS_GRPC_TLS_KEY` | rls | — | no ¹⁸ | `flowplane-rls`: server private-key PEM path for Envoy-facing gRPC TLS. |
+| `FLOWPLANE_RLS_GRPC_TLS_CLIENT_CA` | rls | — | no ¹⁸ | `flowplane-rls`: CA bundle used to validate Envoy/dataplane client certificates. |
+| `FLOWPLANE_RLS_ALLOW_INSECURE_GRPC` | rls | — | no ¹⁸ | `flowplane-rls`: local-only plaintext gRPC opt-in. Must equal `yes-this-is-local-only` and only works on loopback binds. |
+| `FLOWPLANE_RLS_ADMIN_LISTEN` | rls | `0.0.0.0:8081` | no ¹⁹ | `flowplane-rls`: CP-facing HTTP admin bind address (`/api/v1/admin/rls/policies`, `/healthz`, `/readyz`). |
+| `FLOWPLANE_RLS_ADMIN_TOKEN_FILE` | rls | — | no ¹⁹ | `flowplane-rls`: file containing the bearer token required for mutating CP→RLS admin requests. |
+| `FLOWPLANE_RLS_ALLOW_UNAUTH_ADMIN` | rls | — | no ¹⁹ | `flowplane-rls`: local-only unauthenticated admin opt-in. Must equal `yes-this-is-local-only` and only works on loopback admin binds. |
 | `FLOWPLANE_AGENT_ENVOY_ADMIN_URL` | agent | `http://127.0.0.1:9901` | no | Envoy admin base URL (usually loopback). |
 | `FLOWPLANE_AGENT_CP_ENDPOINT` | agent | — | yes | Control-plane diagnostics gRPC endpoint. ¹⁰ |
 | `FLOWPLANE_AGENT_DATAPLANE_ID` | agent | — | yes | Dataplane UUID registered in Flowplane. |
@@ -103,6 +109,8 @@ Enforcement timing varies: rows ¹–⁵ are validated at **server startup** (`f
 | ¹⁵ | `FLOWPLANE_RLS_GRPC_URL` | Validated at server startup: `host:port` where host is an IP literal or DNS name and port is `1..=65535`. A malformed value **fails startup closed**. In non-dev/default mode, setting this URL without the dataplane TLS triad also **fails startup closed** unless `FLOWPLANE_RLS_GRPC_ALLOW_PRODUCTION_PLAINTEXT=true` is set as an explicit security override. |
 | ¹⁶ | `FLOWPLANE_RLS_RECONCILE_SECS` | Parsed as a positive integer and **clamped to `1..=60`**; zero/invalid/unset fall back to `60`. The knob may only *lower* the cadence (e.g. for tests) — it can never raise the reconcile interval past the documented 60 s convergence backstop. |
 | ¹⁷ | `FLOWPLANE_DATAPLANE_TLS_CERT`, `_KEY`, `_CLIENT_CA` | All-or-none triad. With none set, the injected `rate_limit_cluster` dials the RLS in **plaintext h2c (dev only)**; in production set all three so the Envoy→RLS hop is mTLS. |
+| ¹⁸ | `FLOWPLANE_RLS_GRPC_TLS_CERT`, `_KEY`, `_CLIENT_CA`, `FLOWPLANE_RLS_ALLOW_INSECURE_GRPC` | The RLS gRPC TLS variables are an all-or-none triad. Without the triad, `flowplane-rls` starts plaintext only when `FLOWPLANE_RLS_ALLOW_INSECURE_GRPC=yes-this-is-local-only` and the gRPC bind is loopback. Non-loopback binds require the TLS triad. |
+| ¹⁹ | `FLOWPLANE_RLS_ADMIN_TOKEN_FILE`, `FLOWPLANE_RLS_ALLOW_UNAUTH_ADMIN` | The RLS admin token file is required unless `FLOWPLANE_RLS_ALLOW_UNAUTH_ADMIN=yes-this-is-local-only` and the admin bind is loopback. This CP-facing HTTP admin credential is separate from Envoy→RLS gRPC mTLS. |
 
 ## TOML config file keys (server)
 

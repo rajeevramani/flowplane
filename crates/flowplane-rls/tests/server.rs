@@ -11,6 +11,8 @@
 //! counting of unmatched descriptors), not merely to go green.
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,16 +27,184 @@ use envoy_types::pb::envoy::service::ratelimit::v3::{
 use envoy_types::pb::google::protobuf::UInt64Value;
 use serde_json::json;
 use tonic::transport::server::TcpIncoming;
-use tonic::transport::{Channel, Server};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity, Server};
 
 use flowplane_rls::admin::{router, AdminState};
-use flowplane_rls::config::{AdminCredential, RlsConfig};
+use flowplane_rls::config::{AdminCredential, RlsConfig, RlsGrpcTls};
 use flowplane_rls::counter::InMemoryFixedWindow;
 use flowplane_rls::grpc::{GrpcAuthMode, RlsService};
 use flowplane_rls::policy::PolicyCache;
+use flowplane_rls::server::grpc_server;
 
 const OK: i32 = Code::Ok as i32;
 const OVER: i32 = Code::OverLimit as i32;
+
+fn unique_dir(prefix: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+}
+
+fn openssl(dir: &Path, args: &[&str]) {
+    let out = Command::new("openssl")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .expect("openssl CLI must be available for RLS mTLS tests");
+    assert!(
+        out.status.success(),
+        "openssl {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+struct TestPki {
+    dir: PathBuf,
+}
+
+impl TestPki {
+    fn new() -> Self {
+        let dir = unique_dir("fp-rls-mtls");
+        std::fs::create_dir_all(&dir).expect("mkdir pki dir");
+        openssl(
+            &dir,
+            &[
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-keyout",
+                "ca.key",
+                "-out",
+                "ca.crt",
+                "-days",
+                "2",
+                "-nodes",
+                "-subj",
+                "/CN=fp-rls-test-ca",
+            ],
+        );
+        std::fs::write(
+            dir.join("server-san.cnf"),
+            "subjectAltName=DNS:localhost,IP:127.0.0.1\n",
+        )
+        .expect("write server san");
+        openssl(
+            &dir,
+            &[
+                "req",
+                "-newkey",
+                "rsa:2048",
+                "-keyout",
+                "server.key",
+                "-out",
+                "server.csr",
+                "-nodes",
+                "-subj",
+                "/CN=flowplane-rls",
+            ],
+        );
+        openssl(
+            &dir,
+            &[
+                "pkcs8",
+                "-topk8",
+                "-nocrypt",
+                "-in",
+                "server.key",
+                "-out",
+                "server.pk8.key",
+            ],
+        );
+        openssl(
+            &dir,
+            &[
+                "x509",
+                "-req",
+                "-in",
+                "server.csr",
+                "-CA",
+                "ca.crt",
+                "-CAkey",
+                "ca.key",
+                "-CAcreateserial",
+                "-out",
+                "server.crt",
+                "-days",
+                "2",
+                "-extfile",
+                "server-san.cnf",
+            ],
+        );
+        Self { dir }
+    }
+
+    fn tls_paths(&self) -> RlsGrpcTls {
+        RlsGrpcTls {
+            cert_path: self.dir.join("server.crt"),
+            key_path: self.dir.join("server.pk8.key"),
+            client_ca_path: self.dir.join("ca.crt"),
+        }
+    }
+
+    fn ca_pem(&self) -> Vec<u8> {
+        std::fs::read(self.dir.join("ca.crt")).expect("ca pem")
+    }
+
+    fn client_identity(&self, name: &str) -> Identity {
+        openssl(
+            &self.dir,
+            &[
+                "req",
+                "-newkey",
+                "rsa:2048",
+                "-keyout",
+                &format!("{name}.key"),
+                "-out",
+                &format!("{name}.csr"),
+                "-nodes",
+                "-subj",
+                &format!("/CN={name}"),
+            ],
+        );
+        openssl(
+            &self.dir,
+            &[
+                "pkcs8",
+                "-topk8",
+                "-nocrypt",
+                "-in",
+                &format!("{name}.key"),
+                "-out",
+                &format!("{name}.pk8.key"),
+            ],
+        );
+        openssl(
+            &self.dir,
+            &[
+                "x509",
+                "-req",
+                "-in",
+                &format!("{name}.csr"),
+                "-CA",
+                "ca.crt",
+                "-CAkey",
+                "ca.key",
+                "-CAcreateserial",
+                "-out",
+                &format!("{name}.crt"),
+                "-days",
+                "2",
+            ],
+        );
+        Identity::from_pem(
+            std::fs::read(self.dir.join(format!("{name}.crt"))).expect("client crt"),
+            std::fs::read(self.dir.join(format!("{name}.pk8.key"))).expect("client key"),
+        )
+    }
+}
 
 /// A live RLS under test: the admin HTTP base URL and a connected gRPC client.
 /// Both servers share the *same* `Arc<PolicyCache>` so a policy push over HTTP is
@@ -265,12 +435,13 @@ fn server_config_refuses_insecure_production_grpc_even_with_port_zero() {
         "127.0.0.1:0".parse().unwrap(),
         "127.0.0.1:0".parse().unwrap(),
         None,
+        None,
         true,
         false,
     )
     .expect_err("plaintext gRPC without the explicit dev gate must fail closed");
 
-    assert!(err.contains("FLOWPLANE_RLS_ALLOW_INSECURE_GRPC"));
+    assert!(err.contains("FLOWPLANE_RLS_GRPC_TLS_CERT"));
 }
 
 #[test]
@@ -278,6 +449,7 @@ fn server_config_allows_explicit_dev_insecure_grpc_on_loopback_port_zero() {
     let cfg = RlsConfig::resolve(
         "127.0.0.1:0".parse().unwrap(),
         "127.0.0.1:0".parse().unwrap(),
+        None,
         None,
         true,
         true,
@@ -287,6 +459,86 @@ fn server_config_allows_explicit_dev_insecure_grpc_on_loopback_port_zero() {
     assert_eq!(cfg.grpc_listen.port(), 0);
     assert!(cfg.grpc_listen.ip().is_loopback());
     assert!(cfg.allow_insecure_grpc);
+}
+
+#[tokio::test]
+async fn grpc_server_requires_client_certificate_when_tls_triad_is_present() {
+    let pki = TestPki::new();
+    let grpc_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let grpc_addr = grpc_listener.local_addr().unwrap();
+    let incoming = TcpIncoming::from(grpc_listener);
+    let policies = Arc::new(PolicyCache::new());
+    let counters = Arc::new(InMemoryFixedWindow::new());
+    let svc = RlsService::new(
+        Arc::clone(&policies),
+        counters,
+        GrpcAuthMode::InsecureDevOnly,
+    );
+    let config = RlsConfig::resolve(
+        grpc_addr,
+        "127.0.0.1:0".parse().unwrap(),
+        None,
+        Some(pki.tls_paths()),
+        true,
+        false,
+    )
+    .expect("TLS triad permits non-plaintext gRPC serving");
+    let server = tokio::spawn(async move {
+        grpc_server(&config)
+            .expect("TLS server builder")
+            .add_service(RateLimitServiceServer::new(svc))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+
+    let tls_without_client_cert = ClientTlsConfig::new()
+        .ca_certificate(Certificate::from_pem(pki.ca_pem()))
+        .domain_name("localhost");
+    let no_cert_channel = Channel::from_shared(format!("https://{grpc_addr}"))
+        .unwrap()
+        .tls_config(tls_without_client_cert)
+        .unwrap()
+        .connect()
+        .await;
+    let rejected_without_client_cert = match no_cert_channel {
+        Err(_) => true,
+        Ok(channel) => RateLimitServiceClient::new(channel)
+            .should_rate_limit(RateLimitRequest {
+                domain: "org|team|checkout".to_string(),
+                descriptors: Vec::new(),
+                hits_addend: 0,
+            })
+            .await
+            .is_err(),
+    };
+    assert!(
+        rejected_without_client_cert,
+        "server TLS must reject clients without a certificate"
+    );
+
+    let tls_with_client_cert = ClientTlsConfig::new()
+        .ca_certificate(Certificate::from_pem(pki.ca_pem()))
+        .identity(pki.client_identity("envoy"))
+        .domain_name("localhost");
+    let channel = Channel::from_shared(format!("https://{grpc_addr}"))
+        .unwrap()
+        .tls_config(tls_with_client_cert)
+        .unwrap()
+        .connect()
+        .await
+        .expect("client certificate should satisfy mTLS");
+    let response = RateLimitServiceClient::new(channel)
+        .should_rate_limit(RateLimitRequest {
+            domain: "org|team|checkout".to_string(),
+            descriptors: Vec::new(),
+            hits_addend: 0,
+        })
+        .await
+        .expect("mTLS client can call RLS")
+        .into_inner();
+    assert_eq!(response.overall_code, OK);
+    server.abort();
 }
 
 async fn connect_with_retry(addr: std::net::SocketAddr) -> RateLimitServiceClient<Channel> {

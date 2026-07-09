@@ -29,10 +29,30 @@ port Envoy calls, and an HTTP admin port the control plane pushes policy to.
 ```bash
 FLOWPLANE_RLS_GRPC_LISTEN=127.0.0.1:50051 \
 FLOWPLANE_RLS_ADMIN_LISTEN=127.0.0.1:8081 \
+FLOWPLANE_RLS_ALLOW_INSECURE_GRPC=yes-this-is-local-only \
+FLOWPLANE_RLS_ALLOW_UNAUTH_ADMIN=yes-this-is-local-only \
   flowplane-rls
 ```
 
-For a split-node deployment, bind these listeners on the RLS host interface that the control plane and Envoy can reach, and open the matching ports described in [Production Readiness](production-readiness.md#ports-and-network-paths). Keep the admin listener reachable only from the control-plane network.
+Those two `yes-this-is-local-only` settings are for a single-machine tutorial: plaintext gRPC is
+accepted only on loopback, and unauthenticated admin is accepted only on loopback.
+
+For a split-node deployment, bind these listeners on the RLS host interface that the control plane and Envoy can reach, and open the matching ports described in [Production Readiness](production-readiness.md#ports-and-network-paths). The Envoy-facing gRPC listener must use mTLS:
+
+```bash
+FLOWPLANE_RLS_GRPC_LISTEN=0.0.0.0:50051 \
+FLOWPLANE_RLS_GRPC_TLS_CERT=/etc/flowplane/rls/server.crt \
+FLOWPLANE_RLS_GRPC_TLS_KEY=/etc/flowplane/rls/server.key \
+FLOWPLANE_RLS_GRPC_TLS_CLIENT_CA=/etc/flowplane/rls/dataplane-client-ca.crt \
+FLOWPLANE_RLS_ADMIN_LISTEN=10.0.0.10:8081 \
+FLOWPLANE_RLS_ADMIN_TOKEN_FILE=/run/secrets/flowplane-rls-admin-token \
+  flowplane-rls
+```
+
+The gRPC TLS variables secure Envoy→RLS traffic and validate Envoy/dataplane client
+certificates. `FLOWPLANE_RLS_ADMIN_TOKEN_FILE` is separate CP-facing admin authentication for the
+HTTP policy-push endpoint; keep that admin listener reachable only from the control-plane network.
+Plaintext split-node `flowplane-rls` is not supported.
 
 Expected startup log — a `flowplane-rls starting` line carrying both bind addresses (the exact
 prefix/format depends on the tracing setup; `grpc=` and `admin=` fields appear):
@@ -67,9 +87,10 @@ FLOWPLANE_RLS_ADMIN_URL=http://127.0.0.1:8081 \
 - `FLOWPLANE_RLS_ADMIN_URL` starts the `rls_sync` worker, which pushes the full policy set to the
   RLS on a 60 s reconcile loop (the self-healing backstop).
 
-For production, also set the `FLOWPLANE_DATAPLANE_TLS_*` triad so the Envoy→RLS hop is mTLS; with
-none set the injected cluster dials the RLS in plaintext h2c (dev only). See
-[configuration reference](../reference/configuration.md).
+For split-node `flowplane-rls`, also set the `FLOWPLANE_DATAPLANE_TLS_*` triad on the control
+plane so the injected Envoy cluster presents a client certificate to the RLS and verifies the RLS
+server certificate. With none set, the injected cluster dials plaintext h2c and is valid only for
+the loopback local mode above. See [configuration reference](../reference/configuration.md).
 
 Confirm the worker started (control-plane log; the CP logs JSON by default, so the message appears
 as a structured field):
