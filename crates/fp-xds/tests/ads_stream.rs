@@ -6,6 +6,7 @@
 use envoy_types::pb::envoy::config::core::v3::Node;
 use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service_client::AggregatedDiscoveryServiceClient;
 use envoy_types::pb::envoy::service::discovery::v3::DiscoveryRequest;
+use fp_core::services::egress_policy::EgressPolicy;
 use fp_core::{GrantSet, PrincipalCtx};
 use fp_domain::authz::TeamRef;
 use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, LbPolicy};
@@ -13,6 +14,7 @@ use fp_domain::{OrgRole, RequestId};
 use fp_storage::repos::identity;
 use fp_xds::ads::NodeIdTeamResolver;
 use fp_xds::snapshot::{handle_events, SnapshotCache, CLUSTER_TYPE_URL, ROUTE_TYPE_URL};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,6 +46,22 @@ fn cluster_spec(host: &str) -> ClusterSpec {
         circuit_breakers: None,
         outlier_detection: None,
     }
+}
+
+fn hermetic_cluster_policy(specs: &[ClusterSpec]) -> EgressPolicy {
+    let allowed = specs
+        .iter()
+        .flat_map(|spec| {
+            spec.endpoints.iter().filter_map(|endpoint| {
+                endpoint
+                    .host
+                    .parse::<IpAddr>()
+                    .ok()
+                    .map(|ip| SocketAddr::new(ip, endpoint.port))
+            })
+        })
+        .collect();
+    EgressPolicy::with_allowed(Vec::new(), allowed)
 }
 
 #[tokio::test]
@@ -99,13 +117,15 @@ async fn subscribe_receive_ack_and_live_push() {
     };
 
     let upstream = unique("upstream");
-    fp_core::services::clusters::create_cluster(
+    let cluster = cluster_spec("10.0.0.1");
+    fp_core::services::clusters::create_cluster_with_egress_policy(
         &pool,
         &ctx,
         team,
         &upstream,
-        cluster_spec("10.0.0.1"),
+        cluster.clone(),
         RequestId::generate(),
+        &hermetic_cluster_policy(&[cluster]),
     )
     .await
     .expect("cluster");
@@ -181,14 +201,15 @@ async fn subscribe_receive_ack_and_live_push() {
     // drain the outbox; the open stream must receive a push.
     let mut new_spec = cluster_spec("10.0.0.99");
     new_spec.connect_timeout_secs = 9;
-    fp_core::services::clusters::update_cluster(
+    fp_core::services::clusters::update_cluster_with_egress_policy(
         &pool,
         &ctx,
         team,
         &upstream,
-        new_spec,
+        new_spec.clone(),
         1,
         RequestId::generate(),
+        &hermetic_cluster_policy(&[new_spec]),
     )
     .await
     .expect("update");
@@ -260,13 +281,15 @@ async fn nack_quarantines_offender_and_pushes_corrected_set() {
     };
 
     let good = unique("good");
-    fp_core::services::clusters::create_cluster(
+    let cluster = cluster_spec("10.0.0.1");
+    fp_core::services::clusters::create_cluster_with_egress_policy(
         &pool,
         &ctx,
         team,
         &good,
-        cluster_spec("10.0.0.1"),
+        cluster.clone(),
         RequestId::generate(),
+        &hermetic_cluster_policy(&[cluster]),
     )
     .await
     .expect("cluster");
@@ -334,13 +357,15 @@ async fn nack_quarantines_offender_and_pushes_corrected_set() {
 
     // A second cluster appears and is pushed.
     let bad = unique("bad");
-    fp_core::services::clusters::create_cluster(
+    let cluster = cluster_spec("10.0.0.66");
+    fp_core::services::clusters::create_cluster_with_egress_policy(
         &pool,
         &ctx,
         team,
         &bad,
-        cluster_spec("10.0.0.66"),
+        cluster.clone(),
         RequestId::generate(),
+        &hermetic_cluster_policy(&[cluster]),
     )
     .await
     .expect("bad cluster");
@@ -412,14 +437,15 @@ async fn nack_quarantines_offender_and_pushes_corrected_set() {
     // flows again.
     let mut fixed_spec = cluster_spec("10.0.0.67");
     fixed_spec.connect_timeout_secs = 7;
-    fp_core::services::clusters::update_cluster(
+    fp_core::services::clusters::update_cluster_with_egress_policy(
         &pool,
         &ctx,
         team,
         &bad,
-        fixed_spec,
+        fixed_spec.clone(),
         1,
         RequestId::generate(),
+        &hermetic_cluster_policy(&[fixed_spec]),
     )
     .await
     .expect("fix");
@@ -473,13 +499,15 @@ async fn subscription_change_echoing_last_nonce_is_answered() {
         grants: GrantSet::default(),
     };
     let upstream = unique("upstream");
-    fp_core::services::clusters::create_cluster(
+    let cluster = cluster_spec("10.0.0.1");
+    fp_core::services::clusters::create_cluster_with_egress_policy(
         &pool,
         &ctx,
         team,
         &upstream,
-        cluster_spec("10.0.0.1"),
+        cluster.clone(),
         RequestId::generate(),
+        &hermetic_cluster_policy(&[cluster]),
     )
     .await
     .expect("cluster");

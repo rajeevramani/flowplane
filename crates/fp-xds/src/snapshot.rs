@@ -1153,6 +1153,7 @@ mod tests {
     use envoy_types::pb::envoy::extensions::filters::network::http_connection_manager::v3 as hcm;
     use envoy_types::pb::envoy::r#type::matcher::v3 as matcher_type;
     use envoy_types::pb::google::protobuf as wkt;
+    use fp_core::services::egress_policy::EgressPolicy;
     use fp_core::{GrantSet, PrincipalCtx};
     use fp_domain::api_lifecycle::{ApiDefinitionSpec, ApiRouteBindingSpec, CaptureSessionSpec};
     use fp_domain::authz::TeamRef;
@@ -1165,6 +1166,7 @@ mod tests {
     use fp_domain::{OrgRole, RequestId, SecretSpec, SecretType};
     use fp_storage::repos::identity;
     use prost::Message;
+    use std::net::{IpAddr, SocketAddr};
     fn unique(prefix: &str) -> String {
         format!(
             "{prefix}-{}",
@@ -1193,6 +1195,22 @@ mod tests {
             circuit_breakers: None,
             outlier_detection: None,
         }
+    }
+
+    fn hermetic_cluster_policy(specs: &[ClusterSpec]) -> EgressPolicy {
+        let allowed = specs
+            .iter()
+            .flat_map(|spec| {
+                spec.endpoints.iter().filter_map(|endpoint| {
+                    endpoint
+                        .host
+                        .parse::<IpAddr>()
+                        .ok()
+                        .map(|ip| SocketAddr::new(ip, endpoint.port))
+                })
+            })
+            .collect();
+        EgressPolicy::with_allowed(Vec::new(), allowed)
     }
 
     // ---------------- S6 built-in rate_limit_cluster injection (separate author) ----------------
@@ -1394,13 +1412,15 @@ mod tests {
 
         // Team A: cluster + bound route config + listener. Team B: one cluster only.
         let upstream = unique("upstream");
-        fp_core::services::clusters::create_cluster(
+        let upstream_spec = cluster_spec("10.0.0.1");
+        fp_core::services::clusters::create_cluster_with_egress_policy(
             &pool,
             &ctx_a,
             team_a,
             &upstream,
-            cluster_spec("10.0.0.1"),
+            upstream_spec.clone(),
             RequestId::generate(),
+            &hermetic_cluster_policy(&[upstream_spec]),
         )
         .await
         .expect("a cluster");
@@ -1435,13 +1455,15 @@ mod tests {
         )
         .await
         .expect("a listener");
-        fp_core::services::clusters::create_cluster(
+        let other_spec = cluster_spec("10.9.9.9");
+        fp_core::services::clusters::create_cluster_with_egress_policy(
             &pool,
             &ctx_b,
             team_b,
             &unique("other"),
-            cluster_spec("10.9.9.9"),
+            other_spec.clone(),
             RequestId::generate(),
+            &hermetic_cluster_policy(&[other_spec]),
         )
         .await
         .expect("b cluster");
@@ -1486,14 +1508,16 @@ mod tests {
         // EDS reference for IP endpoints) and routes stay untouched (spec/10 §5).
         let routes_version = again.routes.version;
         let endpoints_version = again.endpoints.version;
-        fp_core::services::clusters::update_cluster(
+        let update_spec = cluster_spec("10.0.0.2");
+        fp_core::services::clusters::update_cluster_with_egress_policy(
             &pool,
             &ctx_a,
             team_a,
             &upstream,
-            cluster_spec("10.0.0.2"),
+            update_spec.clone(),
             1,
             RequestId::generate(),
+            &hermetic_cluster_policy(&[update_spec]),
         )
         .await
         .expect("update");
@@ -1543,23 +1567,27 @@ mod tests {
         };
         let cluster_a = unique("upstream-a");
         let cluster_b = unique("upstream-b");
-        fp_core::services::clusters::create_cluster(
+        let cluster_a_spec = cluster_spec("10.0.0.1");
+        fp_core::services::clusters::create_cluster_with_egress_policy(
             &pool,
             &ctx_a,
             team_a,
             &cluster_a,
-            cluster_spec("10.0.0.1"),
+            cluster_a_spec.clone(),
             RequestId::generate(),
+            &hermetic_cluster_policy(&[cluster_a_spec]),
         )
         .await
         .expect("a cluster");
-        fp_core::services::clusters::create_cluster(
+        let cluster_b_spec = cluster_spec("10.0.0.2");
+        fp_core::services::clusters::create_cluster_with_egress_policy(
             &pool,
             &ctx_b,
             team_b,
             &cluster_b,
-            cluster_spec("10.0.0.2"),
+            cluster_b_spec.clone(),
             RequestId::generate(),
+            &hermetic_cluster_policy(&[cluster_b_spec]),
         )
         .await
         .expect("b cluster");
@@ -1760,13 +1788,15 @@ mod tests {
             secret
         };
 
-        fp_core::services::clusters::create_cluster(
+        let other_spec = cluster_spec("10.9.9.9");
+        fp_core::services::clusters::create_cluster_with_egress_policy(
             &pool,
             &ctx_b,
             team_b,
             &unique("other"),
-            cluster_spec("10.9.9.9"),
+            other_spec.clone(),
             RequestId::generate(),
+            &hermetic_cluster_policy(&[other_spec]),
         )
         .await
         .expect("b cluster");
@@ -1804,13 +1834,15 @@ mod tests {
             .expect("register");
 
         let good_cluster = unique("good-upstream");
-        fp_core::services::clusters::create_cluster(
+        let good_cluster_spec = cluster_spec("10.0.0.1");
+        fp_core::services::clusters::create_cluster_with_egress_policy(
             &pool,
             &ctx_a,
             team_a,
             &good_cluster,
-            cluster_spec("10.0.0.1"),
+            good_cluster_spec.clone(),
             RequestId::generate(),
+            &hermetic_cluster_policy(&[good_cluster_spec]),
         )
         .await
         .expect("good cluster");
@@ -1877,13 +1909,15 @@ mod tests {
             tx.commit().await.expect("commit");
         }
 
-        fp_core::services::clusters::create_cluster(
+        let other_spec = cluster_spec("10.9.9.9");
+        fp_core::services::clusters::create_cluster_with_egress_policy(
             &pool,
             &ctx_b,
             team_b,
             &unique("other"),
-            cluster_spec("10.9.9.9"),
+            other_spec.clone(),
             RequestId::generate(),
+            &hermetic_cluster_policy(&[other_spec]),
         )
         .await
         .expect("b cluster");
@@ -1951,13 +1985,15 @@ mod tests {
         };
         let cache = SnapshotCache::new();
         let upstream = unique("upstream");
-        fp_core::services::clusters::create_cluster(
+        let initial_spec = cluster_spec("10.0.0.1");
+        fp_core::services::clusters::create_cluster_with_egress_policy(
             &pool,
             &ctx,
             team,
             &upstream,
-            cluster_spec("10.0.0.1"),
+            initial_spec.clone(),
             RequestId::generate(),
+            &hermetic_cluster_policy(&[initial_spec]),
         )
         .await
         .expect("cluster");
@@ -1974,14 +2010,16 @@ mod tests {
 
         // Update the cluster, then a dataplane NACKs the new bytes: the changed resource
         // is quarantined and serving falls back to the last-good bytes.
-        fp_core::services::clusters::update_cluster(
+        let update_spec = cluster_spec("10.0.0.2");
+        fp_core::services::clusters::update_cluster_with_egress_policy(
             &pool,
             &ctx,
             team,
             &upstream,
-            cluster_spec("10.0.0.2"),
+            update_spec.clone(),
             1,
             RequestId::generate(),
+            &hermetic_cluster_policy(&[update_spec]),
         )
         .await
         .expect("update");
@@ -2026,14 +2064,16 @@ mod tests {
         );
 
         // An operator fix (any byte change) clears the quarantine and serves fresh.
-        fp_core::services::clusters::update_cluster(
+        let fix_spec = cluster_spec("10.0.0.3");
+        fp_core::services::clusters::update_cluster_with_egress_policy(
             &pool,
             &ctx,
             team,
             &upstream,
-            cluster_spec("10.0.0.3"),
+            fix_spec.clone(),
             2,
             RequestId::generate(),
+            &hermetic_cluster_policy(&[fix_spec]),
         )
         .await
         .expect("fix");
@@ -2056,13 +2096,15 @@ mod tests {
         let dataplane_a = DataplaneId::generate();
         let dataplane_b = DataplaneId::generate();
         let upstream = unique("upstream");
-        fp_core::services::clusters::create_cluster(
+        let initial_spec = cluster_spec("10.0.1.1");
+        fp_core::services::clusters::create_cluster_with_egress_policy(
             &pool,
             &ctx,
             team,
             &upstream,
-            cluster_spec("10.0.1.1"),
+            initial_spec.clone(),
             RequestId::generate(),
+            &hermetic_cluster_policy(&[initial_spec]),
         )
         .await
         .expect("cluster");
@@ -2077,14 +2119,16 @@ mod tests {
             .endpoints;
         assert_eq!(initial_a.resources, initial_b.resources);
 
-        fp_core::services::clusters::update_cluster(
+        let update_spec = cluster_spec("10.0.1.2");
+        fp_core::services::clusters::update_cluster_with_egress_policy(
             &pool,
             &ctx,
             team,
             &upstream,
-            cluster_spec("10.0.1.2"),
+            update_spec.clone(),
             1,
             RequestId::generate(),
+            &hermetic_cluster_policy(&[update_spec]),
         )
         .await
         .expect("update");

@@ -7,6 +7,7 @@
 use envoy_types::pb::envoy::config::core::v3::Node;
 use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service_client::AggregatedDiscoveryServiceClient;
 use envoy_types::pb::envoy::service::discovery::v3::DiscoveryRequest;
+use fp_core::services::egress_policy::EgressPolicy;
 use fp_core::{GrantSet, PrincipalCtx};
 use fp_domain::authz::TeamRef;
 use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, LbPolicy};
@@ -15,6 +16,7 @@ use fp_storage::repos::identity;
 use fp_xds::ads::{publish_revocations, CertRegistryResolver};
 use fp_xds::server::{serve_mtls, XdsTlsPaths};
 use fp_xds::snapshot::{handle_events, SnapshotCache, CLUSTER_TYPE_URL};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -221,6 +223,22 @@ fn cluster_spec(host: &str) -> ClusterSpec {
     }
 }
 
+fn hermetic_cluster_policy(specs: &[ClusterSpec]) -> EgressPolicy {
+    let allowed = specs
+        .iter()
+        .flat_map(|spec| {
+            spec.endpoints.iter().filter_map(|endpoint| {
+                endpoint
+                    .host
+                    .parse::<IpAddr>()
+                    .ok()
+                    .map(|ip| SocketAddr::new(ip, endpoint.port))
+            })
+        })
+        .collect();
+    EgressPolicy::with_allowed(Vec::new(), allowed)
+}
+
 struct World {
     pool: sqlx::PgPool,
     team: TeamRef,
@@ -332,13 +350,15 @@ async fn registry_binds_team_and_revocation_kills_live_stream() {
     let pki = TestPki::new();
 
     // Team A owns one cluster; cache primed.
-    fp_core::services::clusters::create_cluster(
+    let cluster = cluster_spec("10.1.0.1");
+    fp_core::services::clusters::create_cluster_with_egress_policy(
         &w.pool,
         &w.ctx,
         w.team,
         &unique("upstream"),
-        cluster_spec("10.1.0.1"),
+        cluster.clone(),
         RequestId::generate(),
+        &hermetic_cluster_policy(&[cluster]),
     )
     .await
     .expect("cluster");

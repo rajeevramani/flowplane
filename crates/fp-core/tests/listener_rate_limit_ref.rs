@@ -25,6 +25,7 @@ use fp_domain::gateway::listener::{ListenerProtocol, ListenerSpec};
 use fp_domain::{ErrorCode, OrgRole, RequestId};
 use fp_storage::repos::identity;
 use sqlx::PgPool;
+use std::net::{IpAddr, SocketAddr};
 
 fn unique(prefix: &str) -> String {
     format!(
@@ -64,6 +65,24 @@ fn cluster_spec(host: &str) -> ClusterSpec {
         circuit_breakers: None,
         outlier_detection: None,
     }
+}
+
+fn hermetic_cluster_policy(
+    specs: &[ClusterSpec],
+) -> fp_core::services::egress_policy::EgressPolicy {
+    let allowed = specs
+        .iter()
+        .flat_map(|spec| {
+            spec.endpoints.iter().filter_map(|endpoint| {
+                endpoint
+                    .host
+                    .parse::<IpAddr>()
+                    .ok()
+                    .map(|ip| SocketAddr::new(ip, endpoint.port))
+            })
+        })
+        .collect();
+    fp_core::services::egress_policy::EgressPolicy::with_allowed(Vec::new(), allowed)
 }
 
 /// A global_rate_limit filter entry with explicit domain + service_cluster.
@@ -357,13 +376,15 @@ async fn user_cluster_in_team_is_accepted_with_verbatim_domain() {
     let Some(w) = world().await else { return };
 
     let cluster_name = unique("my-rls");
-    cluster_svc::create_cluster(
+    let cluster = cluster_spec("10.0.0.5");
+    cluster_svc::create_cluster_with_egress_policy(
         &w.pool,
         &w.admin,
         w.team,
         &cluster_name,
-        cluster_spec("10.0.0.5"),
+        cluster.clone(),
         RequestId::generate(),
+        &hermetic_cluster_policy(&[cluster]),
     )
     .await
     .expect("create user rls cluster");
@@ -431,13 +452,15 @@ async fn user_cluster_absent_or_cross_team_is_rejected_not_found() {
     // (b) A cluster that exists, but only in a DIFFERENT team (team2). Referencing it from
     // team1 must NOT resolve — no cross-team cluster reuse.
     let foreign_cluster = unique("foreign-rls");
-    cluster_svc::create_cluster(
+    let cluster = cluster_spec("10.0.0.9");
+    cluster_svc::create_cluster_with_egress_policy(
         &w.pool,
         &w.admin2,
         w.team2,
         &foreign_cluster,
-        cluster_spec("10.0.0.9"),
+        cluster.clone(),
         RequestId::generate(),
+        &hermetic_cluster_policy(&[cluster]),
     )
     .await
     .expect("create cluster in team2");

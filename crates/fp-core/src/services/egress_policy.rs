@@ -325,6 +325,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn default_policy_denies_loopback_and_private_destinations() {
+        let policy = EgressPolicy::with_static_hosts(
+            Vec::new(),
+            Vec::new(),
+            vec![(
+                "internal.example.test".into(),
+                8080,
+                vec!["10.0.0.12".parse().unwrap()],
+            )],
+        );
+        for host in ["127.0.0.1", "10.0.0.10", "internal.example.test"] {
+            policy
+                .validate_host_port(host, 8080, "test destination")
+                .await
+                .expect_err("default policy denies loopback or private destination");
+        }
+    }
+
+    #[tokio::test]
     async fn configured_flowplane_destinations_are_denied_by_ip_and_port() {
         let ip = "203.0.113.10".parse::<IpAddr>().unwrap();
         let policy = EgressPolicy::new(vec![SocketAddr::new(ip, 5432)]);

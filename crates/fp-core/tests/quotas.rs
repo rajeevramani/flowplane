@@ -22,6 +22,7 @@ use fp_domain::{
 use fp_storage::repos::{api_lifecycle as storage_api_lifecycle, identity};
 use serde_json::json;
 use sqlx::PgPool;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 fn unique(prefix: &str) -> String {
     format!(
@@ -81,6 +82,30 @@ fn cluster_spec(host: &str) -> ClusterSpec {
         circuit_breakers: None,
         outlier_detection: None,
     }
+}
+
+fn hermetic_cluster_policy(
+    specs: &[ClusterSpec],
+) -> fp_core::services::egress_policy::EgressPolicy {
+    let mut allowed = Vec::new();
+    let mut static_hosts = Vec::new();
+    for (idx, spec) in specs.iter().enumerate() {
+        for endpoint in &spec.endpoints {
+            match endpoint.host.parse::<IpAddr>() {
+                Ok(ip) => allowed.push(SocketAddr::new(ip, endpoint.port)),
+                Err(_) => static_hosts.push((
+                    endpoint.host.clone(),
+                    endpoint.port,
+                    vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 40 + idx as u8))],
+                )),
+            }
+        }
+    }
+    fp_core::services::egress_policy::EgressPolicy::with_static_hosts(
+        Vec::new(),
+        allowed,
+        static_hosts,
+    )
 }
 
 async fn world() -> Option<World> {
@@ -441,13 +466,15 @@ async fn ai_route_materialization_cleans_clusters_after_partial_quota_failure() 
     let Some(w) = world().await else { return };
 
     for i in 0..49 {
-        cluster_svc::create_cluster(
+        let cluster = cluster_spec(&format!("existing-{i}.example"));
+        cluster_svc::create_cluster_with_egress_policy(
             &w.pool,
             &w.admin,
             w.team,
             &unique(&format!("near-quota-{i}")),
-            cluster_spec(&format!("existing-{i}.example")),
+            cluster.clone(),
             RequestId::generate(),
+            &hermetic_cluster_policy(&[cluster]),
         )
         .await
         .expect("seed cluster");

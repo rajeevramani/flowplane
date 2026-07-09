@@ -13,7 +13,7 @@ use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, LbPolicy, UpstreamTlsCo
 use fp_domain::{ErrorCode, OrgRole, RequestId};
 use fp_storage::repos::identity;
 use sqlx::PgPool;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 fn unique(prefix: &str) -> String {
     format!(
@@ -124,6 +124,24 @@ fn public_egress_policy() -> EgressPolicy {
     )
 }
 
+fn hermetic_cluster_policy(specs: &[ClusterSpec]) -> EgressPolicy {
+    let mut allowed = Vec::new();
+    let mut static_hosts = Vec::new();
+    for (idx, spec) in specs.iter().enumerate() {
+        for endpoint in &spec.endpoints {
+            match endpoint.host.parse::<IpAddr>() {
+                Ok(ip) => allowed.push(SocketAddr::new(ip, endpoint.port)),
+                Err(_) => static_hosts.push((
+                    endpoint.host.clone(),
+                    endpoint.port,
+                    vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 20 + idx as u8))],
+                )),
+            }
+        }
+    }
+    EgressPolicy::with_static_hosts(Vec::new(), allowed, static_hosts)
+}
+
 async fn event_count(pool: &PgPool, team: TeamRef, event_type: &str) -> i64 {
     sqlx::query_scalar("SELECT count(*) FROM events WHERE event_type = $1 AND team_id = $2")
         .bind(event_type)
@@ -139,9 +157,18 @@ async fn create_emits_event_and_cross_org_caller_sees_not_found() {
     let name = unique("payments");
     let rid = RequestId::generate();
 
-    svc::create_cluster(&w.pool, &w.admin, w.team, &name, spec("10.0.0.1"), rid)
-        .await
-        .expect("create");
+    let cluster = spec("10.0.0.1");
+    svc::create_cluster_with_egress_policy(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &name,
+        cluster.clone(),
+        rid,
+        &hermetic_cluster_policy(&[cluster]),
+    )
+    .await
+    .expect("create");
 
     // The event committed with the row (transactional outbox).
     let (event_count,): (i64,) = sqlx::query_as(
@@ -214,36 +241,44 @@ async fn create_emits_event_and_cross_org_caller_sees_not_found() {
 async fn concurrent_updates_one_wins_one_gets_revision_mismatch() {
     let Some(w) = world().await else { return };
     let name = unique("contended");
-    svc::create_cluster(
+    let initial = spec("a");
+    svc::create_cluster_with_egress_policy(
         &w.pool,
         &w.admin,
         w.team,
         &name,
-        spec("a"),
+        initial.clone(),
         RequestId::generate(),
+        &hermetic_cluster_policy(&[initial]),
     )
     .await
     .expect("create");
 
     // Both writers read revision 1, then race their updates.
+    let writer_one = spec("writer-one");
+    let writer_two = spec("writer-two");
+    let writer_one_policy = hermetic_cluster_policy(std::slice::from_ref(&writer_one));
+    let writer_two_policy = hermetic_cluster_policy(std::slice::from_ref(&writer_two));
     let (r1, r2) = tokio::join!(
-        svc::update_cluster(
+        svc::update_cluster_with_egress_policy(
             &w.pool,
             &w.admin,
             w.team,
             &name,
-            spec("writer-one"),
+            writer_one,
             1,
-            RequestId::generate()
+            RequestId::generate(),
+            &writer_one_policy
         ),
-        svc::update_cluster(
+        svc::update_cluster_with_egress_policy(
             &w.pool,
             &w.admin,
             w.team,
             &name,
-            spec("writer-two"),
+            writer_two,
             1,
-            RequestId::generate()
+            RequestId::generate(),
+            &writer_two_policy
         ),
     );
     let outcomes = [r1, r2];
@@ -271,13 +306,15 @@ async fn concurrent_updates_one_wins_one_gets_revision_mismatch() {
 async fn delete_requires_current_revision_and_emits_deletion_event() {
     let Some(w) = world().await else { return };
     let name = unique("doomed");
-    svc::create_cluster(
+    let cluster = spec("a");
+    svc::create_cluster_with_egress_policy(
         &w.pool,
         &w.admin,
         w.team,
         &name,
-        spec("a"),
+        cluster.clone(),
         RequestId::generate(),
+        &hermetic_cluster_policy(&[cluster]),
     )
     .await
     .expect("create");
@@ -308,24 +345,28 @@ async fn quota_caps_cluster_count_per_team() {
     let Some(w) = world().await else { return };
     // Fill to the default limit (50). Sequential to keep the test deterministic.
     for i in 0..50 {
-        svc::create_cluster(
+        let cluster = spec("h");
+        svc::create_cluster_with_egress_policy(
             &w.pool,
             &w.admin,
             w.team,
             &format!("q{i}-{}", unique("c")),
-            spec("h"),
+            cluster.clone(),
             RequestId::generate(),
+            &hermetic_cluster_policy(&[cluster]),
         )
         .await
         .expect("create within quota");
     }
-    let err = svc::create_cluster(
+    let cluster = spec("h");
+    let err = svc::create_cluster_with_egress_policy(
         &w.pool,
         &w.admin,
         w.team,
         &unique("over"),
-        spec("h"),
+        cluster.clone(),
         RequestId::generate(),
+        &hermetic_cluster_policy(&[cluster]),
     )
     .await
     .expect_err("51st cluster must trip the quota");
@@ -351,13 +392,15 @@ async fn grantless_member_denied_with_actionable_forbidden() {
         org: Some((w.team.org_id, OrgRole::Member)),
         grants: GrantSet::default(),
     };
-    let err = svc::create_cluster(
+    let cluster = spec("h");
+    let err = svc::create_cluster_with_egress_policy(
         &w.pool,
         &member,
         w.team,
         &unique("nope"),
-        spec("h"),
+        cluster.clone(),
         RequestId::generate(),
+        &hermetic_cluster_policy(&[cluster]),
     )
     .await
     .expect_err("no grant, no create");
@@ -591,13 +634,15 @@ mod referential {
 
         // Create the chain: cluster -> route config -> listener.
         let cluster_name = unique("upstream");
-        svc::create_cluster(
+        let cluster = spec("10.0.0.9");
+        svc::create_cluster_with_egress_policy(
             &w.pool,
             &w.admin,
             w.team,
             &cluster_name,
-            spec("10.0.0.9"),
+            cluster.clone(),
             rid(),
+            &hermetic_cluster_policy(&[cluster]),
         )
         .await
         .expect("cluster");
@@ -679,13 +724,15 @@ mod referential {
         let rid = RequestId::generate;
 
         let cluster_name = unique("upstream");
-        svc::create_cluster(
+        let cluster = spec("10.0.0.9");
+        svc::create_cluster_with_egress_policy(
             &w.pool,
             &w.admin,
             w.team,
             &cluster_name,
-            spec("10.0.0.9"),
+            cluster.clone(),
             rid(),
+            &hermetic_cluster_policy(&[cluster]),
         )
         .await
         .expect("cluster");
