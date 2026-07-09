@@ -380,8 +380,7 @@ impl ExternalProcessor for LearningCaptureService {
         request: Request<Streaming<ProcessingRequest>>,
     ) -> Result<Response<Self::ProcessStream>, Status> {
         if is_ai_processor(request.metadata()) {
-            let identity = resolve_peer_identity(&request, &self.resolver, "ai-extproc").await?;
-            let context = ai_context(request.metadata(), identity)?;
+            let context = ai_ext_proc_context(&request, &self.resolver).await?;
             return Ok(Response::new(ReceiverStream::new(ai_process_stream(
                 self.pool.clone(),
                 request.into_inner(),
@@ -512,6 +511,20 @@ fn is_ai_processor(metadata: &MetadataMap) -> bool {
         .get("x-flowplane-ai-processor")
         .and_then(|value| value.to_str().ok())
         == Some("true")
+}
+
+async fn ai_ext_proc_context<T>(
+    request: &Request<T>,
+    resolver: &Arc<dyn TeamResolver>,
+) -> Result<Option<AiExtProcContext>, Status> {
+    let node_id = ai_ext_proc_resolver_node_id(request.metadata())?;
+    let identity = resolve_peer_identity(request, resolver, &node_id).await?;
+    ai_context(request.metadata(), identity)
+}
+
+fn ai_ext_proc_resolver_node_id(metadata: &MetadataMap) -> Result<String, Status> {
+    let claimed_team_id = TeamId::from(metadata_uuid(metadata, "x-flowplane-team-id")?);
+    Ok(format!("team={claimed_team_id}"))
 }
 
 fn ai_context(
@@ -2249,6 +2262,43 @@ mod tests {
         }
     }
 
+    struct RecordingTeamResolver {
+        team_id: TeamId,
+        node_ids: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingTeamResolver {
+        fn new(team_id: TeamId) -> Self {
+            Self {
+                team_id,
+                node_ids: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn node_ids(&self) -> Vec<String> {
+            self.node_ids.lock().expect("node ids").clone()
+        }
+    }
+
+    #[tonic::async_trait]
+    impl TeamResolver for RecordingTeamResolver {
+        async fn resolve(
+            &self,
+            node_id: &str,
+            _peer_spiffe: Option<&str>,
+        ) -> Result<PeerIdentity, Status> {
+            self.node_ids
+                .lock()
+                .expect("node ids")
+                .push(node_id.to_string());
+            Ok(PeerIdentity {
+                team_id: self.team_id,
+                dataplane_id: None,
+                certificate_id: None,
+            })
+        }
+    }
+
     struct FailingTeamResolver {
         status: Code,
     }
@@ -2493,18 +2543,99 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn ai_peer_identity_resolver_failure_fails_before_metadata_parse() {
-        let resolver = Arc::new(FailingTeamResolver {
-            status: Code::Unauthenticated,
-        }) as Arc<dyn TeamResolver>;
-        let mut request = Request::new(());
-        request.metadata_mut().insert(
+    #[test]
+    fn ai_ext_proc_resolver_node_id_uses_claimed_team_metadata() {
+        let team_id = TeamId::from(Uuid::now_v7());
+        let request = ai_metadata_request(team_id, Uuid::now_v7(), Uuid::now_v7(), 0, None);
+
+        let node_id = ai_ext_proc_resolver_node_id(request.metadata()).expect("resolver node id");
+
+        assert_eq!(node_id, format!("team={team_id}"));
+    }
+
+    #[test]
+    fn ai_ext_proc_resolver_node_id_rejects_missing_or_malformed_team_metadata() {
+        let missing = Request::new(());
+        let err =
+            ai_ext_proc_resolver_node_id(missing.metadata()).expect_err("missing team metadata");
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert!(err.message().contains("x-flowplane-team-id"));
+
+        let mut malformed = Request::new(());
+        malformed.metadata_mut().insert(
             "x-flowplane-team-id",
             "not-a-uuid".parse().expect("metadata value"),
         );
+        let err = ai_ext_proc_resolver_node_id(malformed.metadata())
+            .expect_err("malformed team metadata");
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert!(err.message().contains("x-flowplane-team-id"));
+    }
 
-        let err = resolve_peer_identity(&request, &resolver, "ai-extproc")
+    #[tokio::test]
+    async fn ai_ext_proc_context_resolves_with_team_scoped_node_id() {
+        let team_id = TeamId::from(Uuid::now_v7());
+        let resolver = Arc::new(RecordingTeamResolver::new(team_id));
+        let resolver_trait: Arc<dyn TeamResolver> = resolver.clone();
+        let request = ai_metadata_request(team_id, Uuid::now_v7(), Uuid::now_v7(), 0, None);
+
+        let context = ai_ext_proc_context(&request, &resolver_trait)
+            .await
+            .expect("context")
+            .expect("context present");
+
+        assert_eq!(context.team_id, team_id);
+        assert_eq!(resolver.node_ids(), vec![format!("team={team_id}")]);
+    }
+
+    #[tokio::test]
+    async fn ai_ext_proc_context_dev_resolver_accepts_same_team_metadata() {
+        let team_id = TeamId::from(Uuid::now_v7());
+        let resolver = Arc::new(crate::ads::NodeIdTeamResolver) as Arc<dyn TeamResolver>;
+        let request = ai_metadata_request(team_id, Uuid::now_v7(), Uuid::now_v7(), 0, None);
+
+        let context = ai_ext_proc_context(&request, &resolver)
+            .await
+            .expect("context")
+            .expect("context present");
+
+        assert_eq!(context.team_id, team_id);
+    }
+
+    #[tokio::test]
+    async fn ai_ext_proc_context_rejects_resolved_team_mismatch() {
+        let claimed_team_id = TeamId::from(Uuid::now_v7());
+        let bound_team_id = TeamId::from(Uuid::now_v7());
+        let resolver = Arc::new(FixedTeamResolver {
+            team_id: bound_team_id,
+        }) as Arc<dyn TeamResolver>;
+        let request = ai_metadata_request(claimed_team_id, Uuid::now_v7(), Uuid::now_v7(), 0, None);
+
+        let err = ai_ext_proc_context(&request, &resolver)
+            .await
+            .expect_err("team mismatch");
+
+        assert_eq!(err.code(), Code::PermissionDenied);
+        assert_eq!(
+            err.message(),
+            "AI processor team_id does not match the client certificate"
+        );
+    }
+
+    #[tokio::test]
+    async fn ai_ext_proc_context_resolver_error_fails_closed_after_team_key_parse() {
+        let resolver = Arc::new(FailingTeamResolver {
+            status: Code::Unauthenticated,
+        }) as Arc<dyn TeamResolver>;
+        let request = ai_metadata_request(
+            TeamId::from(Uuid::now_v7()),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            0,
+            None,
+        );
+
+        let err = ai_ext_proc_context(&request, &resolver)
             .await
             .expect_err("resolver failure");
 
@@ -2748,10 +2879,8 @@ mod tests {
 
         let resolver = Arc::new(CertRegistryResolver::new(pool.clone())) as Arc<dyn TeamResolver>;
         let request = ai_metadata_request(team.id, route_config_id, provider_id, 0, Some(&spiffe));
-        let identity = resolve_peer_identity(&request, &resolver, "ai-extproc")
+        let context = ai_ext_proc_context(&request, &resolver)
             .await
-            .expect("identity");
-        let context = ai_context(request.metadata(), identity)
             .expect("metadata")
             .expect("context");
         let mut rx = ai_process_stream(
@@ -2819,10 +2948,9 @@ mod tests {
             0,
             Some(&active_spiffe),
         );
-        let identity = resolve_peer_identity(&mismatch_request, &resolver, "ai-extproc")
+        let err = ai_ext_proc_context(&mismatch_request, &resolver)
             .await
-            .expect("identity");
-        let err = ai_context(mismatch_request.metadata(), identity).expect_err("team mismatch");
+            .expect_err("team mismatch");
         assert_eq!(err.code(), Code::PermissionDenied);
 
         let missing_request = ai_metadata_request(
@@ -2832,7 +2960,7 @@ mod tests {
             0,
             Some("spiffe://flowplane.test/team/missing/proxy/not-registered"),
         );
-        let err = resolve_peer_identity(&missing_request, &resolver, "ai-extproc")
+        let err = ai_ext_proc_context(&missing_request, &resolver)
             .await
             .expect_err("missing registry row");
         assert_eq!(err.code(), Code::Unauthenticated);
@@ -2849,7 +2977,7 @@ mod tests {
             0,
             Some(&revoked_spiffe),
         );
-        let err = resolve_peer_identity(&revoked_request, &resolver, "ai-extproc")
+        let err = ai_ext_proc_context(&revoked_request, &resolver)
             .await
             .expect_err("revoked registry row");
         assert_eq!(err.code(), Code::Unauthenticated);
