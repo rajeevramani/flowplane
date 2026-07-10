@@ -490,7 +490,25 @@ async fn ai_route_materialization_cleans_clusters_after_partial_quota_failure() 
     )
     .await
     .expect("secret");
-    let provider_a = ai_svc::create_provider(
+    // AI provider base_urls a.example / b.example are unresolvable fixture hosts; pin them to
+    // public TEST-NET IPs so the SSRF egress guard admits provider + materialization egress.
+    let ai_policy = fp_core::services::egress_policy::EgressPolicy::with_static_hosts(
+        Vec::new(),
+        Vec::new(),
+        vec![
+            (
+                "a.example".into(),
+                443,
+                vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 41))],
+            ),
+            (
+                "b.example".into(),
+                443,
+                vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 42))],
+            ),
+        ],
+    );
+    let provider_a = ai_svc::create_provider_with_egress_policy(
         &w.pool,
         &w.admin,
         w.team,
@@ -504,10 +522,11 @@ async fn ai_route_materialization_cleans_clusters_after_partial_quota_failure() 
             auth_header: "authorization".into(),
         },
         RequestId::generate(),
+        &ai_policy,
     )
     .await
     .expect("provider a");
-    let provider_b = ai_svc::create_provider(
+    let provider_b = ai_svc::create_provider_with_egress_policy(
         &w.pool,
         &w.admin,
         w.team,
@@ -521,11 +540,12 @@ async fn ai_route_materialization_cleans_clusters_after_partial_quota_failure() 
             auth_header: "authorization".into(),
         },
         RequestId::generate(),
+        &ai_policy,
     )
     .await
     .expect("provider b");
 
-    let err = ai_svc::create_route(
+    let err = ai_svc::create_route_with_egress_policy(
         &w.pool,
         &w.admin,
         w.team,
@@ -551,6 +571,7 @@ async fn ai_route_materialization_cleans_clusters_after_partial_quota_failure() 
             ],
         },
         RequestId::generate(),
+        &ai_policy,
     )
     .await
     .expect_err("second generated cluster should trip quota");

@@ -142,7 +142,12 @@ async fn fixture() -> Option<Fixture> {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
-        egress_policy: Default::default(),
+        // Static-tool cluster fixtures target the private host 10.0.0.10:8080; allowlist that
+        // one (ip:port) so the SSRF egress guard admits it. Other destinations stay denied.
+        egress_policy: fp_core::services::egress_policy::EgressPolicy::with_allowed(
+            Vec::new(),
+            vec!["10.0.0.10:8080".parse().expect("addr")],
+        ),
         rls_repush: None,
         rls_grpc_configured: false,
     });

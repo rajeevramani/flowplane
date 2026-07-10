@@ -370,22 +370,26 @@ async fn ai_route_materialized_provider_cluster_uses_pinned_ip_endpoint() {
     .await
     .expect("AI route");
 
-    let cluster = cluster_svc::get_cluster(
-        &w.pool,
-        &w.admin,
-        w.team,
-        &route.materialized.cluster_names[0],
-        RequestId::generate(),
+    // AI route materialization stores its per-provider cluster as an `ai`-owned resource, which
+    // the user-facing `get_cluster` read (scoped to `owner_kind = 'user'`) intentionally hides.
+    // Read the materialized cluster's spec straight from storage to assert what WAS materialized:
+    // the provider host pinned to its resolved IP endpoints, with the hostname preserved as SNI.
+    let spec_json: serde_json::Value = sqlx::query_scalar(
+        "SELECT spec FROM clusters WHERE team_id = $1 AND name = $2 AND owner_kind = 'ai'",
     )
+    .bind(w.team.id.as_uuid())
+    .bind(&route.materialized.cluster_names[0])
+    .fetch_one(&w.pool)
     .await
     .expect("materialized provider cluster");
+    let cluster_spec: ClusterSpec =
+        serde_json::from_value(spec_json).expect("materialized cluster spec");
     assert_eq!(
-        endpoint_hosts(&cluster.spec),
+        endpoint_hosts(&cluster_spec),
         vec!["203.0.113.10", "203.0.113.20"]
     );
     assert_eq!(
-        cluster
-            .spec
+        cluster_spec
             .upstream_tls
             .as_ref()
             .and_then(|tls| tls.sni.as_deref()),

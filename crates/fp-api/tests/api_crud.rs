@@ -479,7 +479,17 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
-        egress_policy: Default::default(),
+        // Test destinations are private/loopback fixtures; explicitly allowlist each
+        // (ip:port) so the SSRF egress guard admits them without weakening any assertion.
+        egress_policy: fp_core::services::egress_policy::EgressPolicy::with_allowed(
+            Vec::new(),
+            vec![
+                "10.0.0.1:8080".parse().expect("addr"),
+                "10.0.0.2:9090".parse().expect("addr"),
+                "10.0.0.10:8080".parse().expect("addr"),
+                "127.0.0.1:3001".parse().expect("addr"),
+            ],
+        ),
         rls_repush: None,
         rls_grpc_configured: false,
     });
@@ -1285,7 +1295,29 @@ async fn secret_values_are_write_only_over_http() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
-        egress_policy: Default::default(),
+        // AI provider base_urls in this test are unresolvable/non-hermetic fixture hosts; pin
+        // each to a public TEST-NET IP so the egress guard admits them (assertions unchanged).
+        egress_policy: fp_core::services::egress_policy::EgressPolicy::with_static_hosts(
+            Vec::new(),
+            Vec::new(),
+            vec![
+                (
+                    "llm.example".into(),
+                    443,
+                    vec!["203.0.113.10".parse().expect("ip")],
+                ),
+                (
+                    "api.openai.com".into(),
+                    443,
+                    vec!["203.0.113.11".parse().expect("ip")],
+                ),
+                (
+                    "api2.openai.example".into(),
+                    443,
+                    vec!["203.0.113.12".parse().expect("ip")],
+                ),
+            ],
+        ),
         rls_repush: None,
         rls_grpc_configured: false,
     });

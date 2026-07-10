@@ -396,6 +396,18 @@ async fn discovery_rejects_new_samples_after_target_count() {
     .expect("first ingest");
     tx.commit().await.expect("commit first");
 
+    // Reaching target_sample_count auto-completes the session: the counter update
+    // flips status capturing -> completed in the same ingest.
+    let after_target = discovery::get(&w.pool, w.team_a.id, &session.id.to_string())
+        .await
+        .expect("get session")
+        .expect("session");
+    assert_eq!(after_target.status, DiscoverySessionStatus::Completed);
+    assert_eq!(after_target.sample_count, 1);
+
+    // A further observation is rejected by the not-capturing lifecycle guard as
+    // Conflict, BEFORE the per-sample quota path runs — so no drop is recorded.
+    // This is the real target enforcement: the session closes and refuses later samples.
     let mut tx = w.pool.begin().await.expect("second tx");
     let err = discovery::ingest_raw_observation(
         &mut tx,
@@ -404,16 +416,16 @@ async fn discovery_rejects_new_samples_after_target_count() {
         &provenance(session.id, listener_id, "api-a.example.test"),
     )
     .await
-    .expect_err("target quota");
-    assert_eq!(err.code, ErrorCode::QuotaExceeded);
-    tx.commit().await.expect("commit drop count");
+    .expect_err("completed session rejects further samples");
+    assert_eq!(err.code, ErrorCode::Conflict);
+    tx.rollback().await.expect("rollback rejected ingest");
 
     let refreshed = discovery::get(&w.pool, w.team_a.id, &session.id.to_string())
         .await
         .expect("get session")
         .expect("session");
     assert_eq!(refreshed.sample_count, 1);
-    assert_eq!(refreshed.drop_count, 1);
+    assert_eq!(refreshed.drop_count, 0);
     assert_eq!(raw_count_for_session(&w.pool, session.id).await, 1);
 }
 

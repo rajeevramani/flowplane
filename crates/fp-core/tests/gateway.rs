@@ -255,8 +255,16 @@ async fn concurrent_updates_one_wins_one_gets_revision_mismatch() {
     .expect("create");
 
     // Both writers read revision 1, then race their updates.
-    let writer_one = spec("writer-one");
-    let writer_two = spec("writer-two");
+    //
+    // The winner is identified by PORT, not host: egress IP-pinning
+    // (materialize_pinned_cluster_spec) rewrites endpoint.host to the resolved IP,
+    // and both writers resolve to the same hermetic IP (203.0.113.20), so the host
+    // field cannot discriminate which writer won. Port is preserved through pinning,
+    // so a distinct port per writer is the field that survives to prove no lost update.
+    let mut writer_one = spec("writer-one");
+    writer_one.endpoints[0].port = 8081;
+    let mut writer_two = spec("writer-two");
+    writer_two.endpoints[0].port = 8082;
     let writer_one_policy = hermetic_cluster_policy(std::slice::from_ref(&writer_one));
     let writer_two_policy = hermetic_cluster_policy(std::slice::from_ref(&writer_two));
     let (r1, r2) = tokio::join!(
@@ -281,6 +289,9 @@ async fn concurrent_updates_one_wins_one_gets_revision_mismatch() {
             &writer_two_policy
         ),
     );
+    // The winning writer is whichever call returned Ok; its port is the one that
+    // must be stored at revision 2 if no update was lost.
+    let winner_port: u16 = if r1.is_ok() { 8081 } else { 8082 };
     let outcomes = [r1, r2];
     let wins = outcomes.iter().filter(|r| r.is_ok()).count();
     let mismatches = outcomes
@@ -293,13 +304,21 @@ async fn concurrent_updates_one_wins_one_gets_revision_mismatch() {
         "exactly one writer wins, the other gets 409"
     );
 
-    // No lost update: the survivor's spec is what's stored, at revision 2.
+    // No lost update: the survivor's spec is what's stored, at revision 2. Host is
+    // pinned to the resolved egress IP; the winning writer's identity is carried by
+    // the port, which survives pinning.
     let stored = svc::get_cluster(&w.pool, &w.admin, w.team, &name, RequestId::generate())
         .await
         .expect("get");
     assert_eq!(stored.version, 2);
-    let winner_host = &stored.spec.endpoints[0].host;
-    assert!(winner_host == "writer-one" || winner_host == "writer-two");
+    assert_eq!(
+        stored.spec.endpoints[0].host, "203.0.113.20",
+        "host is pinned to the resolved egress IP"
+    );
+    assert_eq!(
+        stored.spec.endpoints[0].port, winner_port,
+        "stored spec is the winning writer's, not a lost update"
+    );
 }
 
 #[tokio::test]
@@ -876,16 +895,22 @@ mod expose_shortcut {
         let count = 8;
         let barrier = Arc::new(Barrier::new(count));
         let mut tasks = Vec::new();
+        // The loopback expose upstream is deny-by-default under the SSRF egress guard;
+        // allowlist exactly that destination so the test exercises concurrent auto-port
+        // allocation, not egress validation.
+        let egress =
+            EgressPolicy::with_allowed(Vec::new(), vec!["127.0.0.1:3001".parse().expect("addr")]);
 
         for _ in 0..count {
             let pool = w.pool.clone();
             let ctx = w.admin.clone();
             let team = w.team;
             let barrier = Arc::clone(&barrier);
+            let egress = egress.clone();
             let name = unique("expose");
             tasks.push(tokio::spawn(async move {
                 barrier.wait().await;
-                exp::expose(
+                exp::expose_with_egress_policy(
                     &pool,
                     &ctx,
                     team,
@@ -897,6 +922,7 @@ mod expose_shortcut {
                         public_base_url: None,
                     },
                     RequestId::generate(),
+                    &egress,
                 )
                 .await
             }));

@@ -2209,7 +2209,18 @@ mod tests {
         )
         .await
         .expect("secret");
-        let provider = fp_core::services::ai::create_provider(
+        // Provider base_url "https://upstream.example" is an unresolvable fixture host; pin it
+        // to a public TEST-NET IP so the SSRF egress guard admits provider + materialization.
+        let egress = EgressPolicy::with_static_hosts(
+            Vec::new(),
+            Vec::new(),
+            vec![(
+                "upstream.example".into(),
+                443,
+                vec!["203.0.113.10".parse::<IpAddr>().unwrap()],
+            )],
+        );
+        let provider = fp_core::services::ai::create_provider_with_egress_policy(
             &pool,
             &ctx,
             team,
@@ -2223,6 +2234,7 @@ mod tests {
                 auth_header: "authorization".into(),
             },
             RequestId::generate(),
+            &egress,
         )
         .await
         .expect("provider");
@@ -2231,7 +2243,7 @@ mod tests {
         // PostgreSQL, not a bound socket, but uniqueness keeps parallel runs disjoint.
         let port = 20000 + (uuid::Uuid::now_v7().as_u128() % 10_000) as u16;
         let route_name = unique("ai-route");
-        fp_core::services::ai::create_route(
+        fp_core::services::ai::create_route_with_egress_policy(
             &pool,
             &ctx,
             team,
@@ -2248,6 +2260,7 @@ mod tests {
                 }],
             },
             RequestId::generate(),
+            &egress,
         )
         .await
         .expect("ai route");
@@ -2465,7 +2478,18 @@ mod tests {
         )
         .await
         .expect("secret");
-        let provider = fp_core::services::ai::create_provider(
+        // Provider base_url "https://upstream.example" is an unresolvable fixture host; pin it
+        // to a public TEST-NET IP so the SSRF egress guard admits provider creation.
+        let egress = EgressPolicy::with_static_hosts(
+            Vec::new(),
+            Vec::new(),
+            vec![(
+                "upstream.example".into(),
+                443,
+                vec!["203.0.113.10".parse::<IpAddr>().unwrap()],
+            )],
+        );
+        let provider = fp_core::services::ai::create_provider_with_egress_policy(
             &pool,
             &ctx,
             team,
@@ -2479,6 +2503,7 @@ mod tests {
                 auth_header: "authorization".into(),
             },
             RequestId::generate(),
+            &egress,
         )
         .await
         .expect("provider");
