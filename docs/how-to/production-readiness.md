@@ -12,6 +12,7 @@ This is the operator entry point for a production-shaped Flowplane deployment. I
 - Platform evaluation sequence: [`evaluate-platform.md`](evaluate-platform.md)
 - Observability baseline: [`../reference/observability-alerts.md`](../reference/observability-alerts.md)
 - Configuration reference: [`../reference/configuration.md`](../reference/configuration.md)
+- **Dataplane egress / SSRF posture (required)**: [`dataplane-egress-security.md`](dataplane-egress-security.md)
 
 ## Deployment Shape
 
