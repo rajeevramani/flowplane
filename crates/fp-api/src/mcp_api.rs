@@ -2326,6 +2326,7 @@ mod tests {
             write_throttle: std::sync::Arc::new(crate::throttle::WriteThrottle::new(1000)),
             xds_readiness: None,
             discovery_forwarding_policy: Default::default(),
+            egress_advisory: Default::default(),
             rls_repush: None,
             rls_grpc_configured: false,
         }

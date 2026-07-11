@@ -193,6 +193,10 @@ pub async fn run() -> anyhow::Result<()> {
     let discovery_forwarding_policy =
         fp_core::services::discovery::DiscoveryForwardingPolicy::from_server_config(&config).await;
 
+    // Write-time egress advisory (FP-DEC-0008): logs its own startup warning when disabled.
+    let egress_advisory =
+        fp_core::services::egress_advisory::EgressAdvisoryPolicy::from_server_config(&config).await;
+
     // CP→RLS policy sync (S5): when the RLS admin URL is set, run the 60 s reconcile worker and
     // expose a force-repush kick. The first reconcile fires immediately at startup.
     let rls_repush = if let Some(admin_url) = config.rls_admin_url.clone() {
@@ -240,6 +244,7 @@ pub async fn run() -> anyhow::Result<()> {
             failed: xds_consumer_failed,
         }),
         discovery_forwarding_policy,
+        egress_advisory,
         rls_repush,
         rls_grpc_configured: config.rls_grpc_url.is_some(),
     };

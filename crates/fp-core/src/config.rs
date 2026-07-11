@@ -71,6 +71,14 @@ pub struct ServerConfig {
     /// (S6). All three paths come together or not at all (see `resolve`). `None` => the built-in
     /// cluster dials the RLS in plaintext h2c (dev only). Env `FLOWPLANE_DATAPLANE_TLS_*`.
     pub dataplane_tls: Option<DataplaneTlsConfig>,
+    /// Write-time egress advisory (FP-DEC-0008): tenant-authored upstream hosts that currently
+    /// resolve into the protected destination set are rejected at create/update. Operator-only
+    /// knob; default on. Env `FLOWPLANE_EGRESS_ADVISORY_ENABLED`.
+    pub egress_advisory_enabled: bool,
+    /// Operator-supplied infra CIDRs for the advisory deny set — the authoritative source for
+    /// the CP/xDS routable ranges (listener binds are usually `0.0.0.0` and cannot provide
+    /// them). Comma-separated in env `FLOWPLANE_EGRESS_ADVISORY_DENIED_CIDRS`.
+    pub egress_advisory_denied_cidrs: Vec<crate::services::egress_advisory::Cidr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,6 +156,16 @@ struct FileConfig {
     dataplane_tls_cert: Option<String>,
     dataplane_tls_key: Option<String>,
     dataplane_tls_client_ca: Option<String>,
+    egress_advisory: Option<FileEgressAdvisory>,
+}
+
+/// `[egress_advisory]` TOML section (FP-DEC-0008 advisory knobs).
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileEgressAdvisory {
+    enabled: Option<bool>,
+    /// Comma-separated CIDR list (same syntax as the env var).
+    infra_denied_cidrs: Option<String>,
 }
 
 const DEFAULT_API_ADDR: &str = "0.0.0.0:8080";
@@ -411,6 +429,40 @@ impl ServerConfig {
             }
         };
 
+        let egress_advisory_enabled = match get("FLOWPLANE_EGRESS_ADVISORY_ENABLED") {
+            Some(raw) => parse_bool("FLOWPLANE_EGRESS_ADVISORY_ENABLED", raw)?,
+            None => file
+                .egress_advisory
+                .as_ref()
+                .and_then(|s| s.enabled)
+                .unwrap_or(true),
+        };
+
+        let egress_advisory_denied_cidrs = {
+            let raw = get("FLOWPLANE_EGRESS_ADVISORY_DENIED_CIDRS")
+                .map(str::to_owned)
+                .or(file
+                    .egress_advisory
+                    .as_ref()
+                    .and_then(|s| s.infra_denied_cidrs.clone()));
+            match raw {
+                Some(raw) => raw
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|entry| !entry.is_empty())
+                    .map(|entry| {
+                        entry.parse().map_err(|e: DomainError| {
+                            DomainError::invalid_config(format!(
+                                "FLOWPLANE_EGRESS_ADVISORY_DENIED_CIDRS: {}",
+                                e.message
+                            ))
+                        })
+                    })
+                    .collect::<DomainResult<Vec<_>>>()?,
+                None => Vec::new(),
+            }
+        };
+
         Ok(Self {
             api_addr,
             xds_addr,
@@ -431,6 +483,8 @@ impl ServerConfig {
             rls_reconcile_secs,
             rls_grpc_url,
             dataplane_tls,
+            egress_advisory_enabled,
+            egress_advisory_denied_cidrs,
         })
     }
 }
@@ -487,6 +541,62 @@ mod tests {
             err.is_err(),
             "D-008: no TLS and no explicit insecure opt-in must fail"
         );
+    }
+
+    #[test]
+    fn egress_advisory_defaults_on_and_parses_cidrs() {
+        // Default: enabled, empty deny CIDRs.
+        let cfg = ServerConfig::resolve(&base_env(), FileConfig::default()).expect("resolves");
+        assert!(cfg.egress_advisory_enabled);
+        assert!(cfg.egress_advisory_denied_cidrs.is_empty());
+
+        // Env parses a comma-separated list (whitespace tolerated).
+        let mut env = base_env();
+        env.insert(
+            "FLOWPLANE_EGRESS_ADVISORY_DENIED_CIDRS".into(),
+            "10.20.0.0/16, 192.0.2.7 ,fd00:1::/64".into(),
+        );
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+        assert_eq!(cfg.egress_advisory_denied_cidrs.len(), 3);
+
+        // Env disables; overrides a file enable.
+        let mut env = base_env();
+        env.insert("FLOWPLANE_EGRESS_ADVISORY_ENABLED".into(), "false".into());
+        let file = FileConfig {
+            egress_advisory: Some(FileEgressAdvisory {
+                enabled: Some(true),
+                infra_denied_cidrs: None,
+            }),
+            ..FileConfig::default()
+        };
+        let cfg = ServerConfig::resolve(&env, file).expect("resolves");
+        assert!(!cfg.egress_advisory_enabled);
+
+        // File-only values apply when env is silent, via the [egress_advisory] TOML section.
+        let file: FileConfig = toml::from_str(
+            "[egress_advisory]\nenabled = false\ninfra_denied_cidrs = \"172.16.0.0/12\"\n",
+        )
+        .expect("section TOML parses");
+        let cfg = ServerConfig::resolve(&base_env(), file).expect("resolves");
+        assert!(!cfg.egress_advisory_enabled);
+        assert_eq!(cfg.egress_advisory_denied_cidrs.len(), 1);
+    }
+
+    #[test]
+    fn egress_advisory_rejects_invalid_cidrs_at_boot() {
+        let mut env = base_env();
+        env.insert(
+            "FLOWPLANE_EGRESS_ADVISORY_DENIED_CIDRS".into(),
+            "10.0.0.0/8,not-a-cidr".into(),
+        );
+        let err = ServerConfig::resolve(&env, FileConfig::default())
+            .expect_err("invalid CIDR must fail boot");
+        assert_eq!(err.code, fp_domain::ErrorCode::InvalidConfig);
+        assert!(err.message.contains("EGRESS_ADVISORY_DENIED_CIDRS"));
+
+        let mut env = base_env();
+        env.insert("FLOWPLANE_EGRESS_ADVISORY_ENABLED".into(), "maybe".into());
+        assert!(ServerConfig::resolve(&env, FileConfig::default()).is_err());
     }
 
     #[test]
