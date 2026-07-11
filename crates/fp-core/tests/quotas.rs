@@ -448,6 +448,7 @@ async fn ai_route_materialization_cleans_clusters_after_partial_quota_failure() 
             &unique(&format!("near-quota-{i}")),
             cluster_spec(&format!("existing-{i}.example")),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("seed cluster");
@@ -477,6 +478,7 @@ async fn ai_route_materialization_cleans_clusters_after_partial_quota_failure() 
             auth_header: "authorization".into(),
         },
         RequestId::generate(),
+        Default::default(),
     )
     .await
     .expect("provider a");
@@ -494,6 +496,7 @@ async fn ai_route_materialization_cleans_clusters_after_partial_quota_failure() 
             auth_header: "authorization".into(),
         },
         RequestId::generate(),
+        Default::default(),
     )
     .await
     .expect("provider b");

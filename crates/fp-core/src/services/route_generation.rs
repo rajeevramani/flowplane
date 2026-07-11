@@ -115,7 +115,17 @@ pub async fn apply_plan(
     team: TeamRef,
     plan_id: RouteGenerationPlanId,
     request_id: RequestId,
+    advisory: crate::services::egress_advisory::EgressAdvisoryPolicy,
 ) -> DomainResult<AppliedRoutePlan> {
+    // Authorize the full apply up front (it creates a cluster, route config, and listener) —
+    // an unauthorized caller must get the authz denial, not advisory side effects.
+    for resource in [
+        Resource::Clusters,
+        Resource::RouteConfigs,
+        Resource::Listeners,
+    ] {
+        authorize(pool, ctx, resource, Action::Create, team, request_id).await?;
+    }
     let plan = route_generation::get(pool, team.id, plan_id)
         .await?
         .ok_or_else(|| DomainError::not_found("route generation plan", &plan_id.to_string()))?;
@@ -129,6 +139,26 @@ pub async fn apply_plan(
             "route generation plan has blocking conflicts",
         ));
     }
+    // Path-specific egress advisory (fpv2-1hp.4): a learned/generated hostname is checked with
+    // the route-generation mutation label before anything is applied; the inner cluster create
+    // re-checks as defense-in-depth. The policy comes from ServerConfig via AppState — never
+    // from call-site env reads (finding 13/A5 satisfied by construction).
+    advisory
+        .enforce_hosts(
+            pool,
+            ctx,
+            request_id,
+            team,
+            "route_generation.apply",
+            &format!("route-plans/{plan_id}"),
+            plan.plan
+                .cluster_spec
+                .endpoints
+                .iter()
+                .map(|e| e.host.clone())
+                .collect(),
+        )
+        .await?;
     let mut tx = pool.begin().await.map_err(crate::services::db_err(
         "validate route generation plan approval: begin",
     ))?;
@@ -151,6 +181,7 @@ pub async fn apply_plan(
         &plan.plan.cluster_name,
         plan.plan.cluster_spec.clone(),
         request_id,
+        advisory.clone(),
     )
     .await?;
     let route_config = match gateway::create_route_config(

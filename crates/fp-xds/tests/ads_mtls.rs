@@ -339,6 +339,7 @@ async fn registry_binds_team_and_revocation_kills_live_stream() {
         &unique("upstream"),
         cluster_spec("10.1.0.1"),
         RequestId::generate(),
+        Default::default(),
     )
     .await
     .expect("cluster");

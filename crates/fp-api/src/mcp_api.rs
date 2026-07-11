@@ -942,6 +942,7 @@ async fn execute_static_tool(
                 string_arg(&arguments, "name")?,
                 spec,
                 rid,
+                state.egress_advisory.clone(),
             )
             .await?;
             serde_json::to_value(item).map_err(json_err)
@@ -959,6 +960,7 @@ async fn execute_static_tool(
                 integer_arg(&arguments, "revision")
                     .ok_or_else(|| DomainError::validation("revision is required"))?,
                 rid,
+                state.egress_advisory.clone(),
             )
             .await?;
             serde_json::to_value(item).map_err(json_err)
@@ -2326,6 +2328,7 @@ mod tests {
             write_throttle: std::sync::Arc::new(crate::throttle::WriteThrottle::new(1000)),
             xds_readiness: None,
             discovery_forwarding_policy: Default::default(),
+            egress_advisory: Default::default(),
             rls_repush: None,
             rls_grpc_configured: false,
         }

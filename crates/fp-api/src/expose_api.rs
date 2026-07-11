@@ -114,6 +114,7 @@ pub async fn expose(
                 public_base_url: body.public_base_url,
             },
             rid,
+            state.egress_advisory.clone(),
         )
         .await
     };

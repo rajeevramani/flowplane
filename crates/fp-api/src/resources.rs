@@ -340,7 +340,8 @@ endpoints!(clusters, "clusters", "Clusters",
     view: ClusterView, create: CreateClusterBody, update: UpdateClusterBody,
     svc_create: cluster_svc::create_cluster, svc_get: cluster_svc::get_cluster,
     svc_list: cluster_svc::list_clusters, svc_update: cluster_svc::update_cluster,
-    svc_delete: cluster_svc::delete_cluster);
+    svc_delete: cluster_svc::delete_cluster,
+    rls: egress_advisory);
 
 endpoints!(listeners, "listeners", "Listeners",
     view: ListenerView, create: CreateListenerBody, update: UpdateListenerBody,

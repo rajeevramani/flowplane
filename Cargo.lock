@@ -942,6 +942,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-opentelemetry",
+ "tracing-subscriber",
  "uuid",
 ]
 

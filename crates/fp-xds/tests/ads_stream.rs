@@ -106,6 +106,7 @@ async fn subscribe_receive_ack_and_live_push() {
         &upstream,
         cluster_spec("10.0.0.1"),
         RequestId::generate(),
+        Default::default(),
     )
     .await
     .expect("cluster");
@@ -189,6 +190,7 @@ async fn subscribe_receive_ack_and_live_push() {
         new_spec,
         1,
         RequestId::generate(),
+        Default::default(),
     )
     .await
     .expect("update");
@@ -267,6 +269,7 @@ async fn nack_quarantines_offender_and_pushes_corrected_set() {
         &good,
         cluster_spec("10.0.0.1"),
         RequestId::generate(),
+        Default::default(),
     )
     .await
     .expect("cluster");
@@ -341,6 +344,7 @@ async fn nack_quarantines_offender_and_pushes_corrected_set() {
         &bad,
         cluster_spec("10.0.0.66"),
         RequestId::generate(),
+        Default::default(),
     )
     .await
     .expect("bad cluster");
@@ -420,6 +424,7 @@ async fn nack_quarantines_offender_and_pushes_corrected_set() {
         fixed_spec,
         1,
         RequestId::generate(),
+        Default::default(),
     )
     .await
     .expect("fix");
@@ -480,6 +485,7 @@ async fn subscription_change_echoing_last_nonce_is_answered() {
         &upstream,
         cluster_spec("10.0.0.1"),
         RequestId::generate(),
+        Default::default(),
     )
     .await
     .expect("cluster");

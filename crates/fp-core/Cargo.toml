@@ -39,6 +39,8 @@ tracing = { workspace = true }
 rsa = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }
+# Unit test: capture the egress-advisory disabled startup warning (services/egress_advisory.rs).
+tracing-subscriber = { workspace = true }
 # Integration test: private-CA OIDC IdP over HTTPS (tests/oidc_ca_bundle.rs).
 # rcgen mints a throwaway CA + a SAN leaf cert; axum/axum-server serve the
 # discovery + JWKS endpoints over rustls; jsonwebtoken/rsa sign tokens.

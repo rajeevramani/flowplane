@@ -13,7 +13,7 @@ use fp_domain::gateway::route_config::{
 use fp_domain::{validate_name, DiscoverySessionId, DomainError, DomainResult, RequestId};
 use fp_storage::repos::{audit, clusters, discovery, gateway};
 use sqlx::PgPool;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 
 #[derive(Debug, Clone)]
 pub struct StartDiscoveryInput {
@@ -49,7 +49,12 @@ impl DiscoveryForwardingPolicy {
     }
 
     pub async fn from_server_config(config: &crate::config::ServerConfig) -> Self {
-        let mut denied = vec![config.api_addr, config.xds_addr];
+        // Concrete binds only (fpv2-1hp.5): an unspecified bind (0.0.0.0 / ::) does not
+        // identify the CP's routable addresses and is already a protected destination.
+        let mut denied: Vec<SocketAddr> = [config.api_addr, config.xds_addr]
+            .into_iter()
+            .filter(|addr| !addr.ip().is_unspecified())
+            .collect();
         if let Some((host, port)) = postgres_host_port(&config.database_url) {
             if let Ok(addrs) = tokio::net::lookup_host((host.as_str(), port)).await {
                 denied.extend(addrs);
@@ -438,76 +443,37 @@ fn canonical_ip(ip: IpAddr) -> IpAddr {
     }
 }
 
+/// fpv2-1hp.5 (FP-DEC-0008 / constitution inv. 19): discovery forwarding denies the shared
+/// minimal protected set — configured Flowplane destinations, metadata/credential endpoints,
+/// loopback, link-local, special ranges, and 6to4/NAT64 forms embedding a protected IPv4 —
+/// and nothing else. Tenant private (RFC 1918 / IPv6 ULA), NAT64-mapped public, and public
+/// destinations are legitimate discovery upstreams. The former blanket `is_private()` /
+/// `fc00::/7` / whole-prefix 6to4/NAT64 denials are gone.
 fn deny_reason(ip: &IpAddr, port: u16, policy: &DiscoveryForwardingPolicy) -> Option<&'static str> {
+    // Match configured Flowplane destinations against every address a connection to `ip` can
+    // deliver to — including the embedded IPv4 of a 6to4/NAT64 answer — so wrapping an infra
+    // address in an IPv6 tunnel prefix cannot bypass an exact-match deny.
+    let candidates = crate::services::egress_advisory::delivery_candidates(*ip);
     if policy
         .denied_destinations
         .iter()
-        .any(|addr| addr.ip() == *ip && addr.port() == port)
+        .any(|addr| addr.port() == port && candidates.contains(&addr.ip()))
     {
         return Some("denied_flowplane_destination");
     }
-    if always_denied_destination(ip) {
-        return Some("denied_internal_destination");
-    }
-    if policy
+    let allowlisted = policy
         .allowed_destinations
         .iter()
-        .any(|addr| addr.ip() == *ip && addr.port() == port)
-    {
-        return None;
+        .any(|addr| addr.ip() == *ip && addr.port() == port);
+    match crate::services::egress_advisory::protected_destination(*ip) {
+        // Loopback keeps its pre-relax allowlist escape: FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS
+        // could always admit a local dev target, and still can.
+        Some("loopback") if allowlisted => None,
+        Some(_) => Some("denied_internal_destination"),
+        // Everything else — tenant private (RFC 1918 / ULA), NAT64-mapped public, public — is
+        // an allowed discovery upstream without needing an allowlist entry.
+        None => None,
     }
-    match ip {
-        IpAddr::V4(ip) => {
-            if ip.is_loopback() || ip.is_private() {
-                Some("denied_internal_destination")
-            } else {
-                None
-            }
-        }
-        IpAddr::V6(ip) => {
-            if ip.is_loopback() {
-                Some("denied_internal_destination")
-            } else {
-                None
-            }
-        }
-    }
-}
-
-fn always_denied_destination(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            ip.is_link_local()
-                || ip.is_multicast()
-                || ip.is_unspecified()
-                || *ip == Ipv4Addr::new(169, 254, 169, 254)
-        }
-        IpAddr::V6(ip) => {
-            ip.is_unspecified()
-                || ip.is_multicast()
-                || is_ipv6_link_local(ip)
-                || is_ipv6_unique_local(ip)
-                || is_6to4(ip)
-                || is_nat64_well_known(ip)
-                || *ip == Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254)
-        }
-    }
-}
-
-fn is_ipv6_link_local(ip: &Ipv6Addr) -> bool {
-    (ip.segments()[0] & 0xffc0) == 0xfe80
-}
-
-fn is_ipv6_unique_local(ip: &Ipv6Addr) -> bool {
-    (ip.segments()[0] & 0xfe00) == 0xfc00
-}
-
-fn is_6to4(ip: &Ipv6Addr) -> bool {
-    ip.segments()[0] == 0x2002
-}
-
-fn is_nat64_well_known(ip: &Ipv6Addr) -> bool {
-    ip.segments()[0] == 0x0064 && ip.segments()[1] == 0xff9b
 }
 
 struct GatewayResourceEvents<'a> {
@@ -627,6 +593,7 @@ fn mutation_audit(
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
 
     #[test]
     fn canonicalizes_ipv4_mapped_ipv6_before_deny_checks() {
@@ -637,17 +604,49 @@ mod tests {
     }
 
     #[test]
-    fn denies_embedded_address_prefixes_until_extraction_exists() {
+    fn embedded_ipv4_forms_deny_by_extraction_not_prefix() {
+        // fpv2-1hp.5: 6to4/NAT64 are no longer blanket-denied — the embedded IPv4 is checked.
         let policy = DiscoveryForwardingPolicy::default();
+        // Embedded metadata endpoint (169.254.169.254) → denied.
         assert!(
-            deny_reason(&"2002:0808:0808::1".parse::<IpAddr>().unwrap(), 80, &policy).is_some()
+            deny_reason(&"2002:a9fe:a9fe::1".parse::<IpAddr>().unwrap(), 80, &policy).is_some()
+        );
+        assert!(deny_reason(
+            &"64:ff9b::a9fe:a9fe".parse::<IpAddr>().unwrap(),
+            80,
+            &policy
+        )
+        .is_some());
+        // Embedded public address (8.8.8.8) → allowed.
+        assert!(
+            deny_reason(&"2002:0808:0808::1".parse::<IpAddr>().unwrap(), 80, &policy).is_none()
         );
         assert!(deny_reason(
             &"64:ff9b::0808:0808".parse::<IpAddr>().unwrap(),
             80,
             &policy
         )
-        .is_some());
+        .is_none());
+    }
+
+    #[test]
+    fn tenant_private_and_ula_destinations_are_allowed_without_allowlist() {
+        // fpv2-1hp.5 (inv. 19): the blanket is_private()/fc00::/7 denials are gone.
+        let policy = DiscoveryForwardingPolicy::default();
+        for allowed in ["10.1.2.3", "172.16.0.9", "192.168.1.1", "fd12:3456:789a::1"] {
+            assert_eq!(
+                deny_reason(&allowed.parse::<IpAddr>().unwrap(), 8080, &policy),
+                None,
+                "{allowed} must be an allowed discovery upstream"
+            );
+        }
+        // The protected set stays denied.
+        for denied in ["169.254.170.2", "fd00:ec2::254", "fe80::1", "127.0.0.1"] {
+            assert!(
+                deny_reason(&denied.parse::<IpAddr>().unwrap(), 8080, &policy).is_some(),
+                "{denied} must stay denied"
+            );
+        }
     }
 
     #[test]
@@ -659,6 +658,22 @@ mod tests {
             Some("denied_flowplane_destination")
         );
         assert_eq!(deny_reason(&ip, 5433, &policy), None);
+
+        // A 6to4/NAT64 answer wrapping the configured infra address (same port) must not
+        // bypass the exact-match deny (fpv2-1hp.5 HUMAN-GATE review).
+        // 203.0.113.10 = 0xCB00710A.
+        let sixtofour = "2002:cb00:710a::1".parse::<IpAddr>().unwrap();
+        assert_eq!(
+            deny_reason(&sixtofour, 5432, &policy),
+            Some("denied_flowplane_destination")
+        );
+        let nat64 = "64:ff9b::cb00:710a".parse::<IpAddr>().unwrap();
+        assert_eq!(
+            deny_reason(&nat64, 5432, &policy),
+            Some("denied_flowplane_destination")
+        );
+        // Different port through the wrapper is still not the configured destination.
+        assert_eq!(deny_reason(&nat64, 5433, &policy), None);
     }
 
     #[test]
