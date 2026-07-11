@@ -2,9 +2,9 @@
 //! This is intentionally not a second resource model; the durable state remains the three
 //! gateway resources that xDS already understands.
 
-use crate::authz::PrincipalCtx;
-use crate::services::{clusters, gateway};
-use fp_domain::authz::TeamRef;
+use crate::authz::{check_resource_access, Decision, PrincipalCtx};
+use crate::services::{clusters, gateway, record_authz_denial};
+use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::gateway::cluster::{Cluster, ClusterSpec, Endpoint, UpstreamTlsConfig};
 use fp_domain::gateway::listener::{Listener, ListenerProtocol, ListenerSpec};
 use fp_domain::gateway::route_config::{
@@ -18,6 +18,23 @@ use std::collections::BTreeSet;
 const DEFAULT_PORT_START: u16 = 10_000;
 const DEFAULT_PORT_END: u16 = 10_999;
 const DEFAULT_PORT_ATTEMPTS: usize = (DEFAULT_PORT_END - DEFAULT_PORT_START + 1) as usize;
+
+async fn authorize(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    resource: Resource,
+    action: Action,
+    team: TeamRef,
+    request_id: RequestId,
+) -> DomainResult<()> {
+    match check_resource_access(ctx, resource, action, Some(team)) {
+        Decision::Allow(_) => Ok(()),
+        Decision::Deny(reason) => {
+            record_authz_denial(pool, ctx, request_id, resource, action, Some(team), reason).await;
+            Err(crate::services::deny_to_error(resource, action, reason))
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ExposeRequest {
@@ -70,12 +87,37 @@ pub async fn expose(
     team: TeamRef,
     request: ExposeRequest,
     request_id: RequestId,
+    advisory: crate::services::egress_advisory::EgressAdvisoryPolicy,
 ) -> DomainResult<ExposedService> {
+    // Authorize the full shortcut up front (it creates a cluster, route config, and listener) —
+    // an unauthorized caller must get the authz denial, not advisory side effects (DNS lookups /
+    // rejection audit rows).
+    for resource in [
+        Resource::Clusters,
+        Resource::RouteConfigs,
+        Resource::Listeners,
+    ] {
+        authorize(pool, ctx, resource, Action::Create, team, request_id).await?;
+    }
     fp_domain::validate_name(&request.name)?;
     let upstream = parse_upstream(&request.upstream)?;
     let path = normalize_path(&request.path)?;
     let names = ExposeNames::new(&request.name);
     let public_base_url = request.public_base_url;
+
+    // Path-specific egress advisory (fpv2-1hp.4): after authz, before any resource is created,
+    // with the expose mutation label; the inner cluster create re-checks as defense-in-depth.
+    advisory
+        .enforce_hosts(
+            pool,
+            ctx,
+            request_id,
+            team,
+            "expose.create",
+            &format!("expose/{}", request.name),
+            vec![upstream.host.clone()],
+        )
+        .await?;
 
     let cluster_spec = ClusterSpec {
         aggregate_clusters: Vec::new(),
@@ -143,7 +185,9 @@ pub async fn expose(
             Some(port) => port,
             None => allocate_port(pool, ctx, team, request_id).await?,
         };
-        match create_resources_for_port(pool, ctx, team, &template, port, request_id).await {
+        match create_resources_for_port(pool, ctx, team, &template, port, request_id, &advisory)
+            .await
+        {
             Ok((cluster, route_config, listener)) => {
                 let curl_url = listener
                     .spec
@@ -190,6 +234,7 @@ async fn create_resources_for_port(
     template: &ExposeTemplate,
     port: u16,
     request_id: RequestId,
+    advisory: &crate::services::egress_advisory::EgressAdvisoryPolicy,
 ) -> DomainResult<(Cluster, RouteConfig, Listener)> {
     let listener_spec = ListenerSpec {
         address: "0.0.0.0".into(),
@@ -209,9 +254,7 @@ async fn create_resources_for_port(
         &template.names.cluster,
         template.cluster_spec.clone(),
         request_id,
-        // fpv2-1hp.4 threads the real advisory policy through the expose path with its own
-        // `expose.create` rejection audit; until then this path is not advisory-gated.
-        Default::default(),
+        advisory.clone(),
     )
     .await?;
     let route_config = match gateway::create_route_config(

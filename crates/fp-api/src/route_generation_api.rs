@@ -114,6 +114,7 @@ pub async fn apply_route_plan(
             team,
             RouteGenerationPlanId::from(plan_id),
             rid,
+            state.egress_advisory.clone(),
         )
         .await
     };

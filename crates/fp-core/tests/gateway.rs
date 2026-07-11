@@ -619,6 +619,7 @@ mod expose_shortcut {
                         public_base_url: None,
                     },
                     RequestId::generate(),
+                    Default::default(),
                 )
                 .await
             }));
