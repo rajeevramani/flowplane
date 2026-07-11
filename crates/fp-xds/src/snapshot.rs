@@ -1331,6 +1331,7 @@ mod tests {
             &upstream,
             cluster_spec("10.0.0.1"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("a cluster");
@@ -1372,6 +1373,7 @@ mod tests {
             &unique("other"),
             cluster_spec("10.9.9.9"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("b cluster");
@@ -1424,6 +1426,7 @@ mod tests {
             cluster_spec("10.0.0.2"),
             1,
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("update");
@@ -1480,6 +1483,7 @@ mod tests {
             &cluster_a,
             cluster_spec("10.0.0.1"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("a cluster");
@@ -1490,6 +1494,7 @@ mod tests {
             &cluster_b,
             cluster_spec("10.0.0.2"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("b cluster");
@@ -1697,6 +1702,7 @@ mod tests {
             &unique("other"),
             cluster_spec("10.9.9.9"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("b cluster");
@@ -1741,6 +1747,7 @@ mod tests {
             &good_cluster,
             cluster_spec("10.0.0.1"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("good cluster");
@@ -1814,6 +1821,7 @@ mod tests {
             &unique("other"),
             cluster_spec("10.9.9.9"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("b cluster");
@@ -1888,6 +1896,7 @@ mod tests {
             &upstream,
             cluster_spec("10.0.0.1"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("cluster");
@@ -1912,6 +1921,7 @@ mod tests {
             cluster_spec("10.0.0.2"),
             1,
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("update");
@@ -1963,6 +1973,7 @@ mod tests {
             cluster_spec("10.0.0.3"),
             2,
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("fix");

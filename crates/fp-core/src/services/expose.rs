@@ -209,6 +209,9 @@ async fn create_resources_for_port(
         &template.names.cluster,
         template.cluster_spec.clone(),
         request_id,
+        // fpv2-1hp.4 threads the real advisory policy through the expose path with its own
+        // `expose.create` rejection audit; until then this path is not advisory-gated.
+        Default::default(),
     )
     .await?;
     let route_config = match gateway::create_route_config(

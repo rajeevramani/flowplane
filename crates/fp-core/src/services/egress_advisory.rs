@@ -197,17 +197,15 @@ impl EgressAdvisoryPolicy {
         }
         match self.denial_reason(ip) {
             None => Ok(()),
-            Some(reason) => Err(DomainError::validation(format!(
-                "upstream host \"{host}\" resolves to a protected destination ({ip}: {reason}); \
-                 tenant upstreams may not target cloud metadata, loopback, or Flowplane \
-                 infrastructure addresses"
-            ))),
+            Some(reason) => Err(denied_error(host, ip, reason, &[ip])),
         }
     }
 
     /// Advisory check for a tenant-authored host: an IP literal is checked directly; a hostname
     /// is resolved now and **every** answer must be allowed (mixed answers reject). Resolution
-    /// failure rejects — the advisory cannot vouch for a host it cannot resolve.
+    /// failure rejects — the advisory cannot vouch for a host it cannot resolve. A denial error
+    /// carries the **full** resolved-address set in `details.resolved_addresses` (the audit
+    /// evidence contract), not just the offending answer.
     pub async fn check_host(&self, host: &str) -> DomainResult<()> {
         if !self.enabled {
             return Ok(());
@@ -222,6 +220,12 @@ impl EgressAdvisoryPolicy {
                     "upstream host \"{host}\" did not resolve ({error}); the egress advisory \
                      rejects hosts it cannot resolve"
                 ))
+                .with_details(serde_json::json!({
+                    "class": "egress_advisory_denied",
+                    "host": host,
+                    "reason": "resolution_failed",
+                    "resolved_addresses": [],
+                }))
             })?
             .map(|a| a.ip())
             .collect();
@@ -229,13 +233,92 @@ impl EgressAdvisoryPolicy {
             return Err(DomainError::validation(format!(
                 "upstream host \"{host}\" resolved to no addresses; the egress advisory rejects \
                  hosts it cannot resolve"
-            )));
+            ))
+            .with_details(serde_json::json!({
+                "class": "egress_advisory_denied",
+                "host": host,
+                "reason": "resolution_failed",
+                "resolved_addresses": [],
+            })));
         }
-        for ip in addrs {
-            self.check_ip(host, ip)?;
+        // Any-match: the first denied answer rejects, and the error evidence keeps ALL answers
+        // (a mixed-answer rebind attempt is visible in the audit record).
+        if let Some((ip, reason)) = addrs
+            .iter()
+            .find_map(|ip| self.denial_reason(*ip).map(|reason| (*ip, reason)))
+        {
+            return Err(denied_error(host, ip, reason, &addrs));
         }
         Ok(())
     }
+
+    /// Gate a mutation on its tenant-authored upstream hosts. On the first denied host a
+    /// **rejection audit record** is written in its own short transaction — the mutation
+    /// transaction never opens, so the record survives the rejected mutation — and the
+    /// validation error is returned. `mutation` is the mutation path (`cluster.create`, …);
+    /// `resource` matches the mutation-audit resource string (`clusters/<name>`, …).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn enforce_hosts(
+        &self,
+        pool: &sqlx::PgPool,
+        ctx: &crate::authz::PrincipalCtx,
+        request_id: fp_domain::RequestId,
+        team: fp_domain::authz::TeamRef,
+        mutation: &str,
+        resource: &str,
+        hosts: Vec<String>,
+    ) -> DomainResult<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        for host in hosts {
+            if let Err(err) = self.check_host(&host).await {
+                let (actor_type, actor_id) = crate::services::actor_of(ctx);
+                let mut detail = err
+                    .details
+                    .clone()
+                    .unwrap_or_else(|| serde_json::json!({"class": "egress_advisory_denied"}));
+                if let Some(map) = detail.as_object_mut() {
+                    map.insert("mutation".into(), serde_json::json!(mutation));
+                }
+                fp_storage::repos::audit::record_best_effort(
+                    pool,
+                    &fp_storage::repos::audit::AuditEntry {
+                        request_id: Some(request_id),
+                        actor_type,
+                        actor_id,
+                        actor_label: String::new(),
+                        surface: fp_storage::repos::audit::Surface::Rest,
+                        action: "egress_advisory.denied".into(),
+                        resource: resource.into(),
+                        org_id: Some(team.org_id),
+                        team_id: Some(team.id),
+                        outcome: fp_storage::repos::audit::Outcome::Denied,
+                        detail,
+                    },
+                )
+                .await;
+                return Err(err);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The advisory denial error: names the offending answer and carries the full resolved set as
+/// structured evidence (`details.resolved_addresses`) for the rejection audit record.
+fn denied_error(host: &str, ip: IpAddr, reason: &str, resolved: &[IpAddr]) -> DomainError {
+    DomainError::validation(format!(
+        "upstream host \"{host}\" resolves to a protected destination ({ip}: {reason}); tenant \
+         upstreams may not target cloud metadata, loopback, or Flowplane infrastructure addresses"
+    ))
+    .with_details(serde_json::json!({
+        "class": "egress_advisory_denied",
+        "host": host,
+        "ip": ip.to_string(),
+        "reason": reason,
+        "resolved_addresses": resolved.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+    }))
 }
 
 /// Destinations denied regardless of configuration: cloud metadata/credential endpoints,
@@ -490,12 +573,102 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn from_server_config_disabled_builds_disabled_policy() {
+    async fn from_server_config_disabled_builds_disabled_policy_and_warns_at_startup() {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone, Default)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for Sink {
+            type Writer = Sink;
+            fn make_writer(&'a self) -> Sink {
+                self.clone()
+            }
+        }
+
+        let sink = Sink::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(sink.clone())
+            .finish();
+
         let mut config = test_config();
         config.egress_advisory_enabled = false;
-        let p = EgressAdvisoryPolicy::from_server_config(&config).await;
+        let p = {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            EgressAdvisoryPolicy::from_server_config(&config).await
+        };
         assert!(!p.enabled());
         assert!(p.check_host("169.254.169.254").await.is_ok());
+
+        let logs = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            logs.contains("egress advisory disabled by operator config"),
+            "disabling the advisory must log a startup warning; got: {logs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn enforce_hosts_rejects_denied_and_passes_allowed() {
+        // Audit write is best-effort; a lazy unreachable pool exercises the code path without
+        // a DB (the DB-backed audit-row assertion lives in the fp-api integration tests).
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(200))
+            .connect_lazy("postgres://unused@127.0.0.1:1/unused")
+            .unwrap();
+        let org_id = fp_domain::OrgId::generate();
+        let ctx = crate::authz::PrincipalCtx::User {
+            user_id: fp_domain::UserId::generate(),
+            platform_admin: false,
+            org: Some((org_id, fp_domain::OrgRole::Admin)),
+            org_selector_required: false,
+            grants: crate::GrantSet::default(),
+        };
+        let team = fp_domain::authz::TeamRef {
+            org_id,
+            id: fp_domain::TeamId::generate(),
+        };
+        let p = enabled_policy();
+        let err = p
+            .enforce_hosts(
+                &pool,
+                &ctx,
+                fp_domain::RequestId::generate(),
+                team,
+                "cluster.create",
+                "clusters/x",
+                vec!["169.254.169.254".into()],
+            )
+            .await
+            .expect_err("metadata endpoint must be rejected");
+        assert_eq!(err.code, fp_domain::ErrorCode::ValidationFailed);
+        assert_eq!(
+            err.details
+                .as_ref()
+                .and_then(|d| d.get("class"))
+                .and_then(|v| v.as_str()),
+            Some("egress_advisory_denied")
+        );
+        p.enforce_hosts(
+            &pool,
+            &ctx,
+            fp_domain::RequestId::generate(),
+            team,
+            "cluster.create",
+            "clusters/x",
+            vec!["10.1.2.3".into(), "93.184.216.34".into()],
+        )
+        .await
+        .expect("private + public hosts pass");
     }
 
     #[test]

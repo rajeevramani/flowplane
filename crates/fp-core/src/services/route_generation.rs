@@ -151,6 +151,9 @@ pub async fn apply_plan(
         &plan.plan.cluster_name,
         plan.plan.cluster_spec.clone(),
         request_id,
+        // fpv2-1hp.4 threads the real advisory policy through route-generation apply with its
+        // own `route_generation.apply` rejection audit; until then this path is not gated.
+        Default::default(),
     )
     .await?;
     let route_config = match gateway::create_route_config(
