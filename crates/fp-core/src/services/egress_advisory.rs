@@ -169,23 +169,17 @@ impl EgressAdvisoryPolicy {
     /// Why `ip` is a protected destination, or `None` if it is allowed.
     pub fn denial_reason(&self, ip: IpAddr) -> Option<&'static str> {
         let ip = canonical_ip(ip);
-        if let Some(reason) = builtin_denial(&ip) {
+        if let Some(reason) = protected_destination(ip) {
             return Some(reason);
         }
-        // 6to4 / NAT64 forms deliver to the embedded IPv4 destination: re-apply the full
-        // v4 check on the extraction instead of blanket-denying the whole prefix.
-        if let IpAddr::V6(v6) = ip {
-            if let Some(embedded) = embedded_ipv4(&v6) {
-                if let Some(reason) = self.denial_reason(IpAddr::V4(embedded)) {
-                    return Some(reason);
-                }
+        // Policy-configured sets also apply to the embedded-IPv4 form of 6to4/NAT64 answers.
+        for candidate in delivery_candidates(ip) {
+            if self.denied_addrs.contains(&candidate) {
+                return Some("infra_address");
             }
-        }
-        if self.denied_addrs.contains(&ip) {
-            return Some("infra_address");
-        }
-        if self.denied_cidrs.iter().any(|c| c.contains(ip)) {
-            return Some("denied_cidr");
+            if self.denied_cidrs.iter().any(|c| c.contains(candidate)) {
+                return Some("denied_cidr");
+            }
         }
         None
     }
@@ -321,6 +315,23 @@ fn denied_error(host: &str, ip: IpAddr, reason: &str, resolved: &[IpAddr]) -> Do
     }))
 }
 
+/// Configuration-independent protected destinations: metadata/credential endpoints, loopback,
+/// link-local, special ranges — with 6to4/NAT64 handled by re-applying the check to the
+/// embedded IPv4 address. Shared by the egress advisory and the discovery forwarding policy
+/// (fpv2-1hp.5); deliberately **not** blanket private/ULA (inv. 19).
+pub(crate) fn protected_destination(ip: IpAddr) -> Option<&'static str> {
+    let ip = canonical_ip(ip);
+    if let Some(reason) = builtin_denial(&ip) {
+        return Some(reason);
+    }
+    if let IpAddr::V6(v6) = ip {
+        if let Some(embedded) = embedded_ipv4(&v6) {
+            return protected_destination(IpAddr::V4(embedded));
+        }
+    }
+    None
+}
+
 /// Destinations denied regardless of configuration: cloud metadata/credential endpoints,
 /// loopback, link-local, and non-routable special ranges. Exact endpoints — **not** blanket
 /// private/ULA ranges (inv. 19).
@@ -356,6 +367,20 @@ fn builtin_denial(ip: &IpAddr) -> Option<&'static str> {
             }
         }
     }
+}
+
+/// The canonical address plus, for a 6to4/NAT64 IPv6 answer, the embedded IPv4 destination —
+/// the set of addresses a connection to `ip` can actually deliver to. Callers matching against
+/// address/CIDR sets (advisory deny set, discovery `denied_destinations`) must check every one.
+pub(crate) fn delivery_candidates(ip: IpAddr) -> Vec<IpAddr> {
+    let ip = canonical_ip(ip);
+    let mut out = vec![ip];
+    if let IpAddr::V6(v6) = ip {
+        if let Some(embedded) = embedded_ipv4(&v6) {
+            out.push(IpAddr::V4(embedded));
+        }
+    }
+    out
 }
 
 /// The IPv4 destination embedded in a 6to4 (`2002::/16`) or NAT64 well-known-prefix
