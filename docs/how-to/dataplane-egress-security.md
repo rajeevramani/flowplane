@@ -93,7 +93,7 @@ route-generation apply) the control plane resolves the authored host and rejects
 
 | Knob | Default | Meaning |
 | --- | --- | --- |
-| `FLOWPLANE_EGRESS_ADVISORY_ENABLED` | `true` | Operator-only. Disabling logs a startup warning; tenants cannot override. |
+| `FLOWPLANE_EGRESS_ADVISORY_ENABLED` | `true`; `false` in dev mode | Operator-only. Defaults **off** under `FLOWPLANE_DEV_MODE=true` (single-host: loopback upstreams are legitimate there); set it explicitly to force either way. Disabling logs a startup warning; tenants cannot override. |
 | `FLOWPLANE_EGRESS_ADVISORY_DENIED_CIDRS` | unset | **Set this in production.** The advisory derives the database and RLS addresses from server configuration automatically, but the control plane's own API/xDS listeners usually bind `0.0.0.0` — the CP's routable CIDRs **must** be supplied here or the advisory does not cover them. |
 
 Built-in deny set (always active when enabled): the metadata/credential endpoints listed above,

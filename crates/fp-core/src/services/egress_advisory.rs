@@ -103,11 +103,19 @@ impl EgressAdvisoryPolicy {
     /// source for the CP/xDS routable ranges — bind addresses join only when concrete.
     pub async fn from_server_config(config: &crate::config::ServerConfig) -> Self {
         if !config.egress_advisory_enabled {
-            tracing::warn!(
-                "egress advisory disabled by operator config \
-                 (FLOWPLANE_EGRESS_ADVISORY_ENABLED=false): tenant upstream hosts are not \
-                 checked against protected destinations at write time"
-            );
+            if config.dev_mode {
+                tracing::warn!(
+                    "egress advisory off in dev mode (defaults off unless explicitly enabled): \
+                     tenant upstream hosts are not checked against protected destinations at \
+                     write time; set FLOWPLANE_EGRESS_ADVISORY_ENABLED=true to force it on in dev"
+                );
+            } else {
+                tracing::warn!(
+                    "egress advisory disabled by operator config \
+                     (FLOWPLANE_EGRESS_ADVISORY_ENABLED=false): tenant upstream hosts are not \
+                     checked against protected destinations at write time"
+                );
+            }
             return Self {
                 enabled: false,
                 denied_addrs: BTreeSet::new(),

@@ -431,11 +431,17 @@ impl ServerConfig {
 
         let egress_advisory_enabled = match get("FLOWPLANE_EGRESS_ADVISORY_ENABLED") {
             Some(raw) => parse_bool("FLOWPLANE_EGRESS_ADVISORY_ENABLED", raw)?,
+            // Default: on in production, OFF in dev mode. Dev mode is single-host by convention
+            // (constitution inv. 4: localhost/loopback is a dev-only convenience), so the
+            // dataplane, its upstreams, and the CP all share loopback — the advisory's
+            // loopback/infra denial there only blocks legitimate local upstreams (e.g. the
+            // `expose http://localhost:...` workflow and the live-Envoy e2e suite). An operator
+            // can still force it on in dev by setting the env/file value explicitly.
             None => file
                 .egress_advisory
                 .as_ref()
                 .and_then(|s| s.enabled)
-                .unwrap_or(true),
+                .unwrap_or(!dev_mode),
         };
 
         let egress_advisory_denied_cidrs = {
@@ -544,8 +550,28 @@ mod tests {
     }
 
     #[test]
+    fn egress_advisory_defaults_on_in_prod_off_in_dev() {
+        // base_env has no dev-mode → production default is enabled.
+        let cfg = ServerConfig::resolve(&base_env(), FileConfig::default()).expect("resolves");
+        assert!(cfg.egress_advisory_enabled);
+
+        // Dev mode defaults the advisory OFF (single-host loopback convention).
+        let mut env = base_env();
+        env.insert("FLOWPLANE_DEV_MODE".into(), "true".into());
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+        assert!(!cfg.egress_advisory_enabled);
+
+        // An operator can still force it on in dev via the explicit env value.
+        let mut env = base_env();
+        env.insert("FLOWPLANE_DEV_MODE".into(), "true".into());
+        env.insert("FLOWPLANE_EGRESS_ADVISORY_ENABLED".into(), "true".into());
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+        assert!(cfg.egress_advisory_enabled);
+    }
+
+    #[test]
     fn egress_advisory_defaults_on_and_parses_cidrs() {
-        // Default: enabled, empty deny CIDRs.
+        // Default: enabled (no dev mode), empty deny CIDRs.
         let cfg = ServerConfig::resolve(&base_env(), FileConfig::default()).expect("resolves");
         assert!(cfg.egress_advisory_enabled);
         assert!(cfg.egress_advisory_denied_cidrs.is_empty());
