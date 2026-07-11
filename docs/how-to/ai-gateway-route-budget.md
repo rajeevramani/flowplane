@@ -16,17 +16,22 @@ With that key set, create a secret holding the provider API key — `flowplane s
 
 Request verification in step 4 needs a connected dataplane that can receive the materialized listener over xDS. The `flowplane ai routes create` command creates the cluster, route config, and listener in the control plane; it does not start Envoy. For a production-shaped setup, use a dataplane registered over mTLS by the platform team (see [Register a dataplane and connect its agent over mTLS](register-dataplane-mtls.md) and [Evaluate a production-shaped platform setup](evaluate-platform.md)).
 
-`secret.json` (the `secret` value is **standard base64** of the raw provider API key — produce it with `printf %s "$API_KEY" | base64`):
+`secret.json` (the `secret` value is **standard base64** of the full auth header value, scheme included — the gateway injects the decoded value into the provider's auth header verbatim, so for OpenAI-style `Bearer` auth it must be `Bearer <key>`, not the bare key. Produce it with `printf %s "Bearer $API_KEY" | base64`):
 
 ```json
 {
   "name": "openai-key",
   "spec": {
     "type": "generic_secret",
-    "secret": "<base64 of your provider API key>"
+    "secret": "<base64 of: Bearer <your provider API key>>"
   }
 }
 ```
+
+> **Common failure:** storing the bare key (no `Bearer ` prefix) makes the provider reject the
+> request — e.g. OpenRouter returns `401 {"error":{"message":"Missing Authentication header"}}` —
+> even though the request trace shows `credential_injection: injected`. The header *was* injected;
+> its value just lacked the auth scheme.
 
 ## 1. Create a provider
 
