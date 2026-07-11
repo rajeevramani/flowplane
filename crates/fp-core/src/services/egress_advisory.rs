@@ -396,7 +396,7 @@ fn canonical_ip(ip: IpAddr) -> IpAddr {
 }
 
 /// Host component of a URL-ish string (`https://h:p/x`, `h:p`, `[::1]:50051`).
-fn authority_host(url: &str) -> Option<String> {
+pub(crate) fn authority_host(url: &str) -> Option<String> {
     let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
     let authority = after_scheme.split(['/', '?']).next()?;
     let host_port = authority
@@ -407,16 +407,22 @@ fn authority_host(url: &str) -> Option<String> {
         return None;
     }
     if let Some(rest) = host_port.strip_prefix('[') {
-        return rest.split_once(']').map(|(host, _)| host.to_string());
+        return rest
+            .split_once(']')
+            .map(|(host, _)| host.to_string())
+            .filter(|host| !host.is_empty());
     }
-    Some(
-        host_port
-            .rsplit_once(':')
-            .filter(|(_, port)| port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty())
-            .map(|(host, _)| host)
-            .unwrap_or(host_port)
-            .to_string(),
-    )
+    let host = host_port
+        .rsplit_once(':')
+        .filter(|(_, port)| port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty())
+        .map(|(host, _)| host)
+        .unwrap_or(host_port);
+    // Re-validate after userinfo/port stripping: "http://:8080" or "user@:8080" must not
+    // yield an empty host.
+    if host.is_empty() {
+        return None;
+    }
+    Some(host.to_string())
 }
 
 #[cfg(test)]
@@ -672,6 +678,30 @@ mod tests {
     }
 
     #[test]
+    fn a5_no_call_site_env_reads_in_advisory_paths() {
+        // Finding 13/A5 (by construction): the advisory policy is built from ServerConfig at
+        // boot; neither the policy nor any consuming mutation path may read process env at the
+        // call site. Source guard on the advisory module + the four gated mutation services.
+        // Needles are concatenated at runtime so this test's own source (included below via
+        // include_str!) doesn't match them.
+        let needles = [["env", "::var"].concat(), ["std", "::", "env"].concat()];
+        for (name, src) in [
+            ("egress_advisory.rs", include_str!("egress_advisory.rs")),
+            ("clusters.rs", include_str!("clusters.rs")),
+            ("ai.rs", include_str!("ai.rs")),
+            ("expose.rs", include_str!("expose.rs")),
+            ("route_generation.rs", include_str!("route_generation.rs")),
+        ] {
+            for needle in &needles {
+                assert!(
+                    !src.contains(needle.as_str()),
+                    "{name} must not read process env (A5: egress config comes from ServerConfig)"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn authority_host_extracts_hosts() {
         assert_eq!(
             authority_host("https://rls.internal:8081/admin").as_deref(),
@@ -690,6 +720,12 @@ mod tests {
             Some("fd00::7")
         );
         assert_eq!(authority_host("plainhost").as_deref(), Some("plainhost"));
+        // Empty hosts must be rejected, not returned as Some("") (fpv2-1hp.3 pass-1 finding).
+        assert_eq!(authority_host("http://:8080"), None);
+        assert_eq!(authority_host("http://user@:8080"), None);
+        assert_eq!(authority_host("http://user@"), None);
+        assert_eq!(authority_host("[]:8080"), None);
+        assert_eq!(authority_host(""), None);
     }
 
     /// Minimal valid ServerConfig for policy tests (fields irrelevant to the advisory are

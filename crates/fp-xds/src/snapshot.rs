@@ -2038,6 +2038,7 @@ mod tests {
                 auth_header: "authorization".into(),
             },
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("provider");
@@ -2294,6 +2295,7 @@ mod tests {
                 auth_header: "authorization".into(),
             },
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("provider");

@@ -45,6 +45,7 @@ pub async fn create_provider(
     name: &str,
     spec: AiProviderSpec,
     request_id: RequestId,
+    advisory: crate::services::egress_advisory::EgressAdvisoryPolicy,
 ) -> DomainResult<AiProvider> {
     authorize(
         pool,
@@ -57,6 +58,21 @@ pub async fn create_provider(
     .await?;
     validate_ai_provider_name(name)?;
     validate_provider_spec(pool, ctx, team, &spec, request_id).await?;
+    advisory
+        .enforce_hosts(
+            pool,
+            ctx,
+            request_id,
+            team,
+            "ai_provider.create",
+            &format!("ai-providers/{name}"),
+            vec![
+                crate::services::egress_advisory::authority_host(&spec.base_url).ok_or_else(
+                    || DomainError::validation("AI provider base_url must include a host"),
+                )?,
+            ],
+        )
+        .await?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::AiProviders).await?;
 
     let mut tx = pool
@@ -123,6 +139,7 @@ pub async fn get_provider(
         .ok_or_else(|| DomainError::not_found("AI provider", name))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn update_provider(
     pool: &PgPool,
     ctx: &PrincipalCtx,
@@ -131,6 +148,7 @@ pub async fn update_provider(
     spec: AiProviderSpec,
     expected_version: i64,
     request_id: RequestId,
+    advisory: crate::services::egress_advisory::EgressAdvisoryPolicy,
 ) -> DomainResult<AiProvider> {
     authorize(
         pool,
@@ -142,6 +160,21 @@ pub async fn update_provider(
     )
     .await?;
     validate_provider_spec(pool, ctx, team, &spec, request_id).await?;
+    advisory
+        .enforce_hosts(
+            pool,
+            ctx,
+            request_id,
+            team,
+            "ai_provider.update",
+            &format!("ai-providers/{name}"),
+            vec![
+                crate::services::egress_advisory::authority_host(&spec.base_url).ok_or_else(
+                    || DomainError::validation("AI provider base_url must include a host"),
+                )?,
+            ],
+        )
+        .await?;
     let mut tx = pool
         .begin()
         .await
