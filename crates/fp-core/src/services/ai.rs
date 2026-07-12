@@ -17,7 +17,6 @@ use fp_domain::{
     DomainResult, RequestId, AI_MODEL_HEADER, DEFAULT_AI_ROUTE_TIMEOUT_SECS,
 };
 use fp_storage::repos::{ai, ai_trace, audit, clusters as cluster_repo, gateway as gateway_repo};
-use reqwest::Url;
 use sqlx::PgPool;
 use std::collections::BTreeMap;
 
@@ -1241,16 +1240,13 @@ async fn cleanup_materialized(
 }
 
 fn provider_cluster_spec(provider: &AiProvider) -> DomainResult<ClusterSpec> {
-    let url = Url::parse(&provider.spec.base_url)
-        .map_err(|_| DomainError::validation("AI provider base_url must be a valid URL"))?;
-    let host = url
-        .host_str()
-        .ok_or_else(|| DomainError::validation("AI provider base_url must include a host"))?
-        .to_string();
-    let use_tls = url.scheme() == "https";
-    let port = url
-        .port_or_known_default()
-        .ok_or_else(|| DomainError::validation("AI provider base_url must include a port"))?;
+    // Single canonical derivation shared with validate() and the ExtProc :authority
+    // rewrite (fpv2-ti2): endpoint host/port, use_tls, and SNI all come from origin(),
+    // so the TLS SNI and the rewritten Host can never disagree.
+    let origin = provider.spec.origin()?;
+    let host = origin.host;
+    let use_tls = origin.use_tls;
+    let port = origin.port;
     Ok(ClusterSpec {
         endpoints: vec![Endpoint {
             host: host.clone(),
@@ -1546,6 +1542,74 @@ mod tests {
             listener_port: 18_080,
             path: "/v1/chat/completions".into(),
             backends,
+        }
+    }
+
+    fn provider_with_base_url(base_url: &str) -> AiProvider {
+        AiProvider {
+            id: fp_domain::id::AiProviderId::generate(),
+            team_id: fp_domain::id::TeamId::generate(),
+            name: "prov".into(),
+            spec: AiProviderSpec {
+                kind: fp_domain::AiProviderKind::OpenaiCompatible,
+                base_url: base_url.into(),
+                path_prefix: None,
+                credential_secret_id: fp_domain::id::SecretId::generate(),
+                models: Vec::new(),
+                auth_header: "authorization".into(),
+            },
+            version: 1,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn provider_cluster_spec_endpoint_and_sni_match_origin_host() {
+        // fpv2-ti2 AC 2 consistency property: for every accepted base_url, the
+        // materialized endpoint host and SNI equal origin().host — the same value the
+        // ExtProc :authority rewrite uses.
+        let cases = [
+            "https://openrouter.ai",
+            "https://openrouter.ai/",
+            "https://host:8443",
+            "http://10.0.0.4:8080",
+            "https://[fd00::7]:8443",
+            "https://%65xample.com",
+        ];
+        for base_url in cases {
+            let provider = provider_with_base_url(base_url);
+            let origin = provider.spec.origin().expect(base_url);
+            let cluster = provider_cluster_spec(&provider).expect(base_url);
+            assert_eq!(
+                cluster.endpoints[0].host, origin.host,
+                "endpoint for {base_url}"
+            );
+            assert_eq!(
+                cluster.endpoints[0].port, origin.port,
+                "port for {base_url}"
+            );
+            assert_eq!(cluster.use_tls, origin.use_tls, "use_tls for {base_url}");
+            if origin.use_tls {
+                let tls = cluster.upstream_tls.as_ref().expect("tls config");
+                assert_eq!(
+                    tls.sni.as_deref(),
+                    Some(origin.host.as_str()),
+                    "sni for {base_url}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn provider_cluster_spec_rejects_what_origin_rejects() {
+        for base_url in [
+            "https://user:pw@host",
+            "https://host:abc",
+            "https://host/api",
+        ] {
+            let provider = provider_with_base_url(base_url);
+            assert!(provider_cluster_spec(&provider).is_err(), "{base_url}");
         }
     }
 

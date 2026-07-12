@@ -67,6 +67,7 @@ rsa = "0.9"
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+url = "2"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
 [workspace.lints.rust]
