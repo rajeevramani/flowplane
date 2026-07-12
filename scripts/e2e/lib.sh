@@ -165,8 +165,11 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length", "0"))
         self.rfile.read(length)
         auth = self.headers.get("authorization", "")
+        host = self.headers.get("host", "")
+        # One structured line per request: credential<TAB>received Host. The Host
+        # column proves the ExtProc :authority rewrite (fpv2-ti2).
         with open(auth_log, "a", encoding="utf-8") as f:
-            f.write(auth + "\n")
+            f.write(auth + "\t" + host + "\n")
         if auth != expected_auth:
             body = b"missing AI credential"
             self.send_response(401)

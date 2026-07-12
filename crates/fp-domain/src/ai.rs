@@ -309,30 +309,75 @@ fn default_completion_weight() -> u32 {
     1
 }
 
+/// Canonical origin derived from a provider's `base_url`. This is the **single**
+/// derivation feeding the materialized cluster endpoint + SNI (`provider_cluster_spec`)
+/// and the ExtProc `:authority` rewrite, so the TLS and HTTP layers can never disagree
+/// on the provider host (fpv2-ti2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiProviderOrigin {
+    /// `Url::host_str()` — canonical: IDNA/punycode, percent-decoded, bracketed IPv6.
+    pub host: String,
+    /// Explicit port, or the scheme default.
+    pub port: u16,
+    /// `true` iff the scheme is `https`.
+    pub use_tls: bool,
+    /// `host` when the port is the scheme default, else `host:port`.
+    pub authority: String,
+}
+
 impl AiProviderSpec {
-    pub fn validate(&self) -> DomainResult<()> {
-        if !matches!(self.base_url.as_str(), url if url.starts_with("https://") || url.starts_with("http://"))
-        {
+    /// Parse `base_url` into its canonical origin: `url::Url` parsing plus the
+    /// origin-only rules (no userinfo, no path/query/fragment, http(s) only).
+    pub fn origin(&self) -> DomainResult<AiProviderOrigin> {
+        let url = url::Url::parse(&self.base_url).map_err(|_| {
+            DomainError::validation("AI provider base_url must be a valid http:// or https:// URL")
+        })?;
+        let use_tls = match url.scheme() {
+            "https" => true,
+            "http" => false,
+            _ => {
+                return Err(DomainError::validation(
+                    "AI provider base_url must start with http:// or https://",
+                ))
+            }
+        };
+        if !url.username().is_empty() || url.password().is_some() {
             return Err(DomainError::validation(
-                "AI provider base_url must start with http:// or https://",
+                "AI provider base_url must not include userinfo; provider credentials belong in the credential secret",
             ));
         }
-        let Some(authority) = self.base_url.split_once("://").map(|(_, rest)| rest) else {
-            return Err(DomainError::validation(
-                "AI provider base_url must start with http:// or https://",
-            ));
-        };
-        if authority.is_empty()
-            || authority.contains('?')
-            || authority.contains('#')
-            || authority
-                .find('/')
-                .is_some_and(|idx| !authority[idx..].trim_matches('/').is_empty())
+        let host = url
+            .host_str()
+            .filter(|host| !host.is_empty())
+            .ok_or_else(|| DomainError::validation("AI provider base_url must include a host"))?
+            .to_string();
+        if !url.path().chars().all(|c| c == '/')
+            || url.query().is_some()
+            || url.fragment().is_some()
         {
             return Err(DomainError::validation(
                 "AI provider base_url must not include a path, query, or fragment; use path_prefix for upstream paths",
             ));
         }
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| DomainError::validation("AI provider base_url must include a port"))?;
+        // `Url::port()` is `None` when the port is the scheme default, even if the
+        // input spelled it out (`https://host:443`).
+        let authority = match url.port() {
+            Some(explicit) => format!("{host}:{explicit}"),
+            None => host.clone(),
+        };
+        Ok(AiProviderOrigin {
+            host,
+            port,
+            use_tls,
+            authority,
+        })
+    }
+
+    pub fn validate(&self) -> DomainResult<()> {
+        self.origin()?;
         if self.auth_header.trim().is_empty()
             || self.auth_header.bytes().any(|b| b <= b' ' || b == b':')
         {
@@ -627,6 +672,111 @@ mod tests {
 
         spec.base_url = "https://api.openai.com".into();
         spec.validate().expect("origin-only base_url");
+    }
+
+    fn origin_spec(base_url: &str) -> AiProviderSpec {
+        AiProviderSpec {
+            kind: AiProviderKind::OpenaiCompatible,
+            base_url: base_url.into(),
+            path_prefix: None,
+            credential_secret_id: SecretId::generate(),
+            models: Vec::new(),
+            auth_header: "authorization".into(),
+        }
+    }
+
+    #[test]
+    fn provider_origin_canonicalizes_accepted_inputs() {
+        let cases = [
+            // (base_url, host, port, use_tls, authority)
+            (
+                "https://openrouter.ai",
+                "openrouter.ai",
+                443,
+                true,
+                "openrouter.ai",
+            ),
+            (
+                "https://openrouter.ai/",
+                "openrouter.ai",
+                443,
+                true,
+                "openrouter.ai",
+            ),
+            ("https://host:443", "host", 443, true, "host"),
+            ("http://host:80", "host", 80, false, "host"),
+            ("https://host:8443", "host", 8443, true, "host:8443"),
+            (
+                "http://10.0.0.4:8080",
+                "10.0.0.4",
+                8080,
+                false,
+                "10.0.0.4:8080",
+            ),
+            (
+                "https://[fd00::7]:8443",
+                "[fd00::7]",
+                8443,
+                true,
+                "[fd00::7]:8443",
+            ),
+            ("https://[fd00::7]:443", "[fd00::7]", 443, true, "[fd00::7]"),
+            // percent-encoded host canonicalizes exactly as the cluster/SNI derivation does
+            (
+                "https://%65xample.com",
+                "example.com",
+                443,
+                true,
+                "example.com",
+            ),
+            // Unicode domain -> punycode, same as SNI
+            (
+                "https://bücher.example",
+                "xn--bcher-kva.example",
+                443,
+                true,
+                "xn--bcher-kva.example",
+            ),
+            // non-canonical IPv4 spelling normalizes, same as SNI
+            (
+                "https://127.0.000.001:8443",
+                "127.0.0.1",
+                8443,
+                true,
+                "127.0.0.1:8443",
+            ),
+        ];
+        for (base_url, host, port, use_tls, authority) in cases {
+            let origin = origin_spec(base_url).origin().expect(base_url);
+            assert_eq!(origin.host, host, "host for {base_url}");
+            assert_eq!(origin.port, port, "port for {base_url}");
+            assert_eq!(origin.use_tls, use_tls, "use_tls for {base_url}");
+            assert_eq!(origin.authority, authority, "authority for {base_url}");
+        }
+    }
+
+    #[test]
+    fn provider_origin_rejects_non_origin_inputs() {
+        let rejected = [
+            "https://user:pw@provider.example", // userinfo must never reach :authority/trace
+            "https://user@provider.example",
+            "https://host:abc",
+            "https://fd00::7", // unbracketed IPv6
+            "ftp://host",
+            "https://",
+            "https://host/api/v1",
+            "https://host?x=1",
+            "https://host#frag",
+            "host:50051",
+        ];
+        for base_url in rejected {
+            let spec = origin_spec(base_url);
+            assert!(spec.origin().is_err(), "origin() must reject {base_url}");
+            assert!(
+                spec.validate().is_err(),
+                "validate() must reject {base_url}"
+            );
+        }
     }
 
     #[test]
