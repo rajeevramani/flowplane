@@ -1238,13 +1238,16 @@ async fn ai_request_headers_response(
                     "provider_id": provider_id,
                     "backend_position": backend_position,
                     "auth_header": runtime.auth_header.clone(),
+                    "authority": runtime.authority.clone(),
                 }),
             );
             state.upstream_model_override = runtime.model_override;
-            let mut set_headers = vec![mutation_header_value(
-                runtime.auth_header,
-                runtime.auth_value,
-            )];
+            let mut set_headers = vec![
+                mutation_header_value(runtime.auth_header, runtime.auth_value),
+                // Host must match the cluster SNI or strict front-ends (Cloudflare)
+                // answer 421 Misdirected Request (fpv2-ti2).
+                mutation_header_value(":authority".into(), runtime.authority),
+            ];
             if let Some(path) = runtime.path_rewrite {
                 set_headers.push(mutation_header_value(":path".into(), path));
             }
@@ -1428,13 +1431,16 @@ async fn ai_listener_request_headers_response(
                     "provider_id": provider_id,
                     "backend_position": backend_position,
                     "auth_header": runtime.auth_header.clone(),
+                    "authority": runtime.authority.clone(),
                 }),
             );
             state.upstream_model_override = runtime.model_override;
-            let mut set_headers = vec![mutation_header_value(
-                runtime.auth_header,
-                runtime.auth_value,
-            )];
+            let mut set_headers = vec![
+                mutation_header_value(runtime.auth_header, runtime.auth_value),
+                // Host must match the cluster SNI or strict front-ends (Cloudflare)
+                // answer 421 Misdirected Request (fpv2-ti2).
+                mutation_header_value(":authority".into(), runtime.authority),
+            ];
             if let Some(path) = runtime.path_rewrite {
                 set_headers.push(mutation_header_value(":path".into(), path));
             }
@@ -1471,6 +1477,9 @@ async fn ai_listener_request_headers_response(
 struct SelectedBackendRuntime {
     auth_header: String,
     auth_value: String,
+    /// Canonical `host[:port]` from the provider's `base_url` origin — rewritten into
+    /// `:authority` so the upstream Host always matches the cluster's SNI (fpv2-ti2).
+    authority: String,
     path_rewrite: Option<String>,
     model_override: Option<String>,
 }
@@ -1517,6 +1526,13 @@ async fn selected_backend_runtime(
         CredentialFailure::unavailable(Status::not_found("AI provider not found for route"))
     })?;
     let provider = selected.provider;
+    // Same canonical derivation validate() and provider_cluster_spec use; a stored row
+    // that no longer parses fails closed here instead of forwarding a bogus Host.
+    let authority = provider
+        .spec
+        .origin()
+        .map_err(|err| CredentialFailure::unavailable(status_from_domain(err)))?
+        .authority;
     let auth_header = provider.spec.auth_header;
     let encrypted =
         secrets::get_encrypted_secret_by_id(pool, team_id, provider.spec.credential_secret_id)
@@ -1557,6 +1573,7 @@ async fn selected_backend_runtime(
     Ok(SelectedBackendRuntime {
         auth_header,
         auth_value: value,
+        authority,
         path_rewrite: provider_path_rewrite(provider.spec.path_prefix.as_deref(), request_path),
         model_override: selected.backend.model_override,
     })
@@ -2493,6 +2510,21 @@ mod tests {
         .execute(&pool)
         .await
         .expect("provider");
+        // Fallback provider on a non-default port: its authority must carry the port
+        // and follow failover attempts (fpv2-ti2).
+        let fallback_provider_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO ai_providers \
+             (id, team_id, org_id, name, kind, base_url, path_prefix, credential_secret_id, auth_header) \
+             VALUES ($1, $2, $3, 'fallback', 'openai-compatible', 'https://alt.example:8443', NULL, $4, 'x-api-key')",
+        )
+        .bind(fallback_provider_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(secret_id)
+        .execute(&pool)
+        .await
+        .expect("fallback provider");
         sqlx::query(
             "INSERT INTO route_configs (id, team_id, org_id, name, spec) \
              VALUES ($1, $2, $3, 'ai-route-routes', '{}'::jsonb)",
@@ -2512,6 +2544,11 @@ mod tests {
                 "model_override": "upstream-model",
                 "weight": 1,
                 "priority": 0
+            }, {
+                "provider_id": fallback_provider_id,
+                "models": ["fallback-model"],
+                "weight": 1,
+                "priority": 1
             }]
         });
         sqlx::query(
@@ -2528,14 +2565,15 @@ mod tests {
         .expect("ai route");
         sqlx::query(
             "INSERT INTO ai_route_backends (ai_route_id, team_id, provider_id, position) \
-             VALUES ($1, $2, $3, 0)",
+             VALUES ($1, $2, $3, 0), ($1, $2, $4, 1)",
         )
         .bind(route_id)
         .bind(team.id.as_uuid())
         .bind(provider_id)
+        .bind(fallback_provider_id)
         .execute(&pool)
         .await
-        .expect("backend");
+        .expect("backends");
 
         let runtime = selected_backend_runtime(
             &pool,
@@ -2549,6 +2587,7 @@ mod tests {
         .expect("runtime");
         assert_eq!(runtime.auth_header, "authorization");
         assert_eq!(runtime.auth_value, secret_value);
+        assert_eq!(runtime.authority, "api.openai.com");
         assert_eq!(
             runtime.path_rewrite.as_deref(),
             Some("/openai/v1/chat/completions?stream=true")
@@ -2567,6 +2606,213 @@ mod tests {
             .is_err(),
             "provider lookup is team scoped"
         );
+
+        // Full upstream-stream success shape (fpv2-ti2 AC 3): authorization + :authority
+        // + :path mutations, model header removed, and the credential_injection hop
+        // records the authority.
+        let request_headers = |attempt: &str| ProcessingRequest {
+            request: Some(processing_request::Request::RequestHeaders(
+                envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                    headers: Some(HeaderMap {
+                        headers: vec![
+                            HeaderValue {
+                                key: ":path".into(),
+                                value: "/v1/chat/completions".into(),
+                                raw_value: Vec::new(),
+                            },
+                            HeaderValue {
+                                key: "x-envoy-attempt-count".into(),
+                                value: attempt.into(),
+                                raw_value: Vec::new(),
+                            },
+                        ],
+                    }),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        // Full mutation shape: (set_headers pairs, remove_headers) so callers can
+        // assert the model header removal too (design AC 3).
+        let header_mutation =
+            |response: ProcessingResponse| -> (Vec<(String, String)>, Vec<String>) {
+                let processing_response::Response::RequestHeaders(headers) =
+                    response.response.expect("response")
+                else {
+                    panic!("expected request headers response");
+                };
+                let mutation = headers
+                    .response
+                    .expect("common")
+                    .header_mutation
+                    .expect("mutation");
+                let pairs = mutation
+                    .set_headers
+                    .into_iter()
+                    .map(|option| {
+                        let header = option.header.expect("header");
+                        (
+                            header.key,
+                            String::from_utf8(header.raw_value).expect("utf8"),
+                        )
+                    })
+                    .collect();
+                (pairs, mutation.remove_headers)
+            };
+        let header_pairs =
+            |response: ProcessingResponse| -> Vec<(String, String)> { header_mutation(response).0 };
+        let mut injected_state = AiExtProcState {
+            context: Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: None,
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: Some(AiProviderId::from(provider_id)),
+                backend_position: Some(0),
+                failover_chain: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        let (pairs, removed) = header_mutation(
+            ai_request_headers_response(&pool, &mut injected_state, request_headers("1")).await,
+        );
+        assert_eq!(
+            removed,
+            vec![AI_MODEL_HEADER.to_string()],
+            "internal model header removed before the provider sees the request"
+        );
+        assert!(
+            pairs.contains(&("authorization".into(), secret_value.into())),
+            "auth header injected: {pairs:?}"
+        );
+        assert!(
+            pairs.contains(&(":authority".into(), "api.openai.com".into())),
+            ":authority rewritten to provider host: {pairs:?}"
+        );
+        assert!(
+            pairs.contains(&(":path".into(), "/openai/v1/chat/completions".into())),
+            ":path rewritten with provider prefix: {pairs:?}"
+        );
+        let injection_hop = injected_state
+            .hops
+            .iter()
+            .find(|hop| hop.hop == "credential_injection")
+            .expect("credential_injection hop");
+        assert_eq!(injection_hop.detail["authority"], "api.openai.com");
+
+        // Failover: attempt 2 walks the chain to the fallback backend, whose authority
+        // carries its non-default port (fpv2-ti2 AC 3).
+        let mut failover_state = AiExtProcState {
+            context: Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: None,
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: None,
+                backend_position: None,
+                failover_chain: vec![
+                    (AiProviderId::from(provider_id), 0),
+                    (AiProviderId::from(fallback_provider_id), 1),
+                ],
+            }),
+            ..Default::default()
+        };
+        let pairs = header_pairs(
+            ai_request_headers_response(&pool, &mut failover_state, request_headers("2")).await,
+        );
+        assert!(
+            pairs.contains(&("x-api-key".into(), secret_value.into())),
+            "fallback auth header injected: {pairs:?}"
+        );
+        assert!(
+            pairs.contains(&(":authority".into(), "alt.example:8443".into())),
+            "attempt 2 rewrites :authority to the fallback provider: {pairs:?}"
+        );
+
+        // Listener-stream success shape (fpv2-ti2 AC 3): when exactly one backend is
+        // eligible for the model, the listener stream owns injection and rewrites
+        // :authority the same way.
+        let mut listener_state = AiExtProcState::default();
+        let listener_response = ai_listener_request_headers_response(
+            &pool,
+            &mut listener_state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::RequestHeaders(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                        headers: Some(HeaderMap {
+                            headers: vec![
+                                HeaderValue {
+                                    key: ":path".into(),
+                                    value: "/v1/chat/completions".into(),
+                                    raw_value: Vec::new(),
+                                },
+                                HeaderValue {
+                                    key: AI_MODEL_HEADER.into(),
+                                    value: "gpt-5".into(),
+                                    raw_value: Vec::new(),
+                                },
+                            ],
+                        }),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+            AiExtProcContext {
+                team_id: team.id,
+                listener_id: None,
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: None,
+                backend_position: None,
+                failover_chain: Vec::new(),
+            },
+        )
+        .await;
+        let (pairs, removed) = header_mutation(listener_response);
+        assert_eq!(
+            removed,
+            vec![AI_MODEL_HEADER.to_string()],
+            "listener stream removes the internal model header"
+        );
+        assert!(
+            pairs.contains(&("authorization".into(), secret_value.into())),
+            "listener stream injects auth header: {pairs:?}"
+        );
+        assert!(
+            pairs.contains(&(":authority".into(), "api.openai.com".into())),
+            "listener stream rewrites :authority: {pairs:?}"
+        );
+        let listener_injection_hop = listener_state
+            .hops
+            .iter()
+            .find(|hop| hop.hop == "credential_injection")
+            .expect("listener credential_injection hop");
+        assert_eq!(listener_injection_hop.detail["authority"], "api.openai.com");
+
+        // Fail closed: a stored base_url origin() rejects must not forward a bogus Host.
+        sqlx::query(
+            "UPDATE ai_providers SET base_url = 'https://user:pw@bad.example' WHERE id = $1",
+        )
+        .bind(provider_id)
+        .execute(&pool)
+        .await
+        .expect("corrupt base_url");
+        assert!(
+            selected_backend_runtime(
+                &pool,
+                team.id,
+                RouteConfigId::from(route_config_id),
+                AiProviderId::from(provider_id),
+                Some(0),
+                Some("/v1/chat/completions"),
+            )
+            .await
+            .is_err(),
+            "origin-rejected stored row fails closed"
+        );
+        sqlx::query("UPDATE ai_providers SET base_url = 'https://api.openai.com' WHERE id = $1")
+            .bind(provider_id)
+            .execute(&pool)
+            .await
+            .expect("restore base_url");
 
         let state = AiExtProcState {
             context: Some(AiExtProcContext {

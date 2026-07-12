@@ -11,6 +11,6 @@ else
   ENVOY_PID=$!
 fi
 wait_body hello-from-upstream2- || fail "traffic broke across Envoy restart"
-./target/debug/flowplane ops xds nacks >/tmp/fp-e2e-xds-nacks-after-envoy-restart.txt
+./target/debug/flowplane -o table ops xds nacks >/tmp/fp-e2e-xds-nacks-after-envoy-restart.txt   # -o table: CLI-R-11 non-TTY JSON default; fpv2-xfh
 grep -q "no rows" /tmp/fp-e2e-xds-nacks-after-envoy-restart.txt || fail "unexpected xDS NACKs after Envoy restart"
 echo "PHASE 2a OK: Envoy restarted, reconnected, and served '$BODY'"
