@@ -485,6 +485,24 @@ pub async fn get_provider_by_id(
     row.as_ref().map(provider_from_row).transpose()
 }
 
+/// Transaction-executor variant: provider read inside an AI-materialization mutation tx,
+/// after the per-team advisory lock (fpv2-8am — the read must not precede the lock).
+pub async fn get_provider_by_id_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    id: AiProviderId,
+) -> DomainResult<Option<AiProvider>> {
+    let row = sqlx::query(&format!(
+        "SELECT {COLUMNS} FROM ai_providers WHERE team_id = $1 AND id = $2"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("get AI provider by id: {e}")))?;
+    row.as_ref().map(provider_from_row).transpose()
+}
+
 pub async fn get_provider_for_route_config(
     pool: &PgPool,
     team_id: TeamId,
@@ -570,6 +588,27 @@ pub async fn budget_names_referencing_provider(
     .fetch_all(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("list AI budgets referencing provider: {e}")))?;
+    Ok(rows.into_iter().map(|row| row.get("name")).collect())
+}
+
+/// Budgets pinning a route's materialized route config (FK `ai_budgets.route_config_id`
+/// ON DELETE RESTRICT, 0027). Route update/delete must refuse with a conflict while these
+/// exist — the pre-fix cleanup silently leaked the route config instead (fpv2-8am).
+pub async fn budget_names_referencing_route_config_name(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    route_config_name: &str,
+) -> DomainResult<Vec<String>> {
+    let rows = sqlx::query(
+        "SELECT b.name FROM ai_budgets b \
+         JOIN route_configs rc ON rc.id = b.route_config_id AND rc.team_id = b.team_id \
+         WHERE b.team_id = $1 AND rc.name = $2 ORDER BY b.name",
+    )
+    .bind(team_id.as_uuid())
+    .bind(route_config_name)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("list AI budgets referencing route config: {e}")))?;
     Ok(rows.into_iter().map(|row| row.get("name")).collect())
 }
 
@@ -700,6 +739,25 @@ pub async fn get_route(
     .bind(team_id.as_uuid())
     .bind(name)
     .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get AI route: {e}")))?;
+    row.as_ref().map(route_from_row).transpose()
+}
+
+/// Transaction-executor variant: route read + revision check inside an AI-materialization
+/// mutation tx, after the per-team advisory lock (fpv2-8am — a pre-lock revision check can
+/// pass, then lose to a provider update's version bump mid-mutation).
+pub async fn get_route_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+) -> DomainResult<Option<AiRoute>> {
+    let row = sqlx::query(&format!(
+        "SELECT {ROUTE_COLUMNS} FROM ai_routes WHERE team_id = $1 AND name = $2"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(name)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("get AI route: {e}")))?;
     row.as_ref().map(route_from_row).transpose()

@@ -322,3 +322,16 @@ pub async fn count_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64>
         .await
         .map_err(|e| DomainError::internal(format!("count clusters: {e}")))
 }
+
+/// Transaction-executor variant: quota count inside an AI-materialization mutation tx,
+/// after the per-team advisory lock (fpv2-8am).
+pub async fn count_for_team_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+) -> DomainResult<i64> {
+    sqlx::query_scalar("SELECT count(*) FROM clusters WHERE team_id = $1")
+        .bind(team_id.as_uuid())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| DomainError::internal(format!("count clusters: {e}")))
+}
