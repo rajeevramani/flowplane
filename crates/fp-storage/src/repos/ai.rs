@@ -485,6 +485,24 @@ pub async fn get_provider_by_id(
     row.as_ref().map(provider_from_row).transpose()
 }
 
+/// Transaction-executor variant: provider read inside an AI-materialization mutation tx,
+/// after the per-team advisory lock (fpv2-8am — the read must not precede the lock).
+pub async fn get_provider_by_id_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    id: AiProviderId,
+) -> DomainResult<Option<AiProvider>> {
+    let row = sqlx::query(&format!(
+        "SELECT {COLUMNS} FROM ai_providers WHERE team_id = $1 AND id = $2"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("get AI provider by id: {e}")))?;
+    row.as_ref().map(provider_from_row).transpose()
+}
+
 pub async fn get_provider_for_route_config(
     pool: &PgPool,
     team_id: TeamId,
@@ -573,13 +591,95 @@ pub async fn budget_names_referencing_provider(
     Ok(rows.into_iter().map(|row| row.get("name")).collect())
 }
 
-pub async fn mark_routes_stale_for_provider(
+/// Budgets pinning a route's materialized route config (FK `ai_budgets.route_config_id`
+/// ON DELETE RESTRICT, 0027). Route update/delete must refuse with a conflict while these
+/// exist — the pre-fix cleanup silently leaked the route config instead (fpv2-8am).
+pub async fn budget_names_referencing_route_config_name(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    route_config_name: &str,
+) -> DomainResult<Vec<String>> {
+    let rows = sqlx::query(
+        "SELECT b.name FROM ai_budgets b \
+         JOIN route_configs rc ON rc.id = b.route_config_id AND rc.team_id = b.team_id \
+         WHERE b.team_id = $1 AND rc.name = $2 ORDER BY b.name",
+    )
+    .bind(team_id.as_uuid())
+    .bind(route_config_name)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("list AI budgets referencing route config: {e}")))?;
+    Ok(rows.into_iter().map(|row| row.get("name")).collect())
+}
+
+/// Namespace half of the per-team AI-materialization advisory-lock key ("flai"). Distinct
+/// from `BOOTSTRAP_LOCK_KEY` (bootstrap.rs) so the two lock families can never collide.
+const AI_MATERIALIZATION_LOCK_NS: u32 = 0x666c_6169;
+
+/// FNV-1a 32-bit over the team UUID bytes. Deterministic per team; a cross-team collision
+/// only over-serializes two teams' AI materialization writes (harmless), never under-locks.
+fn fnv1a_32(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for b in bytes {
+        hash ^= u32::from(*b);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
+/// The advisory-lock key serializing all AI materialization mutations for one team.
+pub fn ai_materialization_lock_key(team_id: TeamId) -> i64 {
+    ((AI_MATERIALIZATION_LOCK_NS as i64) << 32) | i64::from(fnv1a_32(team_id.as_uuid().as_bytes()))
+}
+
+/// Serialize AI materialization mutations per team. Must be the FIRST statement of the
+/// caller's transaction, before any materialization-sensitive read or write; the lock is
+/// released automatically at commit/rollback (transaction-scoped, per the
+/// `pg_advisory_xact_lock` precedent in bootstrap.rs).
+pub async fn acquire_materialization_lock(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+) -> DomainResult<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(ai_materialization_lock_key(team_id))
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| DomainError::internal(format!("AI materialization lock: {e}")))?;
+    Ok(())
+}
+
+/// Dependent AI routes of a provider, each returned once even when the provider occupies
+/// multiple backend positions (EXISTS, not JOIN).
+pub async fn routes_referencing_provider(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    provider_id: AiProviderId,
+) -> DomainResult<Vec<AiRoute>> {
+    let rows = sqlx::query(&format!(
+        "SELECT {ROUTE_COLUMNS} FROM ai_routes r \
+         WHERE r.team_id = $1 AND EXISTS (\
+           SELECT 1 FROM ai_route_backends b \
+           WHERE b.ai_route_id = r.id AND b.team_id = $1 AND b.provider_id = $2\
+         ) ORDER BY r.name"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(provider_id.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("list AI routes referencing provider: {e}")))?;
+    rows.iter().map(route_from_row).collect()
+}
+
+/// Bump dependent routes' revision after a provider update: the conflict signal that fails a
+/// racing route writer's OCC check instead of letting it materialize from a superseded
+/// provider spec. Deliberately does NOT touch `status` — nothing produces `'stale'` anymore.
+pub async fn bump_routes_version_for_provider(
     tx: &mut Transaction<'_, Postgres>,
     team_id: TeamId,
     provider_id: AiProviderId,
 ) -> DomainResult<u64> {
     let result = sqlx::query(
-        "UPDATE ai_routes SET status = 'stale', version = version + 1, updated_at = now() \
+        "UPDATE ai_routes SET version = version + 1, updated_at = now() \
          WHERE team_id = $1 AND id IN (\
            SELECT ai_route_id FROM ai_route_backends WHERE team_id = $1 AND provider_id = $2\
          )",
@@ -588,7 +688,7 @@ pub async fn mark_routes_stale_for_provider(
     .bind(provider_id.as_uuid())
     .execute(&mut **tx)
     .await
-    .map_err(|e| DomainError::internal(format!("mark AI routes stale: {e}")))?;
+    .map_err(|e| DomainError::internal(format!("bump AI route versions: {e}")))?;
     Ok(result.rows_affected())
 }
 
@@ -639,6 +739,25 @@ pub async fn get_route(
     .bind(team_id.as_uuid())
     .bind(name)
     .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get AI route: {e}")))?;
+    row.as_ref().map(route_from_row).transpose()
+}
+
+/// Transaction-executor variant: route read + revision check inside an AI-materialization
+/// mutation tx, after the per-team advisory lock (fpv2-8am — a pre-lock revision check can
+/// pass, then lose to a provider update's version bump mid-mutation).
+pub async fn get_route_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+) -> DomainResult<Option<AiRoute>> {
+    let row = sqlx::query(&format!(
+        "SELECT {ROUTE_COLUMNS} FROM ai_routes WHERE team_id = $1 AND name = $2"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(name)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("get AI route: {e}")))?;
     row.as_ref().map(route_from_row).transpose()
@@ -1020,4 +1139,43 @@ async fn budget_revision_error<T>(
         .with_hint("re-read the budget and retry with the current revision"),
         None => DomainError::not_found("AI budget", name),
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod lock_key_tests {
+    use super::*;
+
+    #[test]
+    fn lock_key_is_stable_per_team() {
+        let team = TeamId::from(Uuid::parse_str("00000000-0000-000f-1071-000000000002").unwrap());
+        let key = ai_materialization_lock_key(team);
+        // Same team, same key — every time (the correctness property of the lock).
+        assert_eq!(key, ai_materialization_lock_key(team));
+        // Namespace occupies the high 32 bits.
+        assert_eq!((key >> 32) as u32, 0x666c_6169);
+    }
+
+    #[test]
+    fn lock_key_differs_across_teams_and_from_bootstrap() {
+        let a = TeamId::from(Uuid::parse_str("00000000-0000-000f-1071-000000000002").unwrap());
+        let b = TeamId::from(Uuid::parse_str("00000000-0000-000f-1071-000000000003").unwrap());
+        assert_ne!(
+            ai_materialization_lock_key(a),
+            ai_materialization_lock_key(b)
+        );
+        // Never collides with the bootstrap lock family ("flowboot"): different high bits.
+        assert_ne!(
+            (ai_materialization_lock_key(a) >> 32) as u32,
+            0x666c_6f77_u32
+        );
+    }
+
+    #[test]
+    fn fnv1a_matches_reference_vectors() {
+        // Published FNV-1a 32-bit vectors.
+        assert_eq!(fnv1a_32(b""), 0x811c_9dc5);
+        assert_eq!(fnv1a_32(b"a"), 0xe40c_292c);
+        assert_eq!(fnv1a_32(b"foobar"), 0xbf9c_f968);
+    }
 }

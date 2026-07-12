@@ -135,7 +135,8 @@ fi
 ./target/debug/flowplane --json ai usage --route-config-id "$AI_ROUTE_CONFIG_ID" >/tmp/fp-e2e-ai-usage.json
 python3 - "$AI_PROVIDER_ID" /tmp/fp-e2e-ai-usage.json <<'PY' || fail "flowplane ai usage did not show attributed token usage"
 import json, sys
-rows = json.load(open(sys.argv[2], encoding="utf-8"))
+doc = json.load(open(sys.argv[2], encoding="utf-8"))
+rows = doc["data"] if isinstance(doc, dict) else doc  # CLI --json envelope {data,kind,schemaVersion}
 provider_id = sys.argv[1]
 assert any(row["provider_id"] == provider_id and row["total_tokens"] >= 5 for row in rows)
 PY
@@ -154,3 +155,60 @@ AI_PROVIDER_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_providers WHERE
 curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_PROVIDER_REV" \
   http://$API/api/v1/teams/default/ai/providers/ai-e2e-provider >/dev/null
 echo "PHASE 1a OK: AI credential injection (single + multi-backend) -> priority failover credential/usage -> enforcing budget trip -> usage attribution -> cleanup"
+
+# ---- fpv2-7oe smoke: provider update re-materializes the cluster through xDS, no route touch.
+AI_REMAT_SECRET_B64=$(python3 -c 'import base64; print(base64.b64encode(b"Bearer fp-e2e-ai-fallback-secret").decode())')
+AI_REMAT_SECRET_ID=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/secrets \
+  -d "{\"name\":\"ai-remat-key\",\"description\":\"remat smoke credential\",\"spec\":{\"type\":\"generic_secret\",\"secret\":\"$AI_REMAT_SECRET_B64\"}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+AI_REMAT_PROVIDER_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/providers \
+  -d "{\"name\":\"ai-remat-provider\",\"spec\":{\"kind\":\"openai-compatible\",\"base_url\":\"http://127.0.0.1:$AI_PROVIDER_PORT\",\"credential_secret_id\":\"$AI_SECRET_ID\",\"auth_header\":\"authorization\",\"models\":[\"gpt-5\"]}}")
+AI_REMAT_PROVIDER_ID=$(python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" <<<"$AI_REMAT_PROVIDER_BODY")
+AI_REMAT_ROUTE_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/routes \
+  -d "{\"name\":\"ai-remat\",\"spec\":{\"listener_port\":$AI_REMAT_GATEWAY_PORT,\"backends\":[{\"provider_id\":\"$AI_REMAT_PROVIDER_ID\",\"models\":[],\"weight\":1}]}}")
+AI_REMAT_ROUTE_ID=$(python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" <<<"$AI_REMAT_ROUTE_BODY")
+for i in $(seq 1 50); do
+  AI_CODE=$(curl -sS -o /tmp/fp-e2e-ai-remat-warm.json -w '%{http_code}' \
+    -H "content-type: application/json" -H "x-flowplane-ai-model: gpt-5" --data "$AI_REQUEST" \
+    http://127.0.0.1:$AI_REMAT_GATEWAY_PORT/v1/chat/completions 2>/dev/null || true)
+  [ "$AI_CODE" = "200" ] && break
+  sleep 1
+done
+[ "$AI_CODE" = "200" ] || fail "remat smoke: route never served the original provider (last code $AI_CODE)"
+
+# Update ONLY the provider (base_url -> fallback mock, credential -> fallback secret).
+# The route is never touched again.
+AI_REMAT_PROVIDER_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_providers WHERE id = '$AI_REMAT_PROVIDER_ID'")
+curl -fsS "${auth[@]}" -X PATCH -H "If-Match: $AI_REMAT_PROVIDER_REV" \
+  http://$API/api/v1/teams/default/ai/providers/ai-remat-provider \
+  -d "{\"spec\":{\"kind\":\"openai-compatible\",\"base_url\":\"http://127.0.0.1:$AI_FALLBACK_PROVIDER_PORT\",\"credential_secret_id\":\"$AI_REMAT_SECRET_ID\",\"auth_header\":\"authorization\",\"models\":[\"gpt-5\"]}}" >/dev/null
+
+# The materialized cluster row must already carry the new endpoint (same request),
+# the route must stay active with a bumped version, and Envoy must converge via xDS.
+AI_REMAT_CLUSTER_HOSTPORT=$(psql "$PG_DB_URL" -Atc \
+  "SELECT spec->'endpoints'->0->>'port' FROM clusters WHERE owner_kind = 'ai' AND name = 'ai-ai-remat-b1'")
+[ "$AI_REMAT_CLUSTER_HOSTPORT" = "$AI_FALLBACK_PROVIDER_PORT" ] \
+  || fail "remat smoke: cluster row not re-materialized (endpoint port $AI_REMAT_CLUSTER_HOSTPORT, wanted $AI_FALLBACK_PROVIDER_PORT)"
+AI_REMAT_ROUTE_STATE=$(psql "$PG_DB_URL" -Atc "SELECT status || ':' || version FROM ai_routes WHERE id = '$AI_REMAT_ROUTE_ID'")
+[ "$AI_REMAT_ROUTE_STATE" = "active:2" ] \
+  || fail "remat smoke: route state $AI_REMAT_ROUTE_STATE (wanted active:2 — status untouched, version bumped)"
+: >/tmp/fp-e2e-ai-fallback-auth.log
+for i in $(seq 1 50); do
+  AI_CODE=$(curl -sS -o /tmp/fp-e2e-ai-remat.json -w '%{http_code}' \
+    -H "content-type: application/json" -H "x-flowplane-ai-model: gpt-5" --data "$AI_REQUEST" \
+    http://127.0.0.1:$AI_REMAT_GATEWAY_PORT/v1/chat/completions 2>/dev/null || true)
+  [ "$AI_CODE" = "200" ] && grep -q "Bearer fp-e2e-ai-fallback-secret" /tmp/fp-e2e-ai-fallback-auth.log && break
+  sleep 1
+done
+[ "$AI_CODE" = "200" ] || fail "remat smoke: route did not converge on the updated provider (last code $AI_CODE)"
+grep -q "Bearer fp-e2e-ai-fallback-secret" /tmp/fp-e2e-ai-fallback-auth.log \
+  || fail "remat smoke: traffic did not reach the NEW provider endpoint after the update"
+
+# Cleanup (route then provider; secret stays, harness DB is disposable).
+AI_REMAT_ROUTE_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_routes WHERE id = '$AI_REMAT_ROUTE_ID'")
+curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_REMAT_ROUTE_REV" \
+  http://$API/api/v1/teams/default/ai/routes/ai-remat >/dev/null
+AI_REMAT_PROVIDER_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_providers WHERE id = '$AI_REMAT_PROVIDER_ID'")
+curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_REMAT_PROVIDER_REV" \
+  http://$API/api/v1/teams/default/ai/providers/ai-remat-provider >/dev/null
+echo "PHASE 1a remat smoke OK: provider base_url update re-materialized the cluster over xDS without touching the route"

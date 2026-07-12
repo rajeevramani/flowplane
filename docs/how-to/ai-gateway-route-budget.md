@@ -58,6 +58,8 @@ flowplane ai providers create --file provider.json
 
 This POSTs to `/api/v1/teams/{team}/ai/providers` and returns the provider view, including its `id` — note it for the route backend.
 
+Provider updates propagate live: changing a provider (e.g. its `base_url`) re-materializes the backend clusters of every AI route that references it in the same request and pushes the change to the dataplane over xDS — you never need to recreate routes after a provider change. Each dependent route's `revision` is bumped by the update, so a concurrent route edit holding the old revision fails with `revision_mismatch` instead of applying stale provider state.
+
 ## 2. Create a route to the provider
 
 The route body is `{ "name", "spec" }`, where `spec` is the `AiRouteSpec`: a `listener_port`, a `path` (defaults to `/v1/chat/completions`, currently the only supported path), and one or more `backends`. Each `AiRouteBackend` references a `provider_id`, optionally restricts which `models` it serves (empty = catch-all), and carries a `weight` (1–1000, default 1) and `priority` (default 0). Use `model_override` to rewrite the client's `model` to a specific upstream model.

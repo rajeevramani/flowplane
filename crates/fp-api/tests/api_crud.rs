@@ -1635,15 +1635,18 @@ async fn secret_values_are_write_only_over_http() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(json_of(response).await["revision"], 3);
 
+    // Provider update re-materializes dependent clusters in the same transaction (fpv2-6mj):
+    // the route stays active (nothing produces 'stale' anymore) and its revision bumps as the
+    // conflict signal for racing route writers.
     let route = format!("{routes}/{route_name}");
     let response = app
         .clone()
         .oneshot(request("GET", &route, None))
         .await
-        .expect("get stale AI route");
+        .expect("get AI route after provider update");
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_of(response).await;
-    assert_eq!(body["status"], "stale");
+    assert_eq!(body["status"], "active");
     assert_eq!(body["revision"], 2);
 
     let response = app
@@ -1653,12 +1656,20 @@ async fn secret_values_are_write_only_over_http() {
         .expect("delete referenced AI provider");
     assert_eq!(response.status(), StatusCode::CONFLICT);
 
+    // The budget is scoped to this route's materialized route config (FK RESTRICT), so the
+    // route delete must refuse with a conflict instead of silently leaking the route config
+    // (fpv2-8am — the pre-fix cleanup swallowed that FK failure).
     let response = app
         .clone()
         .oneshot(request_with_revision("DELETE", &route, 2, None))
         .await
-        .expect("delete AI route");
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        .expect("delete AI route pinned by budget");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = json_of(response).await;
+    assert!(body["message"]
+        .as_str()
+        .expect("message")
+        .contains(&budget_name));
 
     let response = app
         .clone()
@@ -1672,6 +1683,8 @@ async fn secret_values_are_write_only_over_http() {
         .iter()
         .any(|provider| provider["name"] == provider_name));
 
+    // Route still exists at this point, so the provider delete conflicts on the ROUTE
+    // dependency (routes are checked before budgets).
     let response = app
         .clone()
         .oneshot(request_with_revision("DELETE", &provider, 3, None))
@@ -1682,7 +1695,7 @@ async fn secret_values_are_write_only_over_http() {
     assert!(body["message"]
         .as_str()
         .expect("message")
-        .contains(&budget_name));
+        .contains(&route_name));
 
     let response = app
         .clone()
@@ -1694,6 +1707,14 @@ async fn secret_values_are_write_only_over_http() {
         ))
         .await
         .expect("delete AI budget");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // Budget gone — the route delete now succeeds.
+    let response = app
+        .clone()
+        .oneshot(request_with_revision("DELETE", &route, 2, None))
+        .await
+        .expect("delete AI route");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
     let response = app
