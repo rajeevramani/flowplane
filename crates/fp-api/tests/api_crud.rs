@@ -1635,15 +1635,18 @@ async fn secret_values_are_write_only_over_http() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(json_of(response).await["revision"], 3);
 
+    // Provider update re-materializes dependent clusters in the same transaction (fpv2-6mj):
+    // the route stays active (nothing produces 'stale' anymore) and its revision bumps as the
+    // conflict signal for racing route writers.
     let route = format!("{routes}/{route_name}");
     let response = app
         .clone()
         .oneshot(request("GET", &route, None))
         .await
-        .expect("get stale AI route");
+        .expect("get AI route after provider update");
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_of(response).await;
-    assert_eq!(body["status"], "stale");
+    assert_eq!(body["status"], "active");
     assert_eq!(body["revision"], 2);
 
     let response = app

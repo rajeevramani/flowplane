@@ -187,6 +187,36 @@ pub async fn update(
     }
 }
 
+/// Rewrite an AI-owned materialized cluster's spec (provider re-materialization). Gated on
+/// `owner_kind = 'ai'` so it can never touch user or discovery clusters; the caller supplies
+/// names only from `ai_routes.cluster_names` (system-written at materialization). No caller
+/// revision check — this is internal projection maintenance, serialized by the per-team AI
+/// materialization advisory lock. NotFound means materialized state is corrupt and the whole
+/// enclosing transaction must roll back.
+pub async fn update_ai_owned_spec(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+    spec: &ClusterSpec,
+) -> DomainResult<Cluster> {
+    let spec_json = serde_json::to_value(spec)
+        .map_err(|e| DomainError::internal(format!("serialize cluster spec: {e}")))?;
+    let row = sqlx::query(&format!(
+        "UPDATE clusters SET spec = $1, version = version + 1, updated_at = now() \
+         WHERE team_id = $2 AND name = $3 AND owner_kind = 'ai' RETURNING {COLUMNS}"
+    ))
+    .bind(spec_json)
+    .bind(team_id.as_uuid())
+    .bind(name)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("update AI-owned cluster: {e}")))?;
+    row.as_ref()
+        .map(from_row)
+        .transpose()?
+        .ok_or_else(|| DomainError::not_found("AI-owned cluster", name))
+}
+
 /// Delete with the same revision contract. Returns the deleted cluster's id.
 pub async fn delete(
     tx: &mut Transaction<'_, Postgres>,

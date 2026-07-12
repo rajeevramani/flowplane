@@ -179,8 +179,54 @@ pub async fn update_provider(
         .begin()
         .await
         .map_err(crate::services::db_err("update AI provider: begin"))?;
+    // Per-team AI-materialization lock; must be the first statement in the tx, before any
+    // materialization-sensitive read or write. Route create/update/delete acquire the same
+    // lock once their single-tx restructure lands (fpv2-8am); until then this serializes
+    // provider updates against each other.
+    ai::acquire_materialization_lock(&mut tx, team.id).await?;
     let provider = ai::update(&mut tx, team.id, name, &spec, expected_version).await?;
-    ai::mark_routes_stale_for_provider(&mut tx, team.id, provider.id).await?;
+    // Re-materialize every dependent backend cluster from the committed-to-be provider spec
+    // and emit the ClusterUpserted events that drive the xDS re-push. base_url is the only
+    // provider field snapshotted into materialized state (endpoint host/port, use_tls, SNI);
+    // path_prefix/auth_header/credential are read live per-request by the ExtProc.
+    let dependents = ai::routes_referencing_provider(&mut tx, team.id, provider.id).await?;
+    if !dependents.is_empty() {
+        let cluster_spec = provider_cluster_spec(&provider)?;
+        for route in &dependents {
+            for (position, backend) in route.spec.backends.iter().enumerate() {
+                if backend.provider_id != provider.id {
+                    continue;
+                }
+                let cluster_name =
+                    route.materialized.cluster_names.get(position).ok_or_else(|| {
+                        DomainError::internal(format!(
+                            "AI route \"{}\" has no materialized cluster at backend position {position}",
+                            route.name
+                        ))
+                    })?;
+                let cluster = cluster_repo::update_ai_owned_spec(
+                    &mut tx,
+                    team.id,
+                    cluster_name,
+                    &cluster_spec,
+                )
+                .await?;
+                append_gateway_event(
+                    &mut tx,
+                    team,
+                    DomainEvent::ClusterUpserted {
+                        cluster_id: cluster.id.as_uuid(),
+                        name: cluster.name,
+                    },
+                )
+                .await?;
+            }
+        }
+        // Conflict signal for racing route writers holding a pre-update route snapshot:
+        // their OCC check fails with RevisionMismatch instead of silently materializing
+        // from the superseded provider spec. Deliberately no status write.
+        ai::bump_routes_version_for_provider(&mut tx, team.id, provider.id).await?;
+    }
     audit::record_in_tx(
         &mut tx,
         &mutation_audit(
