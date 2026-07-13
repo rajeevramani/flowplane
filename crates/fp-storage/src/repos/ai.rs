@@ -13,10 +13,10 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 const COLUMNS: &str = "id, team_id, name, kind, base_url, path_prefix, credential_secret_id, \
-                       models, auth_header, version, created_at, updated_at";
+                       models, auth_header, auth_scheme, version, created_at, updated_at";
 const PROVIDER_COLUMNS: &str = "p.id, p.team_id, p.name, p.kind, p.base_url, p.path_prefix, \
-                                p.credential_secret_id, p.models, p.auth_header, p.version, \
-                                p.created_at, p.updated_at";
+                                p.credential_secret_id, p.models, p.auth_header, p.auth_scheme, \
+                                p.version, p.created_at, p.updated_at";
 const ROUTE_COLUMNS: &str = "id, team_id, name, spec, status, cluster_names, route_config_name, \
                              listener_name, version, created_at, updated_at";
 const BUDGET_COLUMNS: &str = "id, team_id, name, mode, limit_units, window_seconds, provider_id, \
@@ -57,6 +57,7 @@ fn provider_from_row(row: &PgRow) -> DomainResult<AiProvider> {
             credential_secret_id: SecretId::from(row.get::<Uuid, _>("credential_secret_id")),
             models: row.get("models"),
             auth_header: row.get("auth_header"),
+            auth_scheme: row.get("auth_scheme"),
         },
         version: row.get("version"),
         created_at: row.get("created_at"),
@@ -320,8 +321,8 @@ pub async fn create(
 ) -> DomainResult<AiProvider> {
     let row = sqlx::query(&format!(
         "INSERT INTO ai_providers \
-           (id, team_id, org_id, name, kind, base_url, path_prefix, credential_secret_id, models, auth_header) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING {COLUMNS}"
+           (id, team_id, org_id, name, kind, base_url, path_prefix, credential_secret_id, models, auth_header, auth_scheme) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING {COLUMNS}"
     ))
     .bind(AiProviderId::generate().as_uuid())
     .bind(team.id.as_uuid())
@@ -333,6 +334,7 @@ pub async fn create(
     .bind(spec.credential_secret_id.as_uuid())
     .bind(&spec.models)
     .bind(&spec.auth_header)
+    .bind(&spec.auth_scheme)
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| match &e {
@@ -393,8 +395,9 @@ pub async fn update(
     let row = sqlx::query(&format!(
         "UPDATE ai_providers \
          SET kind = $1, base_url = $2, path_prefix = $3, credential_secret_id = $4, \
-             models = $5, auth_header = $6, version = version + 1, updated_at = now() \
-         WHERE team_id = $7 AND name = $8 AND version = $9 RETURNING {COLUMNS}"
+             models = $5, auth_header = $6, auth_scheme = $7, version = version + 1, \
+             updated_at = now() \
+         WHERE team_id = $8 AND name = $9 AND version = $10 RETURNING {COLUMNS}"
     ))
     .bind(spec.kind.as_str())
     .bind(&spec.base_url)
@@ -402,6 +405,7 @@ pub async fn update(
     .bind(spec.credential_secret_id.as_uuid())
     .bind(&spec.models)
     .bind(&spec.auth_header)
+    .bind(&spec.auth_scheme)
     .bind(team_id.as_uuid())
     .bind(name)
     .bind(expected_version)

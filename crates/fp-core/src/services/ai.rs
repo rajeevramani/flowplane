@@ -1557,6 +1557,7 @@ mod tests {
                 credential_secret_id: fp_domain::id::SecretId::generate(),
                 models: Vec::new(),
                 auth_header: "authorization".into(),
+                auth_scheme: None,
             },
             version: 1,
             created_at: chrono::Utc::now(),
@@ -1599,6 +1600,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn provider_cluster_spec_is_byte_identical_across_auth_scheme_change() {
+        // Design AC 6 (2026-07-ai-credential-auth-scheme): the materialized cluster
+        // derives from base_url origin only, so an auth_scheme-only change must
+        // produce an identical ClusterSpec (no new xDS sensitivity).
+        let mut provider = provider_with_base_url("https://api.openai.com");
+        let before = provider_cluster_spec(&provider).expect("cluster before");
+        provider.spec.auth_scheme = Some("Bearer".into());
+        let after = provider_cluster_spec(&provider).expect("cluster after");
+        assert_eq!(
+            serde_json::to_vec(&before).expect("serialize before"),
+            serde_json::to_vec(&after).expect("serialize after"),
+            "auth_scheme change must not alter materialized cluster content"
+        );
     }
 
     #[test]
