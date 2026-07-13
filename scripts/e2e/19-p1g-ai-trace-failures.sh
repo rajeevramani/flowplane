@@ -55,9 +55,26 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
-    def do_POST(self):
+    def read_body(self):
+        # stream:true requests arrive chunked: the listener ExtProc's request-body
+        # rewrite removes content-length, and BaseHTTPRequestHandler does not decode
+        # chunked transfer-encoding natively.
+        if "chunked" in (self.headers.get("transfer-encoding") or "").lower():
+            data = b""
+            while True:
+                size_line = self.rfile.readline().split(b";")[0].strip()
+                size = int(size_line or b"0", 16)
+                if size == 0:
+                    while self.rfile.readline() not in (b"\r\n", b"\n", b""):
+                        pass
+                    return data
+                data += self.rfile.read(size)
+                self.rfile.readline()
         length = int(self.headers.get("content-length", "0") or 0)
-        raw = self.rfile.read(length) if length else b""
+        return self.rfile.read(length) if length else b""
+
+    def do_POST(self):
+        raw = self.read_body()
         try:
             body = json.loads(raw)
         except Exception:
@@ -373,7 +390,10 @@ python3 - "$AI_FAIL_DEAD_PROVIDER_ID" "$AI_FAIL_SECRET_B64" /tmp/fp-e2e-trfail-c
 import json, sys
 row = json.load(open(sys.argv[3], encoding="utf-8"))
 assert row["failure_hop"] == "credential_injection", row["failure_hop"]
-assert row["provider_id"] == sys.argv[1], row["provider_id"]
+# Column ownership (fp-storage ai_trace upsert): row-level provider_id is the upstream
+# stream's column, and a credential failure answers before any upstream stream opens —
+# so it stays NULL; the selected provider is asserted on the credential hop detail below.
+assert row["provider_id"] is None, row["provider_id"]
 by_name = {h["hop"]: h for h in row["hops"]}
 cred = by_name["credential_injection"]
 assert cred["outcome"] == "secret_missing", cred

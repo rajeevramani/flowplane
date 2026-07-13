@@ -5,6 +5,8 @@
 //! `complete_sse_events_end` and `strip_synthetic_openai_usage_sse`. They do not
 //! reference implementation internals.
 
+#![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+
 use fp_domain::{complete_sse_events_end, strip_synthetic_openai_usage_sse, OpenAiTokenUsage};
 
 // ---------------------------------------------------------------------------
