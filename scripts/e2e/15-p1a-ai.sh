@@ -245,3 +245,131 @@ AI_REMAT_PROVIDER_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_providers
 curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_REMAT_PROVIDER_REV" \
   http://$API/api/v1/teams/default/ai/providers/ai-remat-provider >/dev/null
 echo "PHASE 1a remat smoke OK: provider base_url update re-materialized the cluster over xDS without touching the route"
+
+# ---- fpv2-crv: provider auth_scheme credential injection (design AC 1 + AC 3, live).
+# HAPPY: a secret storing a BARE key + provider "auth_scheme": "Bearer" (auth_header left to
+# its documented default "authorization") must reach the provider as EXACTLY
+# "Bearer <bare key>" — scheme + single space + key, no double scheme, no bare key.
+# CONFLICT: a secret whose decoded value ALREADY starts with the scheme fails closed at the
+# gateway (credential-unavailable 500) BEFORE any upstream contact, and the persisted trace
+# row records failure_hop=credential_injection with outcome scheme_conflict, no upstream hop,
+# and no credential material.
+AI_SCHEME_HEADER="Bearer sk-e2e-scheme-key"
+# Dedicated stub (same harness mock script): expects the SCHEMED value, so the request only
+# turns 200 if the gateway composed scheme + bare key correctly.
+: >/tmp/fp-e2e-ai-scheme-auth.log
+python3 /tmp/fp-e2e-ai-provider.py "$AI_SCHEME_PROVIDER_PORT" /tmp/fp-e2e-ai-scheme-auth.log \
+  "$AI_SCHEME_HEADER" >/tmp/fp-e2e-ai-scheme-provider.log 2>&1 &
+AI_SCHEME_STUB_PID=$!
+AI_SCHEME_SECRET_B64=$(python3 -c 'import base64; print(base64.b64encode(b"sk-e2e-scheme-key").decode())')
+AI_SCHEME_SECRET_ID=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/secrets \
+  -d "{\"name\":\"ai-e2e-scheme-key\",\"description\":\"AI e2e bare-key credential\",\"spec\":{\"type\":\"generic_secret\",\"secret\":\"$AI_SCHEME_SECRET_B64\"}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+AI_SCHEME_PROVIDER_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/providers \
+  -d "{\"name\":\"ai-e2e-scheme-provider\",\"spec\":{\"kind\":\"openai-compatible\",\"base_url\":\"http://127.0.0.1:$AI_SCHEME_PROVIDER_PORT\",\"credential_secret_id\":\"$AI_SCHEME_SECRET_ID\",\"auth_scheme\":\"Bearer\",\"models\":[\"gpt-5\"]}}")
+AI_SCHEME_PROVIDER_ID=$(python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" <<<"$AI_SCHEME_PROVIDER_BODY")
+curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/routes \
+  -d "{\"name\":\"ai-e2e-scheme\",\"spec\":{\"listener_port\":$AI_SCHEME_GATEWAY_PORT,\"backends\":[{\"provider_id\":\"$AI_SCHEME_PROVIDER_ID\",\"models\":[],\"weight\":1}]}}" \
+  >/dev/null
+for i in $(seq 1 50); do
+  AI_CODE=$(curl -sS -o /tmp/fp-e2e-ai-scheme.json -w '%{http_code}' \
+    -H "content-type: application/json" -H "x-flowplane-ai-model: gpt-5" --data "$AI_REQUEST" \
+    http://127.0.0.1:$AI_SCHEME_GATEWAY_PORT/v1/chat/completions 2>/dev/null || true)
+  [ "$AI_CODE" = "200" ] && break
+  sleep 1
+done
+[ "$AI_CODE" = "200" ] || fail "auth_scheme happy request never served the scheme stub (last code $AI_CODE)"
+grep -q "mock-ai-ok" /tmp/fp-e2e-ai-scheme.json || fail "auth_scheme mock response did not reach client"
+# The stub logs credential<TAB>Host per request: at least one line must carry EXACTLY the
+# composed value, and EVERY line must — no "Bearer Bearer", no bare key, no extra whitespace.
+AI_SCHEME_LINE="$AI_SCHEME_HEADER"$'\t'"127.0.0.1:$AI_SCHEME_PROVIDER_PORT"
+grep -qF "$AI_SCHEME_LINE" /tmp/fp-e2e-ai-scheme-auth.log \
+  || fail "scheme stub did not receive exactly '$AI_SCHEME_HEADER'; last line: $(tail -1 /tmp/fp-e2e-ai-scheme-auth.log)"
+awk -F'\t' -v cred="$AI_SCHEME_HEADER" \
+  '$1 != cred { print "bad line: " $0; exit 1 }' /tmp/fp-e2e-ai-scheme-auth.log \
+  || fail "scheme stub saw an auth header other than exactly '$AI_SCHEME_HEADER'"
+curl -fsS http://127.0.0.1:$ADMIN_PORT/config_dump >/tmp/fp-e2e-ai-dump.json
+if grep -q "sk-e2e-scheme-key" /tmp/fp-e2e-ai-dump.json; then
+  fail "auth_scheme bare key leaked into Envoy config dump"
+fi
+
+# Baseline BEFORE any conflict resources exist: the conflict request must add ZERO lines
+# to the stub log (fails closed before upstream contact).
+AI_SCHEME_STUB_LINES_BEFORE=$(wc -l < /tmp/fp-e2e-ai-scheme-auth.log | tr -d ' ')
+AI_SCHEME_CONFLICT_SECRET_B64=$(python3 -c 'import base64; print(base64.b64encode(b"Bearer sk-e2e-conflict-key").decode())')
+AI_SCHEME_CONFLICT_SECRET_ID=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/secrets \
+  -d "{\"name\":\"ai-e2e-scheme-conflict-key\",\"description\":\"AI e2e already-schemed credential\",\"spec\":{\"type\":\"generic_secret\",\"secret\":\"$AI_SCHEME_CONFLICT_SECRET_B64\"}}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+AI_SCHEME_CONFLICT_PROVIDER_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/providers \
+  -d "{\"name\":\"ai-e2e-scheme-conflict-provider\",\"spec\":{\"kind\":\"openai-compatible\",\"base_url\":\"http://127.0.0.1:$AI_SCHEME_PROVIDER_PORT\",\"credential_secret_id\":\"$AI_SCHEME_CONFLICT_SECRET_ID\",\"auth_scheme\":\"Bearer\",\"models\":[\"gpt-5\"]}}")
+AI_SCHEME_CONFLICT_PROVIDER_ID=$(python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" <<<"$AI_SCHEME_CONFLICT_PROVIDER_BODY")
+curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/routes \
+  -d "{\"name\":\"ai-e2e-scheme-conflict\",\"spec\":{\"listener_port\":$AI_SCHEME_CONFLICT_GATEWAY_PORT,\"backends\":[{\"provider_id\":\"$AI_SCHEME_CONFLICT_PROVIDER_ID\",\"models\":[],\"weight\":1}]}}" \
+  >/dev/null
+for i in $(seq 1 50); do
+  curl -fsS http://127.0.0.1:$ADMIN_PORT/config_dump >/tmp/fp-e2e-ai-dump.json || true
+  grep -q "ai-ai-e2e-scheme-conflict-listener" /tmp/fp-e2e-ai-dump.json && break
+  sleep 1
+done
+grep -q "ai-ai-e2e-scheme-conflict-listener" /tmp/fp-e2e-ai-dump.json \
+  || fail "auth_scheme conflict listener did not converge"
+AI_SCHEME_CONFLICT_CODE=""
+for i in $(seq 1 50); do
+  AI_SCHEME_CONFLICT_CODE=$(curl -sS -o /tmp/fp-e2e-ai-scheme-conflict.body -D /tmp/fp-e2e-ai-scheme-conflict.hdrs -w '%{http_code}' \
+    -H "content-type: application/json" -H "x-flowplane-ai-model: gpt-5" --data "$AI_REQUEST" \
+    http://127.0.0.1:$AI_SCHEME_CONFLICT_GATEWAY_PORT/v1/chat/completions 2>/dev/null || true)
+  [ "$AI_SCHEME_CONFLICT_CODE" = "500" ] && grep -qi "credential unavailable" /tmp/fp-e2e-ai-scheme-conflict.body && break
+  sleep 1
+done
+[ "$AI_SCHEME_CONFLICT_CODE" = "500" ] \
+  || fail "scheme-conflict request expected 500, got $AI_SCHEME_CONFLICT_CODE (body $(cat /tmp/fp-e2e-ai-scheme-conflict.body))"
+grep -qi "AI provider credential unavailable" /tmp/fp-e2e-ai-scheme-conflict.body \
+  || fail "scheme-conflict 500 body did not carry the credential-unavailable envelope: $(cat /tmp/fp-e2e-ai-scheme-conflict.body)"
+AI_SCHEME_CONFLICT_REQ=$(grep -i '^x-request-id:' /tmp/fp-e2e-ai-scheme-conflict.hdrs | head -1 | awk '{print $2}' | tr -d '\r')
+[ -n "$AI_SCHEME_CONFLICT_REQ" ] || fail "scheme-conflict response carried no x-request-id"
+# Trace row via the trace REST API (CLI --json wrapper), keyed by the server request id.
+AI_SCHEME_TRACE_OK=0
+for i in $(seq 1 30); do
+  ./target/debug/flowplane --json ai trace --request-id "$AI_SCHEME_CONFLICT_REQ" \
+    >/tmp/fp-e2e-ai-scheme-trace.json 2>/dev/null || true
+  grep -q '"scheme_conflict"' /tmp/fp-e2e-ai-scheme-trace.json && { AI_SCHEME_TRACE_OK=1; break; }
+  sleep 1
+done
+[ "$AI_SCHEME_TRACE_OK" = "1" ] \
+  || fail "no trace row with outcome scheme_conflict for request $AI_SCHEME_CONFLICT_REQ (last: $(cat /tmp/fp-e2e-ai-scheme-trace.json 2>/dev/null))"
+python3 - /tmp/fp-e2e-ai-scheme-trace.json <<'PY' || fail "scheme-conflict trace row failed assertions"
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+traces = doc["data"]["traces"]
+assert len(traces) == 1, f"expected exactly one trace row, got {len(traces)}"
+row = traces[0]
+assert row["failure_hop"] == "credential_injection", row["failure_hop"]
+assert row["status_code"] == 500, row["status_code"]
+by_name = {h["hop"]: h for h in row["hops"]}
+cred = by_name["credential_injection"]
+assert cred["outcome"] == "scheme_conflict", cred
+assert "upstream" not in by_name, sorted(by_name)
+row_text = json.dumps(row)
+assert "sk-e2e-conflict-key" not in row_text, "credential material must never appear in the trace row"
+PY
+# Fail-closed means fail BEFORE upstream: the stub must not have been contacted at all.
+AI_SCHEME_STUB_LINES_AFTER=$(wc -l < /tmp/fp-e2e-ai-scheme-auth.log | tr -d ' ')
+[ "$AI_SCHEME_STUB_LINES_AFTER" = "$AI_SCHEME_STUB_LINES_BEFORE" ] \
+  || fail "scheme-conflict request reached the upstream stub ($AI_SCHEME_STUB_LINES_BEFORE -> $AI_SCHEME_STUB_LINES_AFTER log lines)"
+if grep -q "sk-e2e-conflict-key" /tmp/fp-e2e-ai-scheme-auth.log; then
+  fail "conflict credential material reached the upstream stub"
+fi
+
+# Cleanup (routes then providers; secrets stay, harness DB is disposable).
+kill "$AI_SCHEME_STUB_PID" >/dev/null 2>&1 || true
+for route in "ai-e2e-scheme" "ai-e2e-scheme-conflict"; do
+  REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_routes WHERE team_id = '$TEAM_ID' AND name = '$route'")
+  curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $REV" \
+    "http://$API/api/v1/teams/default/ai/routes/$route" >/dev/null
+done
+for prov in "ai-e2e-scheme-provider" "ai-e2e-scheme-conflict-provider"; do
+  REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_providers WHERE team_id = '$TEAM_ID' AND name = '$prov'")
+  curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $REV" \
+    "http://$API/api/v1/teams/default/ai/providers/$prov" >/dev/null
+done
+echo "PHASE 1a auth_scheme OK: bare key + auth_scheme Bearer injected as exactly scheme+SP+key -> already-schemed secret failed closed (500 credential-unavailable, scheme_conflict trace row, zero upstream contact)"

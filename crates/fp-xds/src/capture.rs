@@ -1487,9 +1487,10 @@ struct SelectedBackendRuntime {
 }
 
 /// Why credential injection could not produce an auth value. `outcome` is the trace hop
-/// enum (design hop table: `secret_missing` / `decrypt_failed`; `unavailable` for failures
-/// upstream of the secret itself); `auth_header` is the provider's auth header *name* when
-/// the provider row was resolved — never any credential material.
+/// enum (design hop table: `secret_missing` / `decrypt_failed` / `scheme_conflict`;
+/// `unavailable` for failures upstream of the secret itself); `auth_header` is the
+/// provider's auth header *name* when the provider row was resolved — never any
+/// credential material.
 #[derive(Debug)]
 struct CredentialFailure {
     outcome: &'static str,
@@ -1572,6 +1573,25 @@ async fn selected_backend_runtime(
             "AI provider credential is not UTF-8",
         ))
     })?;
+    // Assemble `<auth_scheme> <secret>` when the provider names a scheme; no scheme
+    // keeps the historical verbatim injection. Fail closed when the decoded secret
+    // already starts with the scheme (`Bearer Bearer <key>` is always a
+    // misconfiguration — the silent provider-401 class this feature exists to kill).
+    let value = match provider.spec.auth_scheme.as_deref() {
+        None => value,
+        Some(scheme) => {
+            if secret_starts_with_scheme(&value, scheme) {
+                return Err(CredentialFailure {
+                    outcome: "scheme_conflict",
+                    auth_header: Some(auth_header.clone()),
+                    status: Status::failed_precondition(
+                        "AI provider credential already starts with the configured auth_scheme",
+                    ),
+                });
+            }
+            format!("{scheme} {value}")
+        }
+    };
     Ok(SelectedBackendRuntime {
         auth_header,
         auth_value: value,
@@ -1620,6 +1640,15 @@ fn push_credential_failure_hop_with_origin(
             "auth_header": failure.auth_header,
         }),
     );
+}
+
+/// True iff the decoded credential already begins with `<scheme> ` (ASCII
+/// case-insensitive) — the exact double-prefix shape the conflict guard rejects.
+/// Near-misses (`Bearers x`, a bare `Bearer` with no trailing space) do not match.
+fn secret_starts_with_scheme(value: &str, scheme: &str) -> bool {
+    value.len() > scheme.len()
+        && value.as_bytes()[scheme.len()] == b' '
+        && value.as_bytes()[..scheme.len()].eq_ignore_ascii_case(scheme.as_bytes())
 }
 
 fn provider_path_rewrite(path_prefix: Option<&str>, request_path: Option<&str>) -> Option<String> {
@@ -2311,6 +2340,24 @@ mod tests {
     }
 
     #[test]
+    fn secret_starts_with_scheme_matches_exact_prefix_only() {
+        // Conflicts: '<scheme> ' prefix, ASCII case-insensitive.
+        assert!(secret_starts_with_scheme("Bearer sk-123", "Bearer"));
+        assert!(secret_starts_with_scheme("bearer sk-123", "Bearer"));
+        assert!(secret_starts_with_scheme("BEARER sk-123", "bearer"));
+        assert!(secret_starts_with_scheme("Bearer  double-space", "Bearer"));
+        // Near-misses must NOT trip the guard.
+        assert!(!secret_starts_with_scheme("Bearers x", "Bearer"));
+        assert!(!secret_starts_with_scheme("Bearer", "Bearer"));
+        assert!(!secret_starts_with_scheme("Bearer", "bearer"));
+        assert!(!secret_starts_with_scheme("Bear sk-123", "Bearer"));
+        assert!(!secret_starts_with_scheme("sk-Bearer 123", "Bearer"));
+        assert!(!secret_starts_with_scheme("", "Bearer"));
+        // Unicode length mismatch stays safe (byte-length guard, no panic).
+        assert!(!secret_starts_with_scheme("Bé", "Bearer"));
+    }
+
+    #[test]
     fn ai_context_requires_complete_identity_metadata() {
         let mut request = Request::new(());
         request.metadata_mut().insert(
@@ -2813,6 +2860,104 @@ mod tests {
             .execute(&pool)
             .await
             .expect("restore base_url");
+
+        // auth_scheme assembly + fail-closed conflict guard (fpv2-crv.2, design AC 1/3).
+        // The fixture secret decodes to "Bearer selected": with auth_scheme "Bearer" in
+        // any case that is the double-prefix misconfiguration and must fail closed as
+        // scheme_conflict carrying the auth header NAME only — never the value.
+        for scheme in ["Bearer", "bearer", "BEARER"] {
+            sqlx::query("UPDATE ai_providers SET auth_scheme = $2 WHERE id = $1")
+                .bind(provider_id)
+                .bind(scheme)
+                .execute(&pool)
+                .await
+                .expect("set auth_scheme");
+            let failure = selected_backend_runtime(
+                &pool,
+                team.id,
+                RouteConfigId::from(route_config_id),
+                AiProviderId::from(provider_id),
+                Some(0),
+                Some("/v1/chat/completions"),
+            )
+            .await
+            .expect_err("scheme conflict fails closed");
+            assert_eq!(failure.outcome, "scheme_conflict", "scheme {scheme}");
+            assert_eq!(failure.auth_header.as_deref(), Some("authorization"));
+        }
+        // A non-conflicting scheme is assembled in front of the decoded secret.
+        sqlx::query("UPDATE ai_providers SET auth_scheme = 'Token' WHERE id = $1")
+            .bind(provider_id)
+            .execute(&pool)
+            .await
+            .expect("set non-conflicting scheme");
+        let assembled = selected_backend_runtime(
+            &pool,
+            team.id,
+            RouteConfigId::from(route_config_id),
+            AiProviderId::from(provider_id),
+            Some(0),
+            Some("/v1/chat/completions"),
+        )
+        .await
+        .expect("assembled runtime");
+        assert_eq!(assembled.auth_value, format!("Token {secret_value}"));
+        // Happy path per design AC 1: bare-key secret + auth_scheme "Bearer" injects
+        // "Bearer <key>".
+        let bare_secret_value = "sk-bare-key-123";
+        let bare_spec = SecretSpec::GenericSecret {
+            secret: base64::engine::general_purpose::STANDARD.encode(bare_secret_value),
+        };
+        let bare_plaintext = serde_json::to_vec(&bare_spec).expect("bare secret json");
+        let bare_ciphertext = cipher
+            .encrypt(Nonce::from_slice(&nonce), bare_plaintext.as_ref())
+            .expect("encrypt bare");
+        let bare_secret_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO secrets \
+             (id, team_id, org_id, name, description, secret_type, configuration_encrypted, nonce, encryption_key_id) \
+             VALUES ($1, $2, $3, 'ai-key-bare', '', 'generic_secret', $4, $5, 'default')",
+        )
+        .bind(bare_secret_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(bare_ciphertext)
+        .bind(nonce.to_vec())
+        .execute(&pool)
+        .await
+        .expect("bare secret");
+        sqlx::query(
+            "UPDATE ai_providers SET auth_scheme = 'Bearer', credential_secret_id = $2 \
+             WHERE id = $1",
+        )
+        .bind(provider_id)
+        .bind(bare_secret_id)
+        .execute(&pool)
+        .await
+        .expect("point provider at bare secret");
+        let bearer_runtime = selected_backend_runtime(
+            &pool,
+            team.id,
+            RouteConfigId::from(route_config_id),
+            AiProviderId::from(provider_id),
+            Some(0),
+            Some("/v1/chat/completions"),
+        )
+        .await
+        .expect("bearer runtime");
+        assert_eq!(
+            bearer_runtime.auth_value,
+            format!("Bearer {bare_secret_value}")
+        );
+        // Restore the no-scheme fixture state for the remainder of the test.
+        sqlx::query(
+            "UPDATE ai_providers SET auth_scheme = NULL, credential_secret_id = $2 WHERE id = $1",
+        )
+        .bind(provider_id)
+        .bind(secret_id)
+        .execute(&pool)
+        .await
+        .expect("restore provider");
 
         let state = AiExtProcState {
             context: Some(AiExtProcContext {
@@ -4741,7 +4886,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ai_credential_failure_stream_persists_secret_missing_and_decrypt_failed_rows() {
+    async fn ai_credential_failure_stream_persists_failure_outcome_rows() {
         let _guard = crate::snapshot::ENV_LOCK.lock().await;
         let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
             eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
@@ -4794,23 +4939,61 @@ mod tests {
         .execute(&pool)
         .await
         .expect("garbage secret");
+        // A decryptable secret whose decoded value already carries the scheme the
+        // provider names -> scheme_conflict (fpv2-crv.2, design AC 3).
+        let conflict_secret_id = Uuid::now_v7();
+        {
+            use aes_gcm::aead::Aead;
+            use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+            let conflict_spec = SecretSpec::GenericSecret {
+                secret: base64::engine::general_purpose::STANDARD
+                    .encode(format!("Bearer {secret_value_marker}")),
+            };
+            let plaintext = serde_json::to_vec(&conflict_spec).expect("conflict secret json");
+            let nonce = [3_u8; 12];
+            let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher");
+            let ciphertext = cipher
+                .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
+                .expect("encrypt conflict secret");
+            sqlx::query(
+                "INSERT INTO secrets \
+                 (id, team_id, org_id, name, description, secret_type, configuration_encrypted, nonce, encryption_key_id) \
+                 VALUES ($1, $2, $3, 'conflict-key', '', 'generic_secret', $4, $5, 'default')",
+            )
+            .bind(conflict_secret_id)
+            .bind(team.id.as_uuid())
+            .bind(org.id.as_uuid())
+            .bind(ciphertext)
+            .bind(nonce.to_vec())
+            .execute(&pool)
+            .await
+            .expect("conflict secret");
+        }
 
         let missing_provider_id = Uuid::now_v7();
         let garbage_provider_id = Uuid::now_v7();
-        for (provider_id, secret_id, name) in [
-            (missing_provider_id, expired_secret_id, "p-missing"),
-            (garbage_provider_id, garbage_secret_id, "p-garbage"),
+        let conflict_provider_id = Uuid::now_v7();
+        for (provider_id, secret_id, name, auth_scheme) in [
+            (missing_provider_id, expired_secret_id, "p-missing", None),
+            (garbage_provider_id, garbage_secret_id, "p-garbage", None),
+            (
+                conflict_provider_id,
+                conflict_secret_id,
+                "p-conflict",
+                Some("Bearer"),
+            ),
         ] {
             sqlx::query(
                 "INSERT INTO ai_providers \
-                 (id, team_id, org_id, name, kind, base_url, path_prefix, credential_secret_id, auth_header) \
-                 VALUES ($1, $2, $3, $4, 'openai', 'https://api.openai.com', NULL, $5, 'authorization')",
+                 (id, team_id, org_id, name, kind, base_url, path_prefix, credential_secret_id, auth_header, auth_scheme) \
+                 VALUES ($1, $2, $3, $4, 'openai', 'https://api.openai.com', NULL, $5, 'authorization', $6)",
             )
             .bind(provider_id)
             .bind(team.id.as_uuid())
             .bind(org.id.as_uuid())
             .bind(name)
             .bind(secret_id)
+            .bind(auth_scheme)
             .execute(&pool)
             .await
             .expect("provider");
@@ -4832,7 +5015,8 @@ mod tests {
             "path": "/v1/chat/completions",
             "backends": [
                 {"provider_id": missing_provider_id, "models": [], "weight": 1, "priority": 0},
-                {"provider_id": garbage_provider_id, "models": [], "weight": 1, "priority": 0}
+                {"provider_id": garbage_provider_id, "models": [], "weight": 1, "priority": 0},
+                {"provider_id": conflict_provider_id, "models": [], "weight": 1, "priority": 0}
             ]
         });
         sqlx::query(
@@ -4847,7 +5031,11 @@ mod tests {
         .execute(&pool)
         .await
         .expect("ai route");
-        for (provider_id, position) in [(missing_provider_id, 0), (garbage_provider_id, 1)] {
+        for (provider_id, position) in [
+            (missing_provider_id, 0),
+            (garbage_provider_id, 1),
+            (conflict_provider_id, 2),
+        ] {
             sqlx::query(
                 "INSERT INTO ai_route_backends (ai_route_id, team_id, provider_id, position) \
                  VALUES ($1, $2, $3, $4)",
@@ -4864,6 +5052,7 @@ mod tests {
         for (provider_id, position, expected_outcome) in [
             (missing_provider_id, 0, "secret_missing"),
             (garbage_provider_id, 1, "decrypt_failed"),
+            (conflict_provider_id, 2, "scheme_conflict"),
         ] {
             let request_id = Uuid::now_v7().to_string();
             let headers = ProcessingRequest {

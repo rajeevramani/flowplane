@@ -109,6 +109,7 @@ fn provider_spec(base_url: &str, secret: SecretId) -> AiProviderSpec {
         credential_secret_id: secret,
         models: vec!["gpt-5".into()],
         auth_header: "authorization".into(),
+        auth_scheme: None,
     }
 }
 

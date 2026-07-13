@@ -256,6 +256,11 @@ pub struct AiProviderSpec {
     pub models: Vec<String>,
     #[serde(default = "default_auth_header")]
     pub auth_header: String,
+    /// RFC 7235 auth-scheme token prepended to the decoded credential at injection
+    /// time (`<auth_scheme> <secret>`). `None` = the decoded secret is injected
+    /// verbatim (the secret then carries any scheme itself).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_scheme: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -291,6 +296,28 @@ impl std::str::FromStr for AiProviderKind {
 
 fn default_auth_header() -> String {
     "authorization".into()
+}
+
+/// RFC 7235 `auth-scheme` is an RFC 7230 `token`: 1+ tchar.
+fn is_auth_scheme_token_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || matches!(
+            b,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
 }
 
 fn default_chat_path() -> String {
@@ -384,6 +411,13 @@ impl AiProviderSpec {
             return Err(DomainError::validation(
                 "AI provider auth_header must be a non-empty HTTP header name",
             ));
+        }
+        if let Some(scheme) = &self.auth_scheme {
+            if scheme.is_empty() || !scheme.bytes().all(is_auth_scheme_token_byte) {
+                return Err(DomainError::validation(
+                    "AI provider auth_scheme must be a non-empty RFC 7235 token (letters, digits, or !#$%&'*+.^_`|~-; no whitespace)",
+                ));
+            }
         }
         if let Some(prefix) = &self.path_prefix {
             if !prefix.starts_with('/') {
@@ -714,6 +748,7 @@ mod tests {
             credential_secret_id: SecretId::generate(),
             models: vec!["gpt-5".into()],
             auth_header: "authorization".into(),
+            auth_scheme: None,
         };
         assert!(spec.validate().is_err());
 
@@ -724,6 +759,56 @@ mod tests {
         spec.validate().expect("origin-only base_url");
     }
 
+    #[test]
+    fn provider_spec_auth_scheme_token_rules() {
+        let mut spec = origin_spec("https://api.openai.com");
+
+        // Absent scheme is valid (verbatim injection).
+        spec.auth_scheme = None;
+        spec.validate().expect("no scheme");
+
+        // Valid RFC 7235 tokens.
+        for ok in [
+            "Bearer",
+            "bearer",
+            "Token",
+            "DPoP",
+            "X-Api.Key_1!#$%&'*+^`|~-",
+        ] {
+            spec.auth_scheme = Some(ok.into());
+            assert!(spec.validate().is_ok(), "{ok} must be accepted");
+        }
+
+        // Invalid: empty, whitespace anywhere, non-token characters.
+        for bad in [
+            "", " ", "Bearer ", " Bearer", "Bea rer", "Bearer\t", "Bearer\n", "Bear:er", "Bear;er",
+            "Bear\"er", "Bearér", "Bear(er)", "Bear[er]", "Bear{er}", "Bear=er", "Bear/er",
+            "Bear\\er", "Bear,er", "Bear?er", "Bear@er", "Bear<er>",
+        ] {
+            spec.auth_scheme = Some(bad.into());
+            assert!(spec.validate().is_err(), "{bad:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn provider_spec_auth_scheme_serde_shape() {
+        // Absent in JSON -> None; None -> absent in JSON (lossless, no empty-string leak).
+        let json = r#"{"kind":"openai-compatible","base_url":"https://api.openai.com",
+            "credential_secret_id":"018f4e6e-0000-7000-8000-000000000000"}"#;
+        let spec: AiProviderSpec = serde_json::from_str(json).expect("spec without scheme");
+        assert_eq!(spec.auth_scheme, None);
+        let out = serde_json::to_value(&spec).expect("serialize");
+        assert!(out.get("auth_scheme").is_none(), "None must not serialize");
+
+        let json = r#"{"kind":"openai-compatible","base_url":"https://api.openai.com",
+            "credential_secret_id":"018f4e6e-0000-7000-8000-000000000000",
+            "auth_scheme":"Bearer"}"#;
+        let spec: AiProviderSpec = serde_json::from_str(json).expect("spec with scheme");
+        assert_eq!(spec.auth_scheme.as_deref(), Some("Bearer"));
+        let out = serde_json::to_value(&spec).expect("serialize");
+        assert_eq!(out["auth_scheme"], "Bearer");
+    }
+
     fn origin_spec(base_url: &str) -> AiProviderSpec {
         AiProviderSpec {
             kind: AiProviderKind::OpenaiCompatible,
@@ -732,6 +817,7 @@ mod tests {
             credential_secret_id: SecretId::generate(),
             models: Vec::new(),
             auth_header: "authorization".into(),
+            auth_scheme: None,
         }
     }
 
