@@ -172,6 +172,44 @@ flowplane ai usage --provider-id <provider-id-from-step-1>
 
 This GETs `/api/v1/teams/{team}/ai/usage` and returns `AiUsageSummary` rows with `prompt_tokens`, `completion_tokens`, `total_tokens`, and `event_count`. A non-zero `event_count` confirms the request routed to the provider and was accounted against the budget. You can also filter by `--route-config-id`.
 
+### Streaming
+
+Set `"stream": true` to receive the response as server-sent events. Chunks are
+delivered incrementally as the provider emits them — response headers and the
+first `data:` line arrive as soon as the model starts generating. Pass `-N` to
+curl so it doesn't buffer the output on its side:
+
+```bash
+curl -N http://127.0.0.1:19000/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"count slowly to 20"}]}'
+```
+
+Expect `content-type: text/event-stream` and `data:` lines appearing one by one
+while the model generates, ending with `data: [DONE]`:
+
+```
+data: {"id":"chatcmpl-...","choices":[{"index":0,"delta":{"content":"1"}}]}
+
+data: {"id":"chatcmpl-...","choices":[{"index":0,"delta":{"content":", 2"}}]}
+
+data: [DONE]
+```
+
+Token usage is recorded for streams too: rerun the `flowplane ai usage` check
+above and the stream's tokens appear, counted exactly once. To get usage
+numbers out of providers on streaming requests, Flowplane injects
+`stream_options: {"include_usage": true}` into the upstream request and strips
+the provider's final usage event from the response before it reaches the
+client — the stream you receive is the provider's output, byte-identical,
+minus that one event. If your request already sets
+`stream_options.include_usage` yourself, nothing is injected or stripped and
+the provider's usage event passes through to you unmodified.
+
+A client that disconnects mid-stream still leaves a partial trace row with the
+upstream hop marked `client_disconnect` — see
+[Trace an AI request through the gateway](./trace-ai-requests.md).
+
 Every request through the AI listener also records a per-hop trace — including
 budget rejections (enforcing mode) and `would_reject` verdicts (shadow mode) —
 retrievable with `flowplane ai trace --request-id <id from the response>`. To
