@@ -16,26 +16,29 @@ With that key set, create a secret holding the provider API key — `flowplane s
 
 Request verification in step 4 needs a connected dataplane that can receive the materialized listener over xDS. The `flowplane ai routes create` command creates the cluster, route config, and listener in the control plane; it does not start Envoy. For a production-shaped setup, use a dataplane registered over mTLS by the platform team (see [Register a dataplane and connect its agent over mTLS](register-dataplane-mtls.md) and [Evaluate a production-shaped platform setup](evaluate-platform.md)).
 
-`secret.json` (the `secret` value is **standard base64** of the full auth header value, scheme included — the gateway injects the decoded value into the provider's auth header verbatim, so for OpenAI-style `Bearer` auth it must be `Bearer <key>`, not the bare key. Produce it with `printf %s "Bearer $API_KEY" | base64`):
+`secret.json` (the `secret` value is **standard base64** of the **bare provider API key** — the wire scheme is provider config, not secret content: the provider's `auth_scheme` below prepends `Bearer ` at injection time. Produce it with `printf %s "$API_KEY" | base64`):
 
 ```json
 {
   "name": "openai-key",
   "spec": {
     "type": "generic_secret",
-    "secret": "<base64 of: Bearer <your provider API key>>"
+    "secret": "<base64 of your provider API key>"
   }
 }
 ```
 
-> **Common failure:** storing the bare key (no `Bearer ` prefix) makes the provider reject the
-> request — e.g. OpenRouter returns `401 {"error":{"message":"Missing Authentication header"}}` —
-> even though the request trace shows `credential_injection: injected`. The header *was* injected;
-> its value just lacked the auth scheme.
+> **Verbatim mode:** a provider *without* `auth_scheme` injects the decoded secret into the
+> auth header verbatim. Use that for providers whose header carries no scheme — e.g.
+> Anthropic-style `x-api-key` — or for existing secrets that already store `Bearer <key>`.
+> Setting `auth_scheme: "Bearer"` on a secret that already starts with `Bearer ` fails closed
+> at the gateway (see the `scheme_conflict` row in
+> [trace-ai-requests.md](./trace-ai-requests.md)) instead of sending `Bearer Bearer <key>`
+> upstream for a confusing provider 401.
 
 ## 1. Create a provider
 
-The provider body is `{ "name", "spec" }`, where `spec` is the `AiProviderSpec`: a `kind` (`openai` or `openai-compatible`), an **origin-only** `base_url` (scheme + host, no path — use `path_prefix` for upstream paths), the `credential_secret_id` of your secret, the `models` the provider serves, and the `auth_header` the key is sent in (defaults to `authorization`).
+The provider body is `{ "name", "spec" }`, where `spec` is the `AiProviderSpec`: a `kind` (`openai` or `openai-compatible`), an **origin-only** `base_url` (scheme + host, no path — use `path_prefix` for upstream paths), the `credential_secret_id` of your secret, the `models` the provider serves, the `auth_header` the key is sent in (defaults to `authorization`), and an optional `auth_scheme` — an RFC 7235 token (e.g. `Bearer`) that the gateway prepends to the decoded secret at injection time (`Bearer <key>`). Omit `auth_scheme` for verbatim injection.
 
 `provider.json`:
 
@@ -47,7 +50,8 @@ The provider body is `{ "name", "spec" }`, where `spec` is the `AiProviderSpec`:
     "base_url": "https://api.openai.com",
     "credential_secret_id": "00000000-0000-0000-0000-0000000000aa",
     "models": ["gpt-4o-mini", "gpt-4o"],
-    "auth_header": "authorization"
+    "auth_header": "authorization",
+    "auth_scheme": "Bearer"
   }
 }
 ```
