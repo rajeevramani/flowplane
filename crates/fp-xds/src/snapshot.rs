@@ -2165,7 +2165,7 @@ mod tests {
                 request_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
                 response_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
                 request_body_mode: ext_proc::processing_mode::BodySendMode::Buffered as i32,
-                response_body_mode: ext_proc::processing_mode::BodySendMode::BufferedPartial as i32,
+                response_body_mode: ext_proc::processing_mode::BodySendMode::Streamed as i32,
                 request_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
                 response_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
             }),

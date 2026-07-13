@@ -88,20 +88,14 @@ AI_STREAM_CODE=$(curl -sN --max-time 10 -o /tmp/fp-e2e-ai-stream-body.txt -w '%{
   -H "content-type: application/json" -H "x-flowplane-ai-model: gpt-5" \
   --data '{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hi"}]}' \
   "http://127.0.0.1:$AI_STREAM_GATEWAY_PORT/v1/chat/completions" 2>/dev/null || true)
-if [ "$AI_STREAM_CODE" = "200" ]; then
-  grep -q "partial-stream" /tmp/fp-e2e-ai-stream-body.txt \
-    || fail "AI streaming client did not receive the partial stream chunk"
-  grep -q "Bearer fp-e2e-ai-stream-primary" /tmp/fp-e2e-ai-stream-die-auth.log \
-    || fail "AI streaming primary did not receive its injected credential"
-  [ ! -s /tmp/fp-e2e-ai-stream-fallback-auth.log ] \
-    || fail "AI failed over AFTER stream start: fallback was contacted ($(cat /tmp/fp-e2e-ai-stream-fallback-auth.log))"
-  AI_STREAM_RESULT="PHASE 1d OK: AI streaming-failover boundary -> partial stream delivered, no failover after first byte, fallback untouched"
-else
-  # D9 / #67: AI gateway 500s on stream:true requests before reaching a backend. The boundary
-  # logic itself is verified on the non-stream path; this asserts the boundary once #67 lands.
-  known_fail "PHASE 1d: streaming request returned $AI_STREAM_CODE (#67: AI gateway 500s on stream:true before backend dispatch)"
-  AI_STREAM_RESULT="PHASE 1d KNOWN-FAIL: streaming blocked by #67 (code $AI_STREAM_CODE)"
-fi
+[ "$AI_STREAM_CODE" = "200" ] || fail "AI streaming request expected 200, got $AI_STREAM_CODE"
+grep -q "partial-stream" /tmp/fp-e2e-ai-stream-body.txt \
+  || fail "AI streaming client did not receive the partial stream chunk"
+grep -q "Bearer fp-e2e-ai-stream-primary" /tmp/fp-e2e-ai-stream-die-auth.log \
+  || fail "AI streaming primary did not receive its injected credential"
+[ ! -s /tmp/fp-e2e-ai-stream-fallback-auth.log ] \
+  || fail "AI failed over AFTER stream start: fallback was contacted ($(cat /tmp/fp-e2e-ai-stream-fallback-auth.log))"
+AI_STREAM_RESULT="PHASE 1d OK: AI streaming-failover boundary -> partial stream delivered, no failover after first byte, fallback untouched"
 AI_STREAM_ROUTE_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_routes WHERE id = '$AI_STREAM_ROUTE_ID'")
 curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_STREAM_ROUTE_REV" \
   http://$API/api/v1/teams/default/ai/routes/ai-e2e-stream >/dev/null

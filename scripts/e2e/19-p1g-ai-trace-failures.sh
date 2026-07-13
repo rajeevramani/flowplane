@@ -55,9 +55,26 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
-    def do_POST(self):
+    def read_body(self):
+        # stream:true requests arrive chunked: the listener ExtProc's request-body
+        # rewrite removes content-length, and BaseHTTPRequestHandler does not decode
+        # chunked transfer-encoding natively.
+        if "chunked" in (self.headers.get("transfer-encoding") or "").lower():
+            data = b""
+            while True:
+                size_line = self.rfile.readline().split(b";")[0].strip()
+                size = int(size_line or b"0", 16)
+                if size == 0:
+                    while self.rfile.readline() not in (b"\r\n", b"\n", b""):
+                        pass
+                    return data
+                data += self.rfile.read(size)
+                self.rfile.readline()
         length = int(self.headers.get("content-length", "0") or 0)
-        raw = self.rfile.read(length) if length else b""
+        return self.rfile.read(length) if length else b""
+
+    def do_POST(self):
+        raw = self.read_body()
         try:
             body = json.loads(raw)
         except Exception:
@@ -70,6 +87,27 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("content-length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+            return
+        if body.get("stream") and "fp-sse-finite" in prompt:
+            # Finite stream (design AC 3): N content chunks + an OpenAI include_usage
+            # final chunk + [DONE], then a clean close. The gateway injected
+            # include_usage (the client never asked), so the usage event must be
+            # stripped downstream while Flowplane settles usage/budgets exactly once.
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.end_headers()
+            for i in range(3):
+                chunk = "data: " + json.dumps(
+                    {"id": "chatcmpl-trfail-finite", "choices": [{"index": 0, "delta": {"content": f"ftok{i}"}}]}
+                ) + "\n\n"
+                self.wfile.write(chunk.encode())
+            usage = "data: " + json.dumps(
+                {"id": "chatcmpl-trfail-finite", "choices": [],
+                 "usage": {"prompt_tokens": 7, "completion_tokens": 11, "total_tokens": 18}}
+            ) + "\n\n"
+            self.wfile.write(usage.encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
             return
         if body.get("stream"):
             self.send_response(200)
@@ -305,6 +343,74 @@ shadow = {entry["budget"]: entry for entry in budget["detail"]["shadow"]}
 assert shadow[sys.argv[1]]["verdict"] == "would_reject", shadow
 PY
 
+# ---- Design AC 3 (fpv2-o6w.3): finite SSE stream — the synthetic usage event is stripped
+# from a client that never asked for usage, every content chunk arrives in order, and
+# Flowplane settles usage + budgets EXACTLY once (exact-count deltas, not row-existence).
+# Runs before the enforcing budget exists (it would 429 this request) and settles into the
+# shadow counter (weights 1/1 -> units = prompt 7 + completion 11 = 18).
+# Usage insert + budget settlement share one transaction, so a stable usage-event count
+# implies a stable counter; quiesce the async settlements of the earlier legs first.
+AI_FAIL_FINITE_COUNT_SQL="SELECT count(*) FROM ai_usage_events WHERE team_id = '$AI_FAIL_TEAM_ID' AND provider_id = '$AI_FAIL_PROVIDER_ID' AND route_config_id = '$AI_FAIL_ROUTE_CONFIG_ID'"
+AI_FAIL_FINITE_UNITS_SQL="SELECT COALESCE(SUM(c.used_units), 0) FROM ai_budget_counters c JOIN ai_budgets b ON b.id = c.budget_id WHERE b.team_id = '$AI_FAIL_TEAM_ID' AND b.name = 'trfail-shadow-$AI_FAIL_SFX'"
+AI_FAIL_FINITE_USAGE_BASE=-1
+AI_FAIL_FINITE_STABLE=0
+for i in $(seq 1 20); do
+  AI_FAIL_FINITE_NOW=$(psql "$PG_DB_URL" -Atc "$AI_FAIL_FINITE_COUNT_SQL")
+  if [ "$AI_FAIL_FINITE_NOW" = "$AI_FAIL_FINITE_USAGE_BASE" ]; then
+    AI_FAIL_FINITE_STABLE=1
+    break
+  fi
+  AI_FAIL_FINITE_USAGE_BASE=$AI_FAIL_FINITE_NOW
+  sleep 1
+done
+[ "$AI_FAIL_FINITE_STABLE" = "1" ] || fail "finite-stream leg: usage-event count never stabilized before baseline"
+AI_FAIL_FINITE_UNITS_BASE=$(psql "$PG_DB_URL" -Atc "$AI_FAIL_FINITE_UNITS_SQL")
+AI_FAIL_FINITE_CODE=$(curl -sN --max-time 10 -o /tmp/fp-e2e-trfail-finite.body -w '%{http_code}' \
+  -H "content-type: application/json" -H "x-flowplane-ai-model: gpt-5" \
+  --data '{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"fp-sse-finite"}]}' \
+  http://127.0.0.1:$AI_FAIL_GATEWAY_PORT/v1/chat/completions)
+[ "$AI_FAIL_FINITE_CODE" = "200" ] || fail "finite-stream request expected 200, got $AI_FAIL_FINITE_CODE"
+# AC 3 byte-fidelity: the client body must be BYTE-IDENTICAL to the provider stream with
+# only the usage event removed — rebuilt here with the same json.dumps calls as the stub.
+python3 - /tmp/fp-e2e-trfail-finite.body <<'PY' || fail "finite-stream client body failed assertions"
+import json, sys
+body = open(sys.argv[1], "rb").read()
+expected = b""
+for i in range(3):
+    expected += ("data: " + json.dumps(
+        {"id": "chatcmpl-trfail-finite", "choices": [{"index": 0, "delta": {"content": f"ftok{i}"}}]}
+    ) + "\n\n").encode()
+expected += b"data: [DONE]\n\n"
+assert b'"usage"' not in body, "synthetic usage event leaked to a client that never asked for usage"
+assert body == expected, (
+    "client body not byte-identical to the stripped provider stream:\n"
+    f"got      {body!r}\nexpected {expected!r}"
+)
+PY
+AI_FAIL_FINITE_EXPECT_COUNT=$((AI_FAIL_FINITE_USAGE_BASE + 1))
+AI_FAIL_FINITE_EXPECT_UNITS=$((AI_FAIL_FINITE_UNITS_BASE + 18))
+for i in $(seq 1 20); do
+  AI_FAIL_FINITE_USAGE_NOW=$(psql "$PG_DB_URL" -Atc "$AI_FAIL_FINITE_COUNT_SQL")
+  [ "$AI_FAIL_FINITE_USAGE_NOW" -ge "$AI_FAIL_FINITE_EXPECT_COUNT" ] && break
+  sleep 1
+done
+[ "$AI_FAIL_FINITE_USAGE_NOW" = "$AI_FAIL_FINITE_EXPECT_COUNT" ] \
+  || fail "finite-stream usage rows: expected exactly $AI_FAIL_FINITE_EXPECT_COUNT, got $AI_FAIL_FINITE_USAGE_NOW"
+AI_FAIL_FINITE_TOKENS=$(psql "$PG_DB_URL" -Atc "SELECT prompt_tokens || ':' || completion_tokens || ':' || total_tokens FROM ai_usage_events WHERE team_id = '$AI_FAIL_TEAM_ID' AND provider_id = '$AI_FAIL_PROVIDER_ID' AND route_config_id = '$AI_FAIL_ROUTE_CONFIG_ID' ORDER BY created_at DESC LIMIT 1")
+[ "$AI_FAIL_FINITE_TOKENS" = "7:11:18" ] \
+  || fail "finite-stream usage row tokens expected 7:11:18, got $AI_FAIL_FINITE_TOKENS"
+AI_FAIL_FINITE_UNITS_NOW=$(psql "$PG_DB_URL" -Atc "$AI_FAIL_FINITE_UNITS_SQL")
+[ "$AI_FAIL_FINITE_UNITS_NOW" = "$AI_FAIL_FINITE_EXPECT_UNITS" ] \
+  || fail "finite-stream budget units: expected exactly $AI_FAIL_FINITE_EXPECT_UNITS, got $AI_FAIL_FINITE_UNITS_NOW"
+# Duplicate-settlement window: a second (double) write would land promptly after the first.
+sleep 2
+AI_FAIL_FINITE_USAGE_NOW=$(psql "$PG_DB_URL" -Atc "$AI_FAIL_FINITE_COUNT_SQL")
+AI_FAIL_FINITE_UNITS_NOW=$(psql "$PG_DB_URL" -Atc "$AI_FAIL_FINITE_UNITS_SQL")
+[ "$AI_FAIL_FINITE_USAGE_NOW" = "$AI_FAIL_FINITE_EXPECT_COUNT" ] \
+  || fail "finite-stream usage settled MORE than once: $AI_FAIL_FINITE_USAGE_NOW rows (expected $AI_FAIL_FINITE_EXPECT_COUNT)"
+[ "$AI_FAIL_FINITE_UNITS_NOW" = "$AI_FAIL_FINITE_EXPECT_UNITS" ] \
+  || fail "finite-stream budget settled MORE than once: $AI_FAIL_FINITE_UNITS_NOW units (expected $AI_FAIL_FINITE_EXPECT_UNITS)"
+
 # ---- AC 2: exhausted ENFORCING budget -> 429 flowplane_ai_budget_exceeded + budget row.
 curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/$AI_FAIL_TEAM/ai/budgets \
   -d "{\"name\":\"trfail-hard-$AI_FAIL_SFX\",\"spec\":{\"mode\":\"enforcing\",\"limit_units\":1,\"window_seconds\":3600,\"provider_id\":\"$AI_FAIL_PROVIDER_ID\",\"prompt_token_weight\":1,\"completion_token_weight\":1}}" \
@@ -373,7 +479,10 @@ python3 - "$AI_FAIL_DEAD_PROVIDER_ID" "$AI_FAIL_SECRET_B64" /tmp/fp-e2e-trfail-c
 import json, sys
 row = json.load(open(sys.argv[3], encoding="utf-8"))
 assert row["failure_hop"] == "credential_injection", row["failure_hop"]
-assert row["provider_id"] == sys.argv[1], row["provider_id"]
+# Column ownership (fp-storage ai_trace upsert): row-level provider_id is the upstream
+# stream's column, and a credential failure answers before any upstream stream opens —
+# so it stays NULL; the selected provider is asserted on the credential hop detail below.
+assert row["provider_id"] is None, row["provider_id"]
 by_name = {h["hop"]: h for h in row["hops"]}
 cred = by_name["credential_injection"]
 assert cred["outcome"] == "secret_missing", cred
@@ -408,4 +517,4 @@ for prov in "ai-e2e-trfail-live-$AI_FAIL_SFX" "ai-e2e-trfail-dead-$AI_FAIL_SFX";
   curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $REV" \
     "http://$API/api/v1/teams/$AI_FAIL_TEAM/ai/providers/$prov" >/dev/null
 done
-echo "PHASE 1g OK: AI trace failure rows -> no-eligible 400 (AC11) -> provider 500 (AC4) -> mid-SSE client_disconnect + connect-failure 503 (Risk 6) -> shadow would_reject (AC3) -> enforcing 429 budget row (AC2) -> expired-secret credential_injection secret_missing row"
+echo "PHASE 1g OK: AI trace failure rows -> no-eligible 400 (AC11) -> provider 500 (AC4) -> mid-SSE client_disconnect + connect-failure 503 (Risk 6) -> shadow would_reject (AC3) -> finite-stream usage strip + exactly-once settle (fpv2-o6w AC3) -> enforcing 429 budget row (AC2) -> expired-secret credential_injection secret_missing row"

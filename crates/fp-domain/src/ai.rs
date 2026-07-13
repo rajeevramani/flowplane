@@ -586,37 +586,87 @@ pub fn openai_usage_from_json(value: &serde_json::Value) -> Option<OpenAiTokenUs
     })
 }
 
-pub fn strip_synthetic_openai_usage_sse(
-    body: &str,
-    include_usage_injected: bool,
-) -> (String, Option<OpenAiTokenUsage>) {
-    let mut usage = None;
-    if !include_usage_injected {
-        for event in body.split("\n\n") {
-            if let Some(parsed) = usage_from_sse_event(event) {
-                usage = Some(parsed);
-            }
-        }
-        return (body.to_string(), usage);
+/// Byte length of the SSE line terminator starting at `bytes[i]` (`\r\n`, `\n`, or lone
+/// `\r`), or 0 when `bytes[i]` does not start one. All terminators are ASCII, so scanning
+/// for them can never bisect a multi-byte UTF-8 sequence.
+fn sse_terminator_len(bytes: &[u8], i: usize) -> usize {
+    match bytes.get(i) {
+        Some(b'\r') if bytes.get(i + 1) == Some(&b'\n') => 2,
+        Some(b'\r') | Some(b'\n') => 1,
+        _ => 0,
     }
+}
 
-    let mut kept = Vec::new();
-    for event in body.split("\n\n") {
-        if event.is_empty() {
+/// End index (exclusive, including the delimiter) of the first SSE event that completes at
+/// or after `from`: an event ends at two consecutive line terminators (the SSE blank line).
+fn next_sse_event_end(bytes: &[u8], from: usize) -> Option<usize> {
+    let mut i = from;
+    while i < bytes.len() {
+        let first = sse_terminator_len(bytes, i);
+        if first == 0 {
+            i += 1;
             continue;
         }
-        if let Some(parsed) = usage_from_sse_event(event) {
-            usage = Some(parsed);
-        } else {
-            kept.push(event);
+        let second = sse_terminator_len(bytes, i + first);
+        if second == 0 {
+            i += first;
+            continue;
         }
+        return Some(i + first + second);
     }
-    let stripped = if kept.is_empty() {
-        String::new()
-    } else {
-        format!("{}\n\n", kept.join("\n\n"))
-    };
-    (stripped, usage)
+    None
+}
+
+/// End index (exclusive) of the complete-SSE-event prefix of `buffer`. Bytes past the
+/// returned index belong to an event whose blank-line delimiter has not arrived yet and
+/// must stay buffered. A trailing lone `\r` is deferred even when it would close a
+/// delimiter: a following `\n` could still extend it to `\r\n`, and splitting early would
+/// misattribute that `\n` to the next event. `end_of_stream` flushes everything.
+pub fn complete_sse_events_end(buffer: &[u8], end_of_stream: bool) -> usize {
+    if end_of_stream {
+        return buffer.len();
+    }
+    let mut last = 0;
+    let mut i = 0;
+    while let Some(end) = next_sse_event_end(buffer, i) {
+        if end == buffer.len() && buffer[end - 1] == b'\r' {
+            break;
+        }
+        last = end;
+        i = end;
+    }
+    last
+}
+
+/// Split `complete` (whole SSE events, as returned by [`complete_sse_events_end`], plus —
+/// at end of stream — a possibly delimiter-less final event) into the bytes to forward and
+/// the token usage it carried. Kept events are forwarded **byte-identical**, original
+/// delimiters included. When `include_usage_injected` is true (Flowplane itself forced
+/// `stream_options.include_usage`), events that parse as usage are dropped — delimiter and
+/// all — so the synthetic event never reaches a client that did not ask for usage;
+/// otherwise every byte passes through and usage is only observed.
+pub fn strip_synthetic_openai_usage_sse(
+    complete: &[u8],
+    include_usage_injected: bool,
+) -> (Vec<u8>, Option<OpenAiTokenUsage>) {
+    let mut usage = None;
+    let mut kept = Vec::with_capacity(complete.len());
+    let mut start = 0;
+    while start < complete.len() {
+        let end = next_sse_event_end(complete, start).unwrap_or(complete.len());
+        let event = &complete[start..end];
+        let event_usage = std::str::from_utf8(event)
+            .ok()
+            .and_then(usage_from_sse_event);
+        if let Some(parsed) = event_usage {
+            usage = Some(parsed);
+        }
+        if !(include_usage_injected && event_usage.is_some()) {
+            kept.extend_from_slice(event);
+        }
+        start = end;
+    }
+    (kept, usage)
 }
 
 fn usage_from_sse_event(event: &str) -> Option<OpenAiTokenUsage> {
@@ -862,10 +912,14 @@ mod tests {
             "data: [DONE]\n\n",
         );
 
-        let (stripped, usage) = strip_synthetic_openai_usage_sse(body, true);
+        let (stripped, usage) = strip_synthetic_openai_usage_sse(body.as_bytes(), true);
 
-        assert!(stripped.contains("\"content\":\"hi\""));
-        assert!(!stripped.contains("\"usage\""));
+        let expected = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n";
+        assert_eq!(
+            stripped,
+            expected.as_bytes(),
+            "kept events stay byte-identical"
+        );
         assert_eq!(
             usage,
             Some(OpenAiTokenUsage {
@@ -874,5 +928,120 @@ mod tests {
                 total_tokens: 5,
             })
         );
+    }
+
+    #[test]
+    fn strip_without_injection_is_byte_identical_passthrough() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hé✓\"}}]}\r\n\r\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n",
+        );
+
+        let (kept, usage) = strip_synthetic_openai_usage_sse(body.as_bytes(), false);
+
+        assert_eq!(
+            kept,
+            body.as_bytes(),
+            "observing mode must never rewrite bytes"
+        );
+        assert_eq!(usage.expect("usage observed").total_tokens, 5);
+    }
+
+    #[test]
+    fn strip_handles_crlf_framed_events() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\r\n\r\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\r\n\r\n",
+            "data: [DONE]\r\n\r\n",
+        );
+
+        let (stripped, usage) = strip_synthetic_openai_usage_sse(body.as_bytes(), true);
+
+        let expected =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n";
+        assert_eq!(
+            stripped,
+            expected.as_bytes(),
+            "CRLF delimiters preserved verbatim"
+        );
+        assert_eq!(usage.expect("usage").total_tokens, 2);
+    }
+
+    #[test]
+    fn strip_keeps_invalid_utf8_events_verbatim() {
+        let mut body = b"data: \xff\xfe garbage".to_vec();
+        body.extend_from_slice(b"\n\n");
+
+        let (kept, usage) = strip_synthetic_openai_usage_sse(&body, true);
+
+        assert_eq!(kept, body, "undecodable events are never dropped");
+        assert!(usage.is_none());
+    }
+
+    #[test]
+    fn complete_sse_events_end_recognizes_all_terminator_framings() {
+        // (buffer, expected complete-prefix length without end_of_stream)
+        let cases: &[(&[u8], usize)] = &[
+            (b"data: a\n\ndata: b", 9),       // LF: one complete event
+            (b"data: a\r\n\r\ndata: b", 11),  // CRLF
+            (b"data: a\r\rdata: b", 9),       // lone-CR terminators
+            (b"data: a\n\r\ndata: b", 10),    // mixed LF + CRLF blank line
+            (b"data: a\ndata: b", 0),         // no blank line yet
+            (b"data: a\n\n", 9),              // complete event, empty remainder
+            (b"data: a\r\n\r", 0),            // trailing bare CR: deferred (may become CRLF)
+            (b"data: a\n\ndata: b\r\n\r", 9), // second event's delimiter still ambiguous
+            (b"", 0),
+        ];
+        for (buffer, expected) in cases {
+            assert_eq!(
+                complete_sse_events_end(buffer, false),
+                *expected,
+                "buffer {:?}",
+                String::from_utf8_lossy(buffer)
+            );
+        }
+        // end_of_stream flushes everything, delimiter or not.
+        assert_eq!(complete_sse_events_end(b"data: a\r\n\r", true), 10);
+        assert_eq!(
+            complete_sse_events_end(b"data: tail-no-delimiter", true),
+            23
+        );
+    }
+
+    #[test]
+    fn sse_stream_reassembles_identically_across_every_chunk_split() {
+        // Chunk-boundary fuzz at the domain layer: for every split point (including inside
+        // multi-byte UTF-8 content and inside delimiters), accumulating into a remainder,
+        // taking the complete prefix, stripping, and flushing at end-of-stream must yield
+        // the same bytes as stripping the whole stream at once.
+        for framing in ["\n\n", "\r\n\r\n"] {
+            let stream = format!(
+                "data: {{\"choices\":[{{\"delta\":{{\"content\":\"héllo✓\"}}}}]}}{framing}\
+                 data: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}}}{framing}\
+                 data: [DONE]{framing}"
+            );
+            let bytes = stream.as_bytes();
+            let (expected, expected_usage) = strip_synthetic_openai_usage_sse(bytes, true);
+            for split in 0..=bytes.len() {
+                let mut remainder: Vec<u8> = Vec::new();
+                let mut out: Vec<u8> = Vec::new();
+                let mut usage = None;
+                for (chunk, eos) in [(&bytes[..split], false), (&bytes[split..], true)] {
+                    remainder.extend_from_slice(chunk);
+                    let end = complete_sse_events_end(&remainder, eos);
+                    let (kept, chunk_usage) =
+                        strip_synthetic_openai_usage_sse(&remainder[..end], true);
+                    out.extend_from_slice(&kept);
+                    if let Some(parsed) = chunk_usage {
+                        assert!(usage.is_none(), "usage must be captured exactly once");
+                        usage = Some(parsed);
+                    }
+                    remainder.drain(..end);
+                }
+                assert!(remainder.is_empty(), "split {split} framing {framing:?}");
+                assert_eq!(out, expected, "split {split} framing {framing:?}");
+                assert_eq!(usage, expected_usage, "split {split} framing {framing:?}");
+            }
+        }
     }
 }

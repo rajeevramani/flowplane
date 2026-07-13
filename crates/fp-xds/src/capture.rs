@@ -25,10 +25,11 @@ use envoy_types::pb::envoy::service::ext_proc::v3::{
 use fp_domain::api_lifecycle::ObservationIngest;
 use fp_domain::discovery::DiscoveryObservationProvenance;
 use fp_domain::{
-    ai_error_envelope, openai_usage_from_json, prepare_openai_chat_request,
-    rewrite_openai_chat_request_model, strip_synthetic_openai_usage_sse, AiProviderId, AiRouteSpec,
-    AiTraceEvent, ApiDefinitionId, CaptureSessionId, DiscoverySessionId, DomainError, ListenerId,
-    OpenAiTokenUsage, RouteConfigId, SecretSpec, TeamId, AI_MODEL_HEADER,
+    ai_error_envelope, complete_sse_events_end, openai_usage_from_json,
+    prepare_openai_chat_request, rewrite_openai_chat_request_model,
+    strip_synthetic_openai_usage_sse, AiProviderId, AiRouteSpec, AiTraceEvent, ApiDefinitionId,
+    CaptureSessionId, DiscoverySessionId, DomainError, ListenerId, OpenAiTokenUsage, RouteConfigId,
+    SecretSpec, TeamId, AI_MODEL_HEADER,
 };
 use fp_storage::repos::{ai, ai_trace, api_lifecycle, discovery, identity, secrets};
 use serde_json::{json, Map, Value};
@@ -90,7 +91,8 @@ struct AiExtProcState {
     include_usage_injected: bool,
     response_status: Option<i32>,
     response_content_type: Option<String>,
-    response_sse_remainder: String,
+    response_sse_remainder: Vec<u8>,
+    sse_strip_disabled: bool,
     response_json_body: Vec<u8>,
     last_usage: Option<OpenAiTokenUsage>,
     upstream_model_override: Option<String>,
@@ -1640,6 +1642,14 @@ fn join_prefix_path(prefix: &str, path: &str) -> String {
     }
 }
 
+/// Per-chunk SSE transform, chunk-boundary-safe for STREAMED delivery. A *mutating* stream
+/// (`include_usage_injected` — the listener side that forced `stream_options.include_usage`)
+/// replaces EVERY SSE chunk: the replacement carries exactly the newly completed events
+/// (synthetic usage stripped, retained bytes verbatim) and may be empty while an event's
+/// blank-line delimiter is still in flight — so every byte reaches the client through
+/// exactly one replacement, never through pass-through plus a later re-emit. An *observing*
+/// stream (the upstream side, or a client that asked for usage itself) never mutates; the
+/// remainder is only parse state for usage capture.
 fn ai_response_body_mutation(
     state: &mut AiExtProcState,
     body: Vec<u8>,
@@ -1654,28 +1664,29 @@ fn ai_response_body_mutation(
     if parse_json {
         collect_unary_usage_body(state, &body, end_of_stream);
     }
-    if parse_sse {
-        let body_text = String::from_utf8_lossy(&body);
-        state.response_sse_remainder.push_str(&body_text);
-        if state.response_sse_remainder.len() > MAX_AI_SSE_REMAINDER_BYTES {
-            state.response_sse_remainder.clear();
-            return None;
-        }
-
-        let (complete, remainder) =
-            complete_sse_prefix(&state.response_sse_remainder, end_of_stream);
-        let (stripped, usage) =
-            strip_synthetic_openai_usage_sse(&complete, state.include_usage_injected);
-        if let Some(usage) = usage {
-            remember_ai_usage(state, usage);
-        }
-        state.response_sse_remainder = remainder;
-
-        if state.include_usage_injected && !complete.is_empty() {
-            return Some(stripped.into_bytes());
-        }
+    if !parse_sse || state.sse_strip_disabled {
+        return None;
     }
-    None
+    let mutating = state.include_usage_injected;
+    state.response_sse_remainder.extend_from_slice(&body);
+    if state.response_sse_remainder.len() > MAX_AI_SSE_REMAINDER_BYTES {
+        // Fail open without losing or duplicating client bytes: in a mutating stream the
+        // remainder is exactly the withheld bytes, so emit it unmodified (the synthetic
+        // usage event may leak — token counts only) and stop stripping for the rest of the
+        // stream. In an observing stream the client already has these bytes; only the
+        // usage-parse state is dropped.
+        state.sse_strip_disabled = true;
+        let withheld = std::mem::take(&mut state.response_sse_remainder);
+        return mutating.then_some(withheld);
+    }
+    let split = complete_sse_events_end(&state.response_sse_remainder, end_of_stream);
+    let (forwarded, usage) =
+        strip_synthetic_openai_usage_sse(&state.response_sse_remainder[..split], mutating);
+    if let Some(usage) = usage {
+        remember_ai_usage(state, usage);
+    }
+    state.response_sse_remainder.drain(..split);
+    mutating.then_some(forwarded)
 }
 
 fn response_content_type_matches(state: &AiExtProcState, expected: &str) -> bool {
@@ -1684,17 +1695,6 @@ fn response_content_type_matches(state: &AiExtProcState, expected: &str) -> bool
         .as_deref()
         .map(|content_type| content_type.split(';').any(|part| part.trim() == expected))
         .unwrap_or(true)
-}
-
-fn complete_sse_prefix(buffer: &str, end_of_stream: bool) -> (String, String) {
-    if end_of_stream {
-        return (buffer.to_string(), String::new());
-    }
-    let Some(index) = buffer.rfind("\n\n") else {
-        return (String::new(), buffer.to_string());
-    };
-    let split = index + 2;
-    (buffer[..split].to_string(), buffer[split..].to_string())
 }
 
 fn collect_unary_usage_body(state: &mut AiExtProcState, body: &[u8], end_of_stream: bool) {
@@ -3374,9 +3374,63 @@ mod tests {
     }
 
     #[test]
-    fn ai_ext_proc_caps_unfinished_sse_remainder() {
+    fn ai_ext_proc_overflow_fails_open_without_losing_withheld_bytes() {
+        // A mutating stream that overflows the remainder cap must emit every withheld byte
+        // unmodified (never drop or duplicate client data) and stop stripping from then on.
         let mut state = AiExtProcState {
             include_usage_injected: true,
+            response_content_type: Some("text/event-stream".into()),
+            ..Default::default()
+        };
+        let oversized = vec![b'a'; MAX_AI_SSE_REMAINDER_BYTES + 1];
+        let response = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: oversized.clone(),
+                        end_of_stream: false,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+
+        let emitted = response_body_mutation(response).expect("overflow must flush withheld bytes");
+        assert_eq!(emitted, oversized);
+        assert!(state.response_sse_remainder.is_empty());
+        assert!(state.sse_strip_disabled);
+
+        // Subsequent chunks pass through untouched (no mutation, no buffering).
+        let later = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: b"data: later\n\n".to_vec(),
+                        end_of_stream: false,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+        let processing_response::Response::ResponseBody(body) = later.response.expect("response")
+        else {
+            panic!("expected response body response");
+        };
+        assert!(body.response.expect("common").body_mutation.is_none());
+        assert!(state.response_sse_remainder.is_empty());
+    }
+
+    #[test]
+    fn ai_ext_proc_observing_overflow_never_emits_already_forwarded_bytes() {
+        // An observing stream (include_usage_injected=false) never mutates: on overflow the
+        // parse state is dropped but nothing may be emitted (the client already has the
+        // bytes; emitting would duplicate them).
+        let mut state = AiExtProcState {
+            response_content_type: Some("text/event-stream".into()),
             ..Default::default()
         };
         let response = ai_response(
@@ -3400,6 +3454,146 @@ mod tests {
         };
         assert!(body.response.expect("common").body_mutation.is_none());
         assert!(state.response_sse_remainder.is_empty());
+        assert!(state.sse_strip_disabled);
+    }
+
+    #[test]
+    fn ai_ext_proc_withholds_incomplete_fragment_with_empty_replacement() {
+        // Emit-exactly-once under STREAMED: a chunk that ends mid-event must be replaced
+        // with EMPTY bytes (withheld), not passed through — pass-through plus the later
+        // re-emit of the buffered remainder would duplicate it downstream.
+        let mut state = AiExtProcState {
+            include_usage_injected: true,
+            response_content_type: Some("text/event-stream".into()),
+            ..Default::default()
+        };
+        let first = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: b"data: {\"choices\":[{\"delta\":{\"content\":\"par".to_vec(),
+                        end_of_stream: false,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+        let emitted = response_body_mutation(first).expect("mutating stream replaces every chunk");
+        assert!(emitted.is_empty(), "incomplete fragment must be withheld");
+
+        let second = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: b"tial\"}}]}\n\n".to_vec(),
+                        end_of_stream: false,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+        let emitted = response_body_mutation(second).expect("completed event must flush");
+        assert_eq!(
+            emitted,
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".to_vec()
+        );
+        assert!(state.response_sse_remainder.is_empty());
+    }
+
+    #[test]
+    fn ai_ext_proc_observing_stream_never_mutates_sse() {
+        // The upstream-side stream (no include_usage_injected) observes usage but must not
+        // produce body mutations — mutation is the listener stream's job alone.
+        let mut state = AiExtProcState {
+            response_content_type: Some("text/event-stream".into()),
+            ..Default::default()
+        };
+        let response = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: concat!(
+                            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n"
+                        )
+                        .as_bytes()
+                        .to_vec(),
+                        end_of_stream: false,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+
+        let processing_response::Response::ResponseBody(body) =
+            response.response.expect("response")
+        else {
+            panic!("expected response body response");
+        };
+        assert!(body.response.expect("common").body_mutation.is_none());
+        assert_eq!(state.last_usage.expect("usage observed").total_tokens, 3);
+    }
+
+    #[test]
+    fn ai_ext_proc_sse_stream_survives_every_chunk_split_byte_identically() {
+        // Capture-level chunk-boundary fuzz (design AC 10): for LF, CRLF, and mixed
+        // framings — with multi-byte UTF-8 content — split the provider stream at every
+        // byte boundary, feed both chunks through ai_response, and assert the client-visible
+        // reassembly (all emitted replacements, in order) equals the whole-stream strip and
+        // usage is captured exactly once.
+        let framings: [(&str, &str); 3] = [
+            ("\n\n", "\n\n"),
+            ("\r\n\r\n", "\r\n\r\n"),
+            ("\n\n", "\r\n\r\n"),
+        ];
+        for (f1, f2) in framings {
+            let stream = format!(
+                "data: {{\"choices\":[{{\"delta\":{{\"content\":\"héllo✓\"}}}}]}}{f1}\
+                 data: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}}}{f2}\
+                 data: [DONE]{f1}"
+            );
+            let bytes = stream.as_bytes();
+            let (expected, _) = fp_domain::strip_synthetic_openai_usage_sse(bytes, true);
+            for split in 0..=bytes.len() {
+                let mut state = AiExtProcState {
+                    include_usage_injected: true,
+                    response_content_type: Some("text/event-stream".into()),
+                    ..Default::default()
+                };
+                let mut client: Vec<u8> = Vec::new();
+                for (chunk, eos) in [(&bytes[..split], false), (&bytes[split..], true)] {
+                    let response = ai_response(
+                        &mut state,
+                        ProcessingRequest {
+                            request: Some(processing_request::Request::ResponseBody(
+                                envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                                    body: chunk.to_vec(),
+                                    end_of_stream: eos,
+                                    ..Default::default()
+                                },
+                            )),
+                            ..Default::default()
+                        },
+                    );
+                    let emitted = response_body_mutation(response)
+                        .expect("mutating stream replaces every chunk");
+                    client.extend_from_slice(&emitted);
+                }
+                assert_eq!(client, expected, "split {split} framing ({f1:?},{f2:?})");
+                assert_eq!(
+                    state.last_usage.expect("usage captured").total_tokens,
+                    5,
+                    "split {split}"
+                );
+                assert!(state.response_sse_remainder.is_empty(), "split {split}");
+            }
+        }
     }
 
     #[test]
