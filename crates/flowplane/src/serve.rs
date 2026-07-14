@@ -502,9 +502,11 @@ async fn setup_dev_mode(
 
 /// Persist the minted dev token to an operator-named path so a sibling container can read it.
 /// Dev-mode only; a write failure is fatal so a misconfigured eval bundle fails loud, not silent.
+/// Written as a private file — 0600, missing parents created — instead of a plain
+/// umask-inheriting `fs::write` (FP-DEC-0012).
 #[cfg(feature = "dev-oidc")]
 fn write_dev_token(path: &std::path::Path, token: &str) -> anyhow::Result<()> {
-    std::fs::write(path, token)
+    crate::paths::write_private_file(path, token)
         .with_context(|| format!("failed to write dev token to {}", path.display()))
 }
 
@@ -797,12 +799,19 @@ mod dev_token_tests {
 
     #[test]
     fn write_dev_token_errors_with_context_on_bad_path() {
-        // A path whose parent does not exist is unwritable; the error must carry the path context.
-        let bad = std::path::Path::new("/nonexistent-flowplane-dir/does/not/exist/token.txt");
-        let err = write_dev_token(bad, "x").expect_err("must fail on unwritable path");
+        // The private write creates missing parent dirs (FP-DEC-0012), so a merely-absent
+        // parent no longer fails. A parent path component that is a regular FILE fails
+        // deterministically (NotADirectory) — even when running as root — without touching
+        // global filesystem state.
+        let blocker =
+            std::env::temp_dir().join(format!("flowplane-dev-token-blocker-{}", process::id()));
+        std::fs::write(&blocker, "not a directory").expect("create blocker file");
+        let bad = blocker.join("token.txt");
+        let err = write_dev_token(&bad, "x").expect_err("must fail when parent is a file");
         assert!(
             err.to_string().contains("failed to write dev token to"),
             "error must carry write context, got: {err}"
         );
+        std::fs::remove_file(&blocker).expect("cleanup");
     }
 }

@@ -1,12 +1,14 @@
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
-use std::io::{IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::io::IsTerminal;
+use std::path::PathBuf;
 
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+// The private-write helper (0600 file / 0700 parent) moved to the crate-level `paths`
+// module so the server's token sinks share it (fpv2-wvp.1); re-exported to keep this
+// module's callers unchanged.
+pub(crate) use crate::paths::write_private_file;
 
 const DEFAULT_SERVER: &str = "http://127.0.0.1:8080";
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -197,56 +199,6 @@ pub(crate) fn write_config(config: &CliConfig) -> Result<()> {
     let path = config_path();
     write_private_file(&path, toml::to_string_pretty(config)?)
         .with_context(|| format!("write {}", path.display()))
-}
-
-pub(crate) fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
-    ensure_private_parent_dir(path)?;
-    write_private_file_contents(path, contents.as_ref())
-}
-
-fn ensure_private_parent_dir(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if parent.as_os_str().is_empty() {
-            return Ok(());
-        }
-        let existed = parent.exists();
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-        if !existed || parent.file_name().is_some_and(|name| name == ".flowplane") {
-            set_private_dir_permissions(parent)?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_private_dir_permissions(path: &Path) -> Result<()> {
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("set private permissions on {}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn set_private_dir_permissions(_path: &Path) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn write_private_file_contents(path: &Path, contents: &[u8]) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("open {}", path.display()))?;
-    file.write_all(contents)
-        .with_context(|| format!("write {}", path.display()))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .with_context(|| format!("set private permissions on {}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn write_private_file_contents(path: &Path, contents: &[u8]) -> Result<()> {
-    fs::write(path, contents).with_context(|| format!("write {}", path.display()))
 }
 
 pub(crate) fn effective(global: &GlobalOptions) -> Result<EffectiveConfig> {
@@ -518,69 +470,4 @@ mod format_tests {
     }
 }
 
-#[cfg(test)]
-#[cfg(unix)]
-#[allow(clippy::expect_used)]
-mod tests {
-    use super::write_private_file;
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    fn temp_root() -> PathBuf {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        let seq = TEMP_ROOT_COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "flowplane-cli-perms-{}-{suffix}-{seq}",
-            std::process::id()
-        ))
-    }
-
-    fn mode(path: &std::path::Path) -> u32 {
-        fs::metadata(path).expect("metadata").permissions().mode() & 0o777
-    }
-
-    #[test]
-    fn private_file_write_creates_private_flowplane_dir_and_file() {
-        let root = temp_root();
-        let path = root.join(".flowplane").join("credentials");
-
-        write_private_file(&path, "bearer-token").expect("write private file");
-
-        assert_eq!(mode(path.parent().expect("parent")), 0o700);
-        assert_eq!(mode(&path), 0o600);
-
-        fs::remove_dir_all(root).expect("cleanup");
-    }
-
-    #[test]
-    fn private_file_write_restricts_existing_flowplane_dir_and_file() {
-        let root = temp_root();
-        let parent = root.join(".flowplane");
-        let path = parent.join("config.toml");
-        fs::create_dir_all(&parent).expect("create parent");
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755))
-            .expect("set parent permissions");
-        fs::write(&path, "token = \"old\"").expect("write existing file");
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
-            .expect("set file permissions");
-
-        write_private_file(&path, "token = \"new\"").expect("rewrite private file");
-
-        assert_eq!(mode(&parent), 0o700);
-        assert_eq!(mode(&path), 0o600);
-        assert_eq!(
-            fs::read_to_string(&path).expect("read file"),
-            "token = \"new\""
-        );
-
-        fs::remove_dir_all(root).expect("cleanup");
-    }
-}
+// Permission tests for the private-write helper live with the helper in `crate::paths`.
