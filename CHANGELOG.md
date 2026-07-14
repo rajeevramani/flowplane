@@ -10,6 +10,18 @@ upgrade of an earlier Flowplane line — there is no in-place migration path fro
 version. `1.0.0` is its first stable release and the point at which the public REST API,
 CLI surface, and configuration contract become subject to semantic versioning.
 
+## [Unreleased]
+
+### Security
+
+- **Team grant reads now require authorization.** `GET /api/v1/teams/{team}/grants`
+  (and `flowplane team grant list`) previously returned a team's grant roster to any
+  same-org caller, including agents. It is now gated through the shared resource-grant
+  check: only a caller holding an exact `grants:read` grant on the target team (a user
+  or a same-org cp-tool agent) or a same-org org admin may read it. Other callers
+  receive `403` (`404` cross-org); gateway-tool and API-consumer agents are always
+  denied. Denials are audit-logged.
+
 ## [2.2.0] - 2026-07-07
 
 ### Added
