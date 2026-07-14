@@ -1,12 +1,14 @@
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
-use std::io::{IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::io::IsTerminal;
+use std::path::PathBuf;
 
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+// The private-write helper (0600 file / 0700 parent) moved to the crate-level `paths`
+// module so the server's token sinks share it (fpv2-wvp.1); re-exported to keep this
+// module's callers unchanged.
+pub(crate) use crate::paths::write_private_file;
 
 const DEFAULT_SERVER: &str = "http://127.0.0.1:8080";
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -112,12 +114,47 @@ pub(crate) struct NamedContext {
     pub(crate) timeout: Option<u64>,
 }
 
+/// Which tier of the token ladder (CLI-R-40 + the dev-file fallback) actually supplied
+/// the effective token. Drives 401 diagnostics only — precedence itself is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TokenSource {
+    /// `--token` / `FLOWPLANE_TOKEN` — a deliberate per-invocation choice.
+    FlagOrEnv,
+    /// The selected context's stored token.
+    Context,
+    /// The config file's top-level token.
+    ConfigFile,
+    /// The `credentials` file (written by `auth login`).
+    Credentials,
+    /// The well-known `~/.flowplane/dev-token` fallback (loopback servers only).
+    DevFile,
+}
+
+impl TokenSource {
+    /// A persistent store that can silently go stale (design AC 14): everything a user
+    /// once wrote down, as opposed to the per-invocation flag/env tier or the dev file.
+    pub(crate) fn is_persistent_store(self) -> bool {
+        matches!(
+            self,
+            TokenSource::Context | TokenSource::ConfigFile | TokenSource::Credentials
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct EffectiveConfig {
     pub(crate) server: String,
     pub(crate) org: Option<String>,
     pub(crate) team: Option<String>,
     pub(crate) token: Option<String>,
+    /// Which ladder tier supplied `token` (`None` when no token resolved). `DevFile`
+    /// drives the one-line stderr notice and the stale-token hint on a 401; persistent
+    /// stores drive the shadowed-credential hint (design AC 14).
+    pub(crate) token_source: Option<TokenSource>,
+    /// True iff the dev-token fallback WOULD have applied (non-empty file + loopback
+    /// server) — regardless of whether a higher tier won. Powers the shadowed-credential
+    /// 401 hint without re-doing IO in the client.
+    pub(crate) dev_fallback_available: bool,
     pub(crate) timeout: u64,
     pub(crate) oidc_issuer: Option<String>,
     pub(crate) oidc_client_id: Option<String>,
@@ -199,72 +236,71 @@ pub(crate) fn write_config(config: &CliConfig) -> Result<()> {
         .with_context(|| format!("write {}", path.display()))
 }
 
-pub(crate) fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
-    ensure_private_parent_dir(path)?;
-    write_private_file_contents(path, contents.as_ref())
-}
-
-fn ensure_private_parent_dir(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if parent.as_os_str().is_empty() {
-            return Ok(());
-        }
-        let existed = parent.exists();
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-        if !existed || parent.file_name().is_some_and(|name| name == ".flowplane") {
-            set_private_dir_permissions(parent)?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_private_dir_permissions(path: &Path) -> Result<()> {
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("set private permissions on {}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn set_private_dir_permissions(_path: &Path) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn write_private_file_contents(path: &Path, contents: &[u8]) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("open {}", path.display()))?;
-    file.write_all(contents)
-        .with_context(|| format!("write {}", path.display()))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .with_context(|| format!("set private permissions on {}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn write_private_file_contents(path: &Path, contents: &[u8]) -> Result<()> {
-    fs::write(path, contents).with_context(|| format!("write {}", path.display()))
-}
-
 pub(crate) fn effective(global: &GlobalOptions) -> Result<EffectiveConfig> {
     let file = read_config()?;
     let credentials = fs::read_to_string(credentials_path())
         .ok()
         .map(|s| s.trim().to_string());
-    resolve(global, file, credentials)
+    // Lowest-precedence token source: the server-written well-known dev-token file
+    // (FP-DEC-0012). HOME-only path, trimmed like the credentials read; `resolve()`
+    // applies the loopback gate and every higher-precedence source.
+    let dev_token = crate::paths::dev_token_path()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .map(|s| s.trim().to_string());
+    let resolved = resolve(global, file, credentials, dev_token)?;
+    if resolved.token_source == Some(TokenSource::DevFile) {
+        // Never silent: auto-discovered credentials announce themselves (stderr, so
+        // `$(flowplane auth token)`-style stdout consumers are unaffected).
+        eprintln!("using dev token from ~/.flowplane/dev-token (dev mode)");
+    }
+    Ok(resolved)
+}
+
+/// Literal loopback test on the EFFECTIVE server URL, gating the dev-token fallback so a
+/// stale local dev token is never sent to a remote control plane. Deliberately no DNS
+/// resolution (design open question 1): only `localhost`, `127.0.0.0/8` IPv4 literals, and
+/// the bracketed IPv6 loopback `[::1]` qualify (URL syntax requires the brackets).
+///
+/// The host MUST be extracted with the same URL semantics the HTTP client uses
+/// (`reqwest::Url`), never a hand-written parser: the gate and the request builder have to
+/// agree on the host, or a crafted URL (e.g. `https://evil.example?@127.0.0.1`) could pass
+/// the gate while the request goes elsewhere. An unparseable URL fails closed (gate shut —
+/// the request itself would fail anyway).
+fn server_is_loopback(server: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(server) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    // `host_str` may carry IPv6 brackets; strip them before parsing.
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    if let Ok(v4) = host.parse::<std::net::Ipv4Addr>() {
+        return v4.octets()[0] == 127;
+    }
+    if let Ok(v6) = host.parse::<std::net::Ipv6Addr>() {
+        return v6 == std::net::Ipv6Addr::LOCALHOST;
+    }
+    false
 }
 
 /// Pure precedence resolver (CLI-R-40): `flag > env > context > file > default` for every
 /// value. The flag-or-env tier is already folded into `global.*` by clap (each arg's
-/// `env = …`); this layers context → file → credentials/default beneath it. IO-free so the
-/// precedence is unit-testable without touching process env or the filesystem.
+/// `env = …`); this layers context → file → credentials/default beneath it, then — for the
+/// token only, and only when the effective server is loopback — the dev-token file as the
+/// lowest tier. IO-free so the precedence is unit-testable without touching process env or
+/// the filesystem.
 fn resolve(
     global: &GlobalOptions,
     file: CliConfig,
     credentials: Option<String>,
+    dev_token: Option<String>,
 ) -> Result<EffectiveConfig> {
     let selected_name = global.context.as_ref().or(file.current_context.as_ref());
     let selected =
@@ -274,20 +310,40 @@ fn resolve(
             anyhow::bail!("context \"{name}\" does not exist");
         }
     }
-    let token = global
+    // The server is resolved before the token: the dev-token fallback is gated on it.
+    let server = global
+        .server
+        .clone()
+        .or_else(|| selected.map(|ctx| ctx.server.clone()))
+        .or_else(|| file.base_url.clone())
+        .unwrap_or_else(|| DEFAULT_SERVER.to_string());
+    // Whether the dev fallback WOULD apply (non-empty file + loopback server) — computed
+    // unconditionally so 401 diagnostics can name a shadowed dev token (design AC 14).
+    let dev_fallback_available =
+        dev_token.as_deref().is_some_and(|s| !s.is_empty()) && server_is_loopback(&server);
+    let explicit_token = global
         .token
         .clone()
-        .or_else(|| selected.and_then(|ctx| ctx.token.clone()))
-        .or_else(|| file.token.clone())
-        .or(credentials)
-        .filter(|s| !s.is_empty());
+        .map(|t| (t, TokenSource::FlagOrEnv))
+        .or_else(|| {
+            selected
+                .and_then(|ctx| ctx.token.clone())
+                .map(|t| (t, TokenSource::Context))
+        })
+        .or_else(|| file.token.clone().map(|t| (t, TokenSource::ConfigFile)))
+        .or_else(|| credentials.map(|t| (t, TokenSource::Credentials)));
+    let (token, token_source) = match explicit_token {
+        // A non-empty explicit source wins outright.
+        Some((token, source)) if !token.is_empty() => (Some(token), Some(source)),
+        // A PRESENT-but-empty explicit source (e.g. `--token ""`, an empty credentials
+        // file) yields no token AND suppresses the dev fallback — exactly the pre-fallback
+        // behavior. An empty source must never cause an ambient dev credential to be sent.
+        Some(_) => (None, None),
+        None if dev_fallback_available => (dev_token, Some(TokenSource::DevFile)),
+        None => (None, None),
+    };
     Ok(EffectiveConfig {
-        server: global
-            .server
-            .clone()
-            .or_else(|| selected.map(|ctx| ctx.server.clone()))
-            .or_else(|| file.base_url.clone())
-            .unwrap_or_else(|| DEFAULT_SERVER.to_string()),
+        server,
         org: global
             .org
             .clone()
@@ -299,6 +355,8 @@ fn resolve(
             .or_else(|| selected.and_then(|ctx| ctx.team.clone()))
             .or_else(|| file.team.clone()),
         token,
+        token_source,
+        dev_fallback_available,
         timeout: global
             .timeout
             .or_else(|| selected.and_then(|ctx| ctx.timeout))
@@ -322,7 +380,7 @@ fn resolve(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod resolve_tests {
-    use super::{resolve, CliConfig, GlobalOptions, NamedContext, DEFAULT_SERVER};
+    use super::{resolve, CliConfig, GlobalOptions, NamedContext, TokenSource, DEFAULT_SERVER};
 
     fn opts() -> GlobalOptions {
         GlobalOptions {
@@ -376,7 +434,7 @@ mod resolve_tests {
         o.org = Some("flag-org".to_string());
         o.team = Some("flag-team".to_string());
         o.token = Some("flag-token".to_string());
-        let eff = resolve(&o, file_with_ctx(), Some("cred-token".to_string())).unwrap();
+        let eff = resolve(&o, file_with_ctx(), Some("cred-token".to_string()), None).unwrap();
         assert_eq!(eff.server, "https://flag.example");
         assert_eq!(eff.org.as_deref(), Some("flag-org"));
         assert_eq!(eff.team.as_deref(), Some("flag-team"));
@@ -385,7 +443,13 @@ mod resolve_tests {
 
     #[test]
     fn context_beats_file_when_no_flag_or_env() {
-        let eff = resolve(&opts(), file_with_ctx(), Some("cred-token".to_string())).unwrap();
+        let eff = resolve(
+            &opts(),
+            file_with_ctx(),
+            Some("cred-token".to_string()),
+            None,
+        )
+        .unwrap();
         // current_context = prod, so the context values win over the bare file values.
         assert_eq!(eff.server, "https://ctx.example");
         assert_eq!(eff.org.as_deref(), Some("ctx-org"));
@@ -402,7 +466,7 @@ mod resolve_tests {
             token: Some("file-token".to_string()),
             ..CliConfig::default()
         };
-        let eff = resolve(&opts(), file, Some("cred-token".to_string())).unwrap();
+        let eff = resolve(&opts(), file, Some("cred-token".to_string()), None).unwrap();
         assert_eq!(eff.server, "https://file.example");
         assert_eq!(eff.token.as_deref(), Some("file-token"));
     }
@@ -413,13 +477,14 @@ mod resolve_tests {
             &opts(),
             CliConfig::default(),
             Some("cred-token".to_string()),
+            None,
         )
         .unwrap();
         assert_eq!(eff.token.as_deref(), Some("cred-token"));
         // No server anywhere → the built-in default.
         assert_eq!(eff.server, DEFAULT_SERVER);
         // No token anywhere → None.
-        let eff = resolve(&opts(), CliConfig::default(), None).unwrap();
+        let eff = resolve(&opts(), CliConfig::default(), None, None).unwrap();
         assert_eq!(eff.token, None);
     }
 
@@ -428,18 +493,26 @@ mod resolve_tests {
         // flag (folded from --timeout/FLOWPLANE_TIMEOUT) wins.
         let mut o = opts();
         o.timeout = Some(99);
-        assert_eq!(resolve(&o, file_with_ctx(), None).unwrap().timeout, 99);
+        assert_eq!(
+            resolve(&o, file_with_ctx(), None, None).unwrap().timeout,
+            99
+        );
         // no flag/env → selected context timeout (ctx sets 11).
-        assert_eq!(resolve(&opts(), file_with_ctx(), None).unwrap().timeout, 11);
+        assert_eq!(
+            resolve(&opts(), file_with_ctx(), None, None)
+                .unwrap()
+                .timeout,
+            11
+        );
         // no flag/env/context → file timeout.
         let file = CliConfig {
             timeout: Some(7),
             ..CliConfig::default()
         };
-        assert_eq!(resolve(&opts(), file, None).unwrap().timeout, 7);
+        assert_eq!(resolve(&opts(), file, None, None).unwrap().timeout, 7);
         // nothing anywhere → default 30.
         assert_eq!(
-            resolve(&opts(), CliConfig::default(), None)
+            resolve(&opts(), CliConfig::default(), None, None)
                 .unwrap()
                 .timeout,
             30
@@ -450,7 +523,217 @@ mod resolve_tests {
     fn unknown_explicit_context_is_an_error() {
         let mut o = opts();
         o.context = Some("does-not-exist".to_string());
-        assert!(resolve(&o, CliConfig::default(), None).is_err());
+        assert!(resolve(&o, CliConfig::default(), None, None).is_err());
+    }
+
+    // --- dev-token fallback (fpv2-wvp.4): lowest precedence, loopback-gated ---
+
+    fn dev() -> Option<String> {
+        Some("dev-file-token".to_string())
+    }
+
+    #[test]
+    fn dev_token_used_only_when_nothing_else_and_server_is_loopback() {
+        // Default server is loopback (127.0.0.1) and no other source: dev file wins.
+        let eff = resolve(&opts(), CliConfig::default(), None, dev()).unwrap();
+        assert_eq!(eff.token.as_deref(), Some("dev-file-token"));
+        assert_eq!(eff.token_source, Some(TokenSource::DevFile));
+    }
+
+    #[test]
+    fn every_other_token_source_beats_the_dev_file() {
+        // flag/env tier
+        let mut o = opts();
+        o.token = Some("flag-token".to_string());
+        let eff = resolve(&o, CliConfig::default(), None, dev()).unwrap();
+        assert_eq!(eff.token.as_deref(), Some("flag-token"));
+        assert_ne!(eff.token_source, Some(TokenSource::DevFile));
+        // context tier (note: ctx server is non-loopback anyway; the point is precedence)
+        let eff = resolve(&opts(), file_with_ctx(), None, dev()).unwrap();
+        assert_eq!(eff.token.as_deref(), Some("ctx-token"));
+        assert_ne!(eff.token_source, Some(TokenSource::DevFile));
+        // file tier
+        let file = CliConfig {
+            token: Some("file-token".to_string()),
+            ..CliConfig::default()
+        };
+        let eff = resolve(&opts(), file, None, dev()).unwrap();
+        assert_eq!(eff.token.as_deref(), Some("file-token"));
+        assert_ne!(eff.token_source, Some(TokenSource::DevFile));
+        // credentials tier
+        let eff = resolve(
+            &opts(),
+            CliConfig::default(),
+            Some("cred-token".to_string()),
+            dev(),
+        )
+        .unwrap();
+        assert_eq!(eff.token.as_deref(), Some("cred-token"));
+        assert_ne!(eff.token_source, Some(TokenSource::DevFile));
+    }
+
+    #[test]
+    fn dev_token_never_used_for_a_non_loopback_server() {
+        let mut o = opts();
+        o.server = Some("https://cp.example.com".to_string());
+        let eff = resolve(&o, CliConfig::default(), None, dev()).unwrap();
+        assert_eq!(
+            eff.token, None,
+            "no token may be synthesized for a remote CP"
+        );
+        assert_ne!(eff.token_source, Some(TokenSource::DevFile));
+    }
+
+    #[test]
+    fn empty_dev_token_file_is_ignored() {
+        let eff = resolve(&opts(), CliConfig::default(), None, Some(String::new())).unwrap();
+        assert_eq!(eff.token, None);
+        assert_ne!(eff.token_source, Some(TokenSource::DevFile));
+    }
+
+    #[test]
+    fn loopback_test_is_literal_no_dns() {
+        use super::server_is_loopback;
+        // qualifying
+        assert!(server_is_loopback("http://localhost:8096"));
+        assert!(server_is_loopback("http://LOCALHOST"));
+        assert!(server_is_loopback("http://127.0.0.1:8080"));
+        assert!(server_is_loopback("https://127.5.4.3/api"));
+        assert!(server_is_loopback("http://[::1]:8080"));
+        // not qualifying
+        assert!(!server_is_loopback("https://cp.example.com"));
+        assert!(!server_is_loopback("http://128.0.0.1:8080"));
+        assert!(!server_is_loopback("http://10.0.0.1"));
+        // a named host is never resolved, even if it WOULD resolve to loopback
+        assert!(!server_is_loopback("http://my-local-alias:8080"));
+        // host-suffix tricks must not qualify
+        assert!(!server_is_loopback("http://127.0.0.1.evil.example"));
+        assert!(!server_is_loopback("http://localhost.evil.example"));
+        // IPv6 non-loopback
+        assert!(!server_is_loopback("http://[2001:db8::1]:8080"));
+    }
+
+    #[test]
+    fn loopback_gate_and_http_client_cannot_disagree_about_the_host() {
+        use super::server_is_loopback;
+        // Regressions for the hand-parser bypass class: URLs whose QUERY/FRAGMENT smuggle
+        // an `@<loopback>` — reqwest targets evil.example, so the gate must say false.
+        assert!(!server_is_loopback("https://evil.example?@127.0.0.1"));
+        assert!(!server_is_loopback("https://evil.example#@[::1]"));
+        assert!(!server_is_loopback("https://evil.example/?@localhost"));
+        // Userinfo trick: the real host is evil.com.
+        assert!(!server_is_loopback("http://127.0.0.1@evil.com/"));
+        assert!(!server_is_loopback("http://localhost@evil.com:8080"));
+        // Unparseable URLs fail closed (URL syntax requires brackets for IPv6, so a bare
+        // `::1` authority is simply not a valid URL — documented contract).
+        assert!(!server_is_loopback("http://::1:8080"));
+        assert!(!server_is_loopback("not a url"));
+        assert!(!server_is_loopback(""));
+    }
+
+    #[test]
+    fn present_but_empty_explicit_source_suppresses_the_dev_fallback() {
+        // `--token ""` (or an empty env/context/file/credentials value) must yield NO
+        // token — never an ambient dev credential (pre-fallback behavior preserved).
+        let mut o = opts();
+        o.token = Some(String::new());
+        let eff = resolve(&o, CliConfig::default(), None, dev()).unwrap();
+        assert_eq!(eff.token, None);
+        assert_ne!(eff.token_source, Some(TokenSource::DevFile));
+        // empty config-file token
+        let file = CliConfig {
+            token: Some(String::new()),
+            ..CliConfig::default()
+        };
+        let eff = resolve(&opts(), file, None, dev()).unwrap();
+        assert_eq!(eff.token, None);
+        assert_ne!(eff.token_source, Some(TokenSource::DevFile));
+        // empty context token (context server forced to loopback so this genuinely tests
+        // presence-suppression, not the loopback gate)
+        let mut ctx0 = ctx("prod");
+        ctx0.token = Some(String::new());
+        ctx0.server = "http://127.0.0.1:9999".to_string();
+        let file = CliConfig {
+            current_context: Some("prod".to_string()),
+            contexts: vec![ctx0],
+            ..CliConfig::default()
+        };
+        let eff = resolve(&opts(), file, None, dev()).unwrap();
+        assert_eq!(eff.token, None);
+        assert_ne!(eff.token_source, Some(TokenSource::DevFile));
+        // empty credentials file
+        let eff = resolve(&opts(), CliConfig::default(), Some(String::new()), dev()).unwrap();
+        assert_eq!(eff.token, None);
+        assert_ne!(eff.token_source, Some(TokenSource::DevFile));
+    }
+
+    // --- AC 14: token-source classification + shadowed-dev-token availability ---
+
+    #[test]
+    fn token_source_classifies_each_ladder_tier() {
+        // flag/env — a deliberate per-invocation choice, never a "persistent store".
+        let mut o = opts();
+        o.token = Some("flag-token".to_string());
+        let eff = resolve(&o, CliConfig::default(), None, None).unwrap();
+        assert_eq!(eff.token_source, Some(TokenSource::FlagOrEnv));
+        assert!(!TokenSource::FlagOrEnv.is_persistent_store());
+        // context
+        let eff = resolve(&opts(), file_with_ctx(), None, None).unwrap();
+        assert_eq!(eff.token_source, Some(TokenSource::Context));
+        // config file
+        let file = CliConfig {
+            token: Some("file-token".to_string()),
+            ..CliConfig::default()
+        };
+        let eff = resolve(&opts(), file, None, None).unwrap();
+        assert_eq!(eff.token_source, Some(TokenSource::ConfigFile));
+        // credentials
+        let eff = resolve(
+            &opts(),
+            CliConfig::default(),
+            Some("cred-token".to_string()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(eff.token_source, Some(TokenSource::Credentials));
+        // no token at all
+        let eff = resolve(&opts(), CliConfig::default(), None, None).unwrap();
+        assert_eq!(eff.token_source, None);
+        // persistent-store classification
+        assert!(TokenSource::Context.is_persistent_store());
+        assert!(TokenSource::ConfigFile.is_persistent_store());
+        assert!(TokenSource::Credentials.is_persistent_store());
+        assert!(!TokenSource::DevFile.is_persistent_store());
+    }
+
+    #[test]
+    fn dev_fallback_available_tracks_file_and_loopback_independently_of_the_winner() {
+        // Credentials win, but a live dev file on a loopback server is still flagged
+        // available — this powers the shadowed-credential 401 hint.
+        let eff = resolve(
+            &opts(),
+            CliConfig::default(),
+            Some("cred-token".to_string()),
+            dev(),
+        )
+        .unwrap();
+        assert_eq!(eff.token_source, Some(TokenSource::Credentials));
+        assert!(eff.dev_fallback_available);
+        // Non-loopback server: not available, whatever the file says.
+        let mut o = opts();
+        o.server = Some("https://cp.example.com".to_string());
+        o.token = Some("flag-token".to_string());
+        let eff = resolve(&o, CliConfig::default(), None, dev()).unwrap();
+        assert!(!eff.dev_fallback_available);
+        // No/empty dev file: not available.
+        let eff = resolve(
+            &opts(),
+            CliConfig::default(),
+            Some("cred-token".to_string()),
+            Some(String::new()),
+        )
+        .unwrap();
+        assert!(!eff.dev_fallback_available);
     }
 }
 
@@ -518,69 +801,4 @@ mod format_tests {
     }
 }
 
-#[cfg(test)]
-#[cfg(unix)]
-#[allow(clippy::expect_used)]
-mod tests {
-    use super::write_private_file;
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    static TEMP_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    fn temp_root() -> PathBuf {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        let seq = TEMP_ROOT_COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "flowplane-cli-perms-{}-{suffix}-{seq}",
-            std::process::id()
-        ))
-    }
-
-    fn mode(path: &std::path::Path) -> u32 {
-        fs::metadata(path).expect("metadata").permissions().mode() & 0o777
-    }
-
-    #[test]
-    fn private_file_write_creates_private_flowplane_dir_and_file() {
-        let root = temp_root();
-        let path = root.join(".flowplane").join("credentials");
-
-        write_private_file(&path, "bearer-token").expect("write private file");
-
-        assert_eq!(mode(path.parent().expect("parent")), 0o700);
-        assert_eq!(mode(&path), 0o600);
-
-        fs::remove_dir_all(root).expect("cleanup");
-    }
-
-    #[test]
-    fn private_file_write_restricts_existing_flowplane_dir_and_file() {
-        let root = temp_root();
-        let parent = root.join(".flowplane");
-        let path = parent.join("config.toml");
-        fs::create_dir_all(&parent).expect("create parent");
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755))
-            .expect("set parent permissions");
-        fs::write(&path, "token = \"old\"").expect("write existing file");
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
-            .expect("set file permissions");
-
-        write_private_file(&path, "token = \"new\"").expect("rewrite private file");
-
-        assert_eq!(mode(&parent), 0o700);
-        assert_eq!(mode(&path), 0o600);
-        assert_eq!(
-            fs::read_to_string(&path).expect("read file"),
-            "token = \"new\""
-        );
-
-        fs::remove_dir_all(root).expect("cleanup");
-    }
-}
+// Permission tests for the private-write helper live with the helper in `crate::paths`.

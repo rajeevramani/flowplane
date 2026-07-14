@@ -49,9 +49,11 @@ pub struct ServerConfig {
     /// operator-supplied bootstrap token falls back to generating one and logging it. Enabled
     /// only by the exact value `yes-this-is-local-only`; otherwise the instance fails closed.
     pub allow_logged_bootstrap_token: bool,
-    /// Dev mode only: when set, the minted per-boot dev token is also written to this path so a
-    /// sibling container's init step can read it (the token is otherwise only logged). Ignored
-    /// outside dev mode. Env `FLOWPLANE_DEV_TOKEN_PATH`.
+    /// Dev mode only: when set (env `FLOWPLANE_DEV_TOKEN_PATH` or the config file — both are
+    /// explicit), the minted per-boot dev token is written to exactly this path, a write
+    /// failure is fatal, and the default sink is suppressed. When unset, the token is written
+    /// best-effort (WARN on failure) to the well-known `~/.flowplane/dev-token` so the local
+    /// CLI can discover it (FP-DEC-0012). Ignored outside dev mode.
     pub dev_token_path: Option<PathBuf>,
     /// HTTP admin URL of the first-party rate-limit service. When set, the CP `rls_sync` worker
     /// pushes the policy set here on a 60 s reconcile (S5). `None` disables the worker. Env

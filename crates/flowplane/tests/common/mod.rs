@@ -277,6 +277,18 @@ async fn delete_expose(Path((_team, name)): Path<(String, String)>) -> (StatusCo
     )
 }
 
+/// The ONE operator bootstrap token every non-dev server boot in this suite may seed.
+///
+/// Shared singleton product state (constitution invariant 18): an uninitialized instance
+/// keeps a single live operator-seeded bootstrap-token hash and FAILS BOOT on any
+/// *different* operator token (the divergent-replica fail-closed check). A per-test unique
+/// token therefore poisons the shared test database for every later operator-seeded boot
+/// until the row's 24 h expiry. One fixed token keeps every seed idempotent — across tests,
+/// test binaries, and reruns. It embeds `OPERATORSECRETMARKER` so log-redaction tests can
+/// grep captured output for leaks.
+pub const SHARED_OPERATOR_BOOTSTRAP_TOKEN: &str =
+    "OPERATORSECRETMARKER-flowplane-shared-test-operator-bootstrap-token-0001";
+
 /// A loopback URL with no listener — connecting to it fails fast with "connection refused",
 /// for exercising the transport-error path. Binds an ephemeral port then drops it so the
 /// port is (almost certainly) free again, avoiding a fixed-port collision.

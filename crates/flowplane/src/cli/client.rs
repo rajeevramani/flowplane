@@ -122,6 +122,33 @@ impl RestClient {
         request_id: Option<String>,
         text: &str,
     ) -> anyhow::Error {
+        // Make 401s self-diagnosing (design AC 12 + AC 14). An auto-discovered dev token
+        // the server rejects is almost always stale (CP restarted before rewriting the
+        // file, or the file belongs to another local instance). Conversely, a stale
+        // PERSISTENT stored token (context/config/credentials — typically a dev token
+        // stored via `auth login` before a CP restart) that outranks a live dev-token
+        // file gets the shadowed-credential hint; the flag/env tier is a deliberate
+        // per-invocation choice and never triggers it.
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            use crate::cli::config::TokenSource;
+            match self.config.token_source {
+                Some(TokenSource::DevFile) => eprintln!(
+                    "hint: the dev token from ~/.flowplane/dev-token may be stale — restart \
+                     the dev control plane or remove the file"
+                ),
+                Some(source)
+                    if source.is_persistent_store() && self.config.dev_fallback_available =>
+                {
+                    eprintln!(
+                        "hint: a stored credential may be shadowing the local dev token — \
+                         remove it (e.g. `rm ~/.flowplane/credentials`, or the token in \
+                         your config/context) to use auto-discovery from \
+                         ~/.flowplane/dev-token"
+                    )
+                }
+                _ => {}
+            }
+        }
         if self.report_errors {
             render_error(&self.global, status, request_id, text)
         } else {

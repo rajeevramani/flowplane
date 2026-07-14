@@ -475,11 +475,32 @@ async fn setup_dev_mode(
         dev_token = %token,
         "dev bearer token (default 24h, set FLOWPLANE_DEV_TOKEN_TTL to change; this boot only)"
     );
-    // Dev-only file sink (#156): a compose `init`/sibling container can't read another
-    // container's stdout, so when an operator names a path we also write the raw token there.
-    if let Some(path) = dev_token_path {
-        write_dev_token(path, &token)?;
-        tracing::warn!(path = %path.display(), "dev bearer token also written to file (dev mode)");
+    // Dev-only file sink (#156, FP-DEC-0012): a compose `init`/sibling container can't read
+    // another container's stdout. An operator-named path (env or config file) is explicit —
+    // fatal on write failure, and it suppresses the default. With no path configured the token
+    // lands best-effort at the well-known ~/.flowplane/dev-token so the CLI can discover it;
+    // an unwritable $HOME must not stop a boot that used to succeed.
+    match resolve_dev_token_sink(dev_token_path, crate::paths::dev_token_path()) {
+        DevTokenSink::Explicit(path) => {
+            write_dev_token(&path, &token)?;
+            tracing::warn!(path = %path.display(), "dev bearer token also written to file (dev mode)");
+        }
+        DevTokenSink::Default(path) => match write_dev_token(&path, &token) {
+            Ok(()) => tracing::warn!(
+                path = %path.display(),
+                "dev bearer token also written to the default file (dev mode)"
+            ),
+            Err(err) => tracing::warn!(
+                path = %path.display(),
+                error = %format!("{err:#}"),
+                "could not write the dev token to the default file; continuing without it \
+                 (set FLOWPLANE_DEV_TOKEN_PATH to choose a writable path)"
+            ),
+        },
+        DevTokenSink::Unavailable => tracing::warn!(
+            "HOME is unset; dev token not written to a default file \
+             (set FLOWPLANE_DEV_TOKEN_PATH to name one)"
+        ),
     }
     let validator = fp_core::OidcValidator::new(issuer.oidc_config());
     validator
@@ -500,11 +521,43 @@ async fn setup_dev_mode(
     ))
 }
 
-/// Persist the minted dev token to an operator-named path so a sibling container can read it.
-/// Dev-mode only; a write failure is fatal so a misconfigured eval bundle fails loud, not silent.
+/// Where the minted dev token lands on disk (FP-DEC-0012). The discriminator is the
+/// RESOLVED `dev_token_path` config — env `FLOWPLANE_DEV_TOKEN_PATH` and the config file's
+/// `dev_token_path` are both explicit; the startup path has no env-vs-file provenance and
+/// must not invent one.
+#[cfg(feature = "dev-oidc")]
+#[derive(Debug, PartialEq)]
+enum DevTokenSink {
+    /// Operator-named path: write failure is fatal, the default is suppressed.
+    Explicit(std::path::PathBuf),
+    /// No path configured: the well-known `~/.flowplane/dev-token`, best-effort.
+    Default(std::path::PathBuf),
+    /// No path configured and no HOME to derive the default from.
+    Unavailable,
+}
+
+/// Pure sink resolution (unit-testable without env): explicit config wins and suppresses
+/// the default; otherwise the well-known default when HOME yields one.
+#[cfg(feature = "dev-oidc")]
+fn resolve_dev_token_sink(
+    explicit: Option<&std::path::Path>,
+    default: Option<std::path::PathBuf>,
+) -> DevTokenSink {
+    match (explicit, default) {
+        (Some(path), _) => DevTokenSink::Explicit(path.to_path_buf()),
+        (None, Some(path)) => DevTokenSink::Default(path),
+        (None, None) => DevTokenSink::Unavailable,
+    }
+}
+
+/// Persist the minted dev token so a sibling container or the local CLI can read it.
+/// Dev-mode only. For an operator-named path the caller treats a failure as fatal so a
+/// misconfigured eval bundle fails loud, not silent; for the default path the caller
+/// downgrades it to a WARN. Written as a private file — 0600, missing parents created —
+/// instead of a plain umask-inheriting `fs::write` (FP-DEC-0012).
 #[cfg(feature = "dev-oidc")]
 fn write_dev_token(path: &std::path::Path, token: &str) -> anyhow::Result<()> {
-    std::fs::write(path, token)
+    crate::paths::write_private_file(path, token)
         .with_context(|| format!("failed to write dev token to {}", path.display()))
 }
 
@@ -609,6 +662,25 @@ async fn seed_bootstrap_token(pool: &sqlx::PgPool, config: &ServerConfig) -> any
                         "LOCAL-ONLY: FLOWPLANE_ALLOW_LOGGED_BOOTSTRAP_TOKEN is set — generated and \
                          logged a one-shot bootstrap token (valid 24h). Do not use in production."
                     );
+                    // Additive local-only sink (FP-DEC-0012): the same one-shot token, so
+                    // `curl -H "Authorization: Bearer $(cat ~/.flowplane/bootstrap-token)"`
+                    // works without log surgery. Best-effort — this path is already an
+                    // explicitly local escape hatch, and a failed write must not block boot.
+                    // The operator-supplied branch above never reaches here: that token is
+                    // never logged and never written.
+                    match crate::paths::bootstrap_token_path() {
+                        Some(path) => {
+                            if crate::paths::write_private_file_best_effort(&path, &token) {
+                                tracing::warn!(
+                                    path = %path.display(),
+                                    "bootstrap token also written to file (local-only)"
+                                );
+                            }
+                        }
+                        None => {
+                            tracing::warn!("HOME is unset; bootstrap token not written to a file")
+                        }
+                    }
                 }
             } else if !is_initialized(pool).await? {
                 anyhow::bail!(
@@ -775,7 +847,37 @@ mod bootstrap_token_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod dev_token_tests {
     use super::*;
+    use std::path::{Path, PathBuf};
     use std::process;
+
+    #[test]
+    fn explicit_path_wins_and_suppresses_the_default() {
+        // Env- and TOML-sourced paths arrive here identically (the config resolver merges
+        // them); anything Some(_) is explicit regardless of source.
+        assert_eq!(
+            resolve_dev_token_sink(
+                Some(Path::new("/explicit/dev-token")),
+                Some(PathBuf::from("/home/u/.flowplane/dev-token")),
+            ),
+            DevTokenSink::Explicit(PathBuf::from("/explicit/dev-token"))
+        );
+    }
+
+    #[test]
+    fn no_explicit_path_falls_back_to_the_well_known_default() {
+        assert_eq!(
+            resolve_dev_token_sink(None, Some(PathBuf::from("/home/u/.flowplane/dev-token"))),
+            DevTokenSink::Default(PathBuf::from("/home/u/.flowplane/dev-token"))
+        );
+    }
+
+    #[test]
+    fn no_explicit_path_and_no_home_means_no_sink() {
+        assert_eq!(
+            resolve_dev_token_sink(None, None),
+            DevTokenSink::Unavailable
+        );
+    }
 
     #[test]
     fn write_dev_token_persists_exact_bytes() {
@@ -797,12 +899,19 @@ mod dev_token_tests {
 
     #[test]
     fn write_dev_token_errors_with_context_on_bad_path() {
-        // A path whose parent does not exist is unwritable; the error must carry the path context.
-        let bad = std::path::Path::new("/nonexistent-flowplane-dir/does/not/exist/token.txt");
-        let err = write_dev_token(bad, "x").expect_err("must fail on unwritable path");
+        // The private write creates missing parent dirs (FP-DEC-0012), so a merely-absent
+        // parent no longer fails. A parent path component that is a regular FILE fails
+        // deterministically (NotADirectory) — even when running as root — without touching
+        // global filesystem state.
+        let blocker =
+            std::env::temp_dir().join(format!("flowplane-dev-token-blocker-{}", process::id()));
+        std::fs::write(&blocker, "not a directory").expect("create blocker file");
+        let bad = blocker.join("token.txt");
+        let err = write_dev_token(&bad, "x").expect_err("must fail when parent is a file");
         assert!(
             err.to_string().contains("failed to write dev token to"),
             "error must carry write context, got: {err}"
         );
+        std::fs::remove_file(&blocker).expect("cleanup");
     }
 }
