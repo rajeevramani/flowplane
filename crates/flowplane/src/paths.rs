@@ -34,8 +34,6 @@ pub(crate) fn flowplane_home() -> Option<PathBuf> {
 }
 
 /// Well-known dev-token sink/discovery path: `~/.flowplane/dev-token`.
-// Consumed by the dev-token default sink + CLI fallback slices (fpv2-wvp.2/.4).
-#[allow(dead_code)]
 pub(crate) fn dev_token_path() -> Option<PathBuf> {
     flowplane_home().map(|home| home.join("dev-token"))
 }
