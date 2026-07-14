@@ -758,7 +758,8 @@ pub async fn remove_team_membership_in_tx(
     Ok(deleted.rows_affected() > 0)
 }
 
-/// Grants on one team (governance read for the grant surface).
+/// Grants on one team. `Grants` is a tenant resource (not governance): the service layer
+/// gates this read with `check_resource_access(Grants, Read, team)` before calling here.
 pub async fn list_grants_for_team(
     pool: &PgPool,
     team_id: TeamId,

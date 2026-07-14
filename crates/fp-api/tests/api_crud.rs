@@ -158,6 +158,22 @@ fn openapi_document_covers_every_registered_operation() {
     }
 }
 
+#[test]
+fn grants_list_documents_forbidden_response() {
+    // The grant roster is a privileged tenant read: the documented contract must carry
+    // the 403 a same-org caller without a grants:read grant receives (alongside the
+    // 404 cross-org anti-enumeration response).
+    let doc = fp_api::routes::openapi_document();
+    let json = serde_json::to_value(&doc).expect("doc");
+    let responses = &json["paths"]["/api/v1/teams/{team}/grants"]["get"]["responses"];
+    for status in ["200", "403", "404"] {
+        assert!(
+            responses[status].is_object(),
+            "grants list must document a {status} response, got {responses}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn learning_session_lifecycle_over_http() {
     let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {

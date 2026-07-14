@@ -2,10 +2,12 @@
 //!
 //! Org admins manage their own org's teams through explicit org-role checks — deliberately
 //! OUTSIDE the resource-grant engine, and platform admins are NOT admitted here
-//! (spec/05 §3.2 invariant 1: tenant administration belongs to the org).
+//! (spec/05 §3.2 invariant 1: tenant administration belongs to the org). The exception is
+//! grant *reads*: a team's grant roster is its privilege map, a tenant resource gated
+//! through `check_resource_access(Grants, Read, team)` like every other tenant read.
 
-use crate::authz::PrincipalCtx;
-use crate::services::{actor_of, trace_context_json};
+use crate::authz::{check_resource_access, Decision, PrincipalCtx};
+use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
 use fp_domain::{DomainError, DomainResult, ErrorCode, OrgId, RequestId, Team, TeamId, UserId};
@@ -316,13 +318,32 @@ pub async fn add_grant(
     Ok(())
 }
 
+/// Shared tenant-resource gate for the grant surface (same shape as `services::ai`):
+/// deny → audit row + standard forbidden/not-found error, never a silent pass.
+async fn authorize(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    resource: Resource,
+    action: Action,
+    team: TeamRef,
+    request_id: RequestId,
+) -> DomainResult<()> {
+    match check_resource_access(ctx, resource, action, Some(team)) {
+        Decision::Allow(_) => Ok(()),
+        Decision::Deny(reason) => {
+            record_authz_denial(pool, ctx, request_id, resource, action, Some(team), reason).await;
+            Err(deny_to_error(resource, action, reason))
+        }
+    }
+}
+
 pub async fn list_grants(
     pool: &PgPool,
     ctx: &PrincipalCtx,
     team: TeamRef,
+    request_id: RequestId,
 ) -> DomainResult<Vec<(uuid::Uuid, uuid::Uuid, String, String)>> {
-    let org_id = member_org(ctx)?;
-    require_same_org(team, org_id)?;
+    authorize(pool, ctx, Resource::Grants, Action::Read, team, request_id).await?;
     identity::list_grants_for_team(pool, team.id).await
 }
 
