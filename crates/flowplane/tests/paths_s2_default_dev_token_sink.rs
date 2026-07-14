@@ -26,7 +26,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 /// How long to wait for the server child to write files / answer / exit.
 const SERVER_DEADLINE: Duration = Duration::from_secs(90);
@@ -553,12 +553,10 @@ fn ac10_non_dev_boot_writes_no_dev_token_and_no_flowplane_dir() {
     let port = alloc_port();
     let stderr_log = work.join("serve-stderr.log");
 
-    // Unique, ≥32-char bootstrap token (pid + nanos make it unique per test process).
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock after epoch")
-        .as_nanos();
-    let bootstrap_token = format!("it-ac10-bootstrap-{:08}-{nanos:024}", std::process::id());
+    // The suite-wide FIXED operator token (doc in tests/common): the server fails boot on a
+    // *different* operator token than the live seeded one, so a unique per-test token would
+    // poison the shared database for 24 h after the first run.
+    let bootstrap_token = common::SHARED_OPERATOR_BOOTSTRAP_TOKEN;
     assert!(
         bootstrap_token.len() >= 32,
         "test bug: bootstrap token must be at least 32 chars"
@@ -568,7 +566,7 @@ fn ac10_non_dev_boot_writes_no_dev_token_and_no_flowplane_dir() {
         &home,
         &db_url,
         &format!("127.0.0.1:{port}"),
-        &bootstrap_token,
+        bootstrap_token,
         &stderr_log,
     )
     .spawn()

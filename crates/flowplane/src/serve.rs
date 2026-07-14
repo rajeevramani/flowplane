@@ -662,6 +662,25 @@ async fn seed_bootstrap_token(pool: &sqlx::PgPool, config: &ServerConfig) -> any
                         "LOCAL-ONLY: FLOWPLANE_ALLOW_LOGGED_BOOTSTRAP_TOKEN is set — generated and \
                          logged a one-shot bootstrap token (valid 24h). Do not use in production."
                     );
+                    // Additive local-only sink (FP-DEC-0012): the same one-shot token, so
+                    // `curl -H "Authorization: Bearer $(cat ~/.flowplane/bootstrap-token)"`
+                    // works without log surgery. Best-effort — this path is already an
+                    // explicitly local escape hatch, and a failed write must not block boot.
+                    // The operator-supplied branch above never reaches here: that token is
+                    // never logged and never written.
+                    match crate::paths::bootstrap_token_path() {
+                        Some(path) => {
+                            if crate::paths::write_private_file_best_effort(&path, &token) {
+                                tracing::warn!(
+                                    path = %path.display(),
+                                    "bootstrap token also written to file (local-only)"
+                                );
+                            }
+                        }
+                        None => {
+                            tracing::warn!("HOME is unset; bootstrap token not written to a file")
+                        }
+                    }
                 }
             } else if !is_initialized(pool).await? {
                 anyhow::bail!(

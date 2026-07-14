@@ -39,10 +39,25 @@ pub(crate) fn dev_token_path() -> Option<PathBuf> {
 }
 
 /// Well-known local bootstrap-token sink: `~/.flowplane/bootstrap-token`.
-// Consumed by the logged-bootstrap file sink slice (fpv2-wvp.3).
-#[allow(dead_code)]
 pub(crate) fn bootstrap_token_path() -> Option<PathBuf> {
     flowplane_home().map(|home| home.join("bootstrap-token"))
+}
+
+/// Best-effort [`write_private_file`] for local-only convenience sinks: a failure is logged
+/// at WARN (full error chain) and swallowed — boot must never depend on such a write.
+/// Returns whether the write succeeded so the caller can log where the file landed.
+pub(crate) fn write_private_file_best_effort(path: &Path, contents: impl AsRef<[u8]>) -> bool {
+    match write_private_file(path, contents) {
+        Ok(()) => true,
+        Err(err) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %format!("{err:#}"),
+                "could not write private file; continuing without it"
+            );
+            false
+        }
+    }
 }
 
 /// Write `contents` to `path` as a private file: missing parent dirs are created, the file
@@ -207,6 +222,35 @@ mod permission_tests {
 
         assert_eq!(mode(&parent), 0o755, "pre-existing parent untouched");
         assert_eq!(mode(&path), 0o600);
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn best_effort_write_succeeds_and_reports_true() {
+        let root = temp_root();
+        let path = root.join(".flowplane").join("bootstrap-token");
+
+        assert!(super::write_private_file_best_effort(&path, "tok"));
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(fs::read_to_string(&path).expect("read file"), "tok");
+
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn best_effort_write_swallows_failure_and_reports_false() {
+        // A regular file as the parent path component fails deterministically (even as
+        // root) — the wrapper must swallow it, not panic or propagate.
+        let root = temp_root();
+        fs::create_dir_all(&root).expect("create root");
+        let blocker = root.join("blocker");
+        fs::write(&blocker, "not a directory").expect("create blocker file");
+
+        assert!(!super::write_private_file_best_effort(
+            &blocker.join("bootstrap-token"),
+            "tok"
+        ));
 
         fs::remove_dir_all(root).expect("cleanup");
     }
