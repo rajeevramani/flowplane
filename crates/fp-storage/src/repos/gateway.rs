@@ -55,11 +55,13 @@ fn rc_from_row(row: &PgRow) -> DomainResult<RouteConfig> {
     })
 }
 
-/// Resolve the cluster ids referenced by a spec, by name within the team. Unknown names are
-/// a validation error listing exactly what is missing.
+/// Resolve the cluster ids referenced by a spec, by name within the team, matching the
+/// parent's owner kind (a user route config resolves only user clusters). Unknown or
+/// wrong-kind names are a validation error listing exactly what is missing.
 async fn resolve_cluster_refs(
     tx: &mut Transaction<'_, Postgres>,
     team_id: TeamId,
+    owner_kind: &str,
     spec: &RouteConfigSpec,
 ) -> DomainResult<Vec<Uuid>> {
     let names: Vec<String> = spec
@@ -67,12 +69,15 @@ async fn resolve_cluster_refs(
         .into_iter()
         .map(str::to_owned)
         .collect();
-    let rows = sqlx::query("SELECT id, name FROM clusters WHERE team_id = $1 AND name = ANY($2)")
-        .bind(team_id.as_uuid())
-        .bind(&names)
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|e| DomainError::internal(format!("resolve cluster refs: {e}")))?;
+    let rows = sqlx::query(
+        "SELECT id, name FROM clusters WHERE team_id = $1 AND name = ANY($2) AND owner_kind = $3",
+    )
+    .bind(team_id.as_uuid())
+    .bind(&names)
+    .bind(owner_kind)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("resolve cluster refs: {e}")))?;
     if rows.len() != names.len() {
         let found: std::collections::HashSet<String> =
             rows.iter().map(|r| r.get::<String, _>("name")).collect();
@@ -153,7 +158,7 @@ async fn create_route_config_with_owner(
     owner_kind: &str,
     owner_id: Option<Uuid>,
 ) -> DomainResult<RouteConfig> {
-    let cluster_ids = resolve_cluster_refs(tx, team.id, spec).await?;
+    let cluster_ids = resolve_cluster_refs(tx, team.id, owner_kind, spec).await?;
     let spec_json = serde_json::to_value(spec)
         .map_err(|e| DomainError::internal(format!("serialize route-config spec: {e}")))?;
     let row = sqlx::query(&format!(
@@ -226,7 +231,7 @@ pub async fn update_route_config(
     spec: &RouteConfigSpec,
     expected_version: i64,
 ) -> DomainResult<RouteConfig> {
-    let cluster_ids = resolve_cluster_refs(tx, team.id, spec).await?;
+    let cluster_ids = resolve_cluster_refs(tx, team.id, "user", spec).await?;
     let spec_json = serde_json::to_value(spec)
         .map_err(|e| DomainError::internal(format!("serialize route-config spec: {e}")))?;
     let row = sqlx::query(&format!(
@@ -436,18 +441,21 @@ fn listener_from_row(row: &PgRow) -> DomainResult<Listener> {
 async fn resolve_listener_rc_ref(
     tx: &mut Transaction<'_, Postgres>,
     team_id: TeamId,
+    owner_kind: &str,
     spec: &ListenerSpec,
 ) -> DomainResult<Option<Uuid>> {
     let Some(rc_name) = &spec.route_config else {
         return Ok(None);
     };
-    let id: Option<Uuid> =
-        sqlx::query_scalar("SELECT id FROM route_configs WHERE team_id = $1 AND name = $2")
-            .bind(team_id.as_uuid())
-            .bind(rc_name)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(|e| DomainError::internal(format!("resolve route-config ref: {e}")))?;
+    let id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM route_configs WHERE team_id = $1 AND name = $2 AND owner_kind = $3",
+    )
+    .bind(team_id.as_uuid())
+    .bind(rc_name)
+    .bind(owner_kind)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("resolve route-config ref: {e}")))?;
     id.map(Some).ok_or_else(|| {
         DomainError::validation(format!(
             "listener references route config \"{rc_name}\" which does not exist in this team"
@@ -519,7 +527,7 @@ async fn create_listener_with_owner(
     owner_kind: &str,
     owner_id: Option<Uuid>,
 ) -> DomainResult<Listener> {
-    let rc_id = resolve_listener_rc_ref(tx, team.id, spec).await?;
+    let rc_id = resolve_listener_rc_ref(tx, team.id, owner_kind, spec).await?;
     let spec_json = serde_json::to_value(spec)
         .map_err(|e| DomainError::internal(format!("serialize listener spec: {e}")))?;
     let row = sqlx::query(&format!(
@@ -608,7 +616,7 @@ pub async fn update_listener(
     spec: &ListenerSpec,
     expected_version: i64,
 ) -> DomainResult<Listener> {
-    let rc_id = resolve_listener_rc_ref(tx, team.id, spec).await?;
+    let rc_id = resolve_listener_rc_ref(tx, team.id, "user", spec).await?;
     let spec_json = serde_json::to_value(spec)
         .map_err(|e| DomainError::internal(format!("serialize listener spec: {e}")))?;
     let row = sqlx::query(&format!(
