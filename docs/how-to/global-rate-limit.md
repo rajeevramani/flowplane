@@ -41,7 +41,7 @@ The two `…_ALLOW_INSECURE_*` acknowledgements are required for the plaintext d
 only behind these explicit per-listener opt-ins (see the
 [configuration reference](../reference/configuration.md)).
 
-For a split-node deployment, bind these listeners on the RLS host interface that the control plane and Envoy can reach, and open the matching ports described in [Production Readiness](production-readiness.md#ports-and-network-paths). Keep the admin listener reachable only from the control-plane network.
+For a split-node deployment, bind these listeners on the RLS host interface that the control plane and Envoy can reach, and open the matching ports described in [Production Readiness](production-readiness.md#ports-and-network-paths). Keep the admin listener reachable only from the control-plane network. A non-loopback bind **requires** the TLS material below — see [Production: split-node with mTLS and an authenticated admin](#production-split-node-with-mtls-and-an-authenticated-admin).
 
 Expected startup log — a `flowplane-rls starting` line carrying both bind addresses (the exact
 prefix/format depends on the tracing setup; `grpc=` and `admin=` fields appear):
@@ -77,8 +77,83 @@ FLOWPLANE_RLS_ADMIN_URL=http://127.0.0.1:8081 \
   RLS on a 60 s reconcile loop (the self-healing backstop).
 
 For production, also set the `FLOWPLANE_DATAPLANE_TLS_*` triad so the Envoy→RLS hop is mTLS; with
-none set the injected cluster dials the RLS in plaintext h2c (dev only). See
+none set the injected cluster dials the RLS in plaintext h2c (dev only — and a production RLS
+with its gRPC TLS triad configured will reject that plaintext dial at the handshake). The full
+split-node setup is below; variable semantics are in the
 [configuration reference](../reference/configuration.md).
+
+## Production: split-node with mTLS and an authenticated admin
+
+On a non-loopback bind, `flowplane-rls` refuses to start without its TLS material, and the CP
+refuses to start if its push token would cross plaintext. The complete two-sided setup needs
+one PKI decision: a CA (or two) that both sides cross-trust. The worked example below uses a
+single private CA for the whole RLS triangle — the same pattern (and the same `openssl` recipe)
+as [Register a dataplane over mTLS](register-dataplane-mtls.md).
+
+**1. Mint the material** (on your CA host; one CA, three leaf certs):
+
+```bash
+# CA
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 825 \
+  -keyout rls-ca.key -out rls-ca.pem -subj "/CN=flowplane-rls-ca"
+
+mint() { # name subjectAltName
+  openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+    -keyout "$1.key" -out "$1.csr" -subj "/CN=$1"
+  openssl x509 -req -in "$1.csr" -CA rls-ca.pem -CAkey rls-ca.key -CAcreateserial \
+    -days 365 -out "$1.pem" -extfile <(printf "subjectAltName=%s" "$2")
+}
+mint rls-grpc-server  "DNS:rls.example"          # RLS gRPC listener identity
+mint rls-admin-server "DNS:rls.example"          # RLS admin HTTPS identity
+mint envoy-client     "DNS:envoy-fleet.example"  # Envoy's client cert for the RLS hop
+```
+
+Generate the CP→RLS admin token once, e.g. `openssl rand -hex 32 > rls-admin.token`.
+
+**2. RLS host** — both listeners bound on the reachable interface, fail-closed material set:
+
+```bash
+FLOWPLANE_RLS_GRPC_LISTEN=0.0.0.0:50051 \
+FLOWPLANE_RLS_ADMIN_LISTEN=0.0.0.0:8081 \
+FLOWPLANE_RLS_GRPC_TLS_CERT=/etc/flowplane/rls/rls-grpc-server.pem \
+FLOWPLANE_RLS_GRPC_TLS_KEY=/etc/flowplane/rls/rls-grpc-server.key \
+FLOWPLANE_RLS_GRPC_TLS_CLIENT_CA=/etc/flowplane/rls/rls-ca.pem \
+FLOWPLANE_RLS_ADMIN_TLS_CERT=/etc/flowplane/rls/rls-admin-server.pem \
+FLOWPLANE_RLS_ADMIN_TLS_KEY=/etc/flowplane/rls/rls-admin-server.key \
+FLOWPLANE_RLS_ADMIN_TOKEN_FILE=/etc/flowplane/rls/rls-admin.token \
+  flowplane-rls
+```
+
+The startup log now shows `grpc_security=mtls` and `admin_security="https + bearer"`. An Envoy
+without a client cert from `rls-ca.pem` fails the TLS handshake before any counter is touched;
+an admin push without the exact bearer gets `401` and the enforced set is unchanged.
+
+**3. Control plane** — dial https, present the same token, trust the private CA, and give the
+Envoy fleet its client half:
+
+```bash
+FLOWPLANE_RLS_GRPC_URL=rls.example:50051 \
+FLOWPLANE_RLS_ADMIN_URL=https://rls.example:8081 \
+FLOWPLANE_RLS_ADMIN_TOKEN_FILE=/etc/flowplane/rls-admin.token \
+FLOWPLANE_RLS_ADMIN_TLS_CA=/etc/flowplane/rls-ca.pem \
+FLOWPLANE_DATAPLANE_TLS_CERT=/etc/envoy/certs/envoy-client.pem \
+FLOWPLANE_DATAPLANE_TLS_KEY=/etc/envoy/certs/envoy-client.key \
+FLOWPLANE_DATAPLANE_TLS_CLIENT_CA=/etc/envoy/certs/rls-ca.pem \
+  flowplane serve
+```
+
+The `FLOWPLANE_DATAPLANE_TLS_*` paths are resolved **on the dataplane host by Envoy** (they ride
+into CDS), so place the client cert/key + CA there; the admin token/CA paths are read by the CP
+process. Health probes move to https: `curl --cacert rls-ca.pem https://rls.example:8081/healthz`.
+
+Fail-closed checklist (each of these refuses startup rather than degrading): partial gRPC triad
+or admin pair; non-loopback bind without its material; admin TLS without a token or a token
+without admin TLS; CP token with a plaintext non-loopback admin URL; unreadable/empty/non-PEM
+material in anything the `flowplane-rls` or `flowplane serve` process itself reads (the RLS
+gRPC triad and admin pair, both sides' tokens, the CP's `FLOWPLANE_RLS_ADMIN_TLS_CA`). The
+`FLOWPLANE_DATAPLANE_TLS_*` paths are the exception: they ride into CDS and are read by
+**Envoy on the dataplane host**, so a bad path there surfaces as an Envoy cluster/TLS error on
+the dataplane (and a failed Envoy→RLS handshake), not as a CP startup refusal.
 
 Confirm the worker started (control-plane log; the CP logs JSON by default, so the message appears
 as a structured field):
