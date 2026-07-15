@@ -34,3 +34,6 @@ tonic = { workspace = true }
 tokio = { workspace = true }
 envoy-types = { workspace = true }
 serde_json = { workspace = true }
+# mTLS integration tests (fpv2-9sf S1): rcgen mints a throwaway CA + client/server leaf
+# certs; the tonic client dials with `tls-ring` (already in the workspace tonic features).
+rcgen = "0.13"

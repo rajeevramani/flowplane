@@ -804,6 +804,7 @@ dependencies = [
  "envoy-types",
  "fp-domain",
  "prost",
+ "rcgen",
  "reqwest",
  "serde",
  "serde_json",

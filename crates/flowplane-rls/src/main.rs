@@ -9,7 +9,6 @@ use flowplane_rls::config::RlsConfig;
 use flowplane_rls::counter::InMemoryFixedWindow;
 use flowplane_rls::grpc::RlsService;
 use flowplane_rls::policy::PolicyCache;
-use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -32,6 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!(
         grpc = %config.grpc_listen,
+        grpc_security = if config.grpc_tls.is_some() { "mtls" } else { "plaintext (loopback dev)" },
         admin = %config.admin_listen,
         "flowplane-rls starting"
     );
@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let result = Server::builder()
+    let result = flowplane_rls::server::grpc_server(&config)?
         .add_service(RateLimitServiceServer::new(service))
         .serve(config.grpc_listen)
         .await;

@@ -29,8 +29,14 @@ port Envoy calls, and an HTTP admin port the control plane pushes policy to.
 ```bash
 FLOWPLANE_RLS_GRPC_LISTEN=127.0.0.1:50051 \
 FLOWPLANE_RLS_ADMIN_LISTEN=127.0.0.1:8081 \
+FLOWPLANE_RLS_ALLOW_INSECURE_GRPC=yes-this-is-local-only \
   flowplane-rls
 ```
+
+The `FLOWPLANE_RLS_ALLOW_INSECURE_GRPC` acknowledgement is required for the plaintext dev
+path: `flowplane-rls` **fails closed** — a non-loopback gRPC bind refuses to start without the
+`FLOWPLANE_RLS_GRPC_TLS_*` mTLS triad, and even a loopback bind serves plaintext only behind
+this explicit opt-in (see the [configuration reference](../reference/configuration.md)).
 
 For a split-node deployment, bind these listeners on the RLS host interface that the control plane and Envoy can reach, and open the matching ports described in [Production Readiness](production-readiness.md#ports-and-network-paths). Keep the admin listener reachable only from the control-plane network.
 

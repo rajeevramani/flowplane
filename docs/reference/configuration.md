@@ -58,8 +58,12 @@ Booleans accept `true`/`1`/`yes` and `false`/`0`/`no`. Invalid server values fai
 | `FLOWPLANE_DATAPLANE_TLS_CERT` | server | — | no ¹⁷ | Client certificate PEM the injected `rate_limit_cluster` presents to the RLS (Envoy→RLS mTLS). |
 | `FLOWPLANE_DATAPLANE_TLS_KEY` | server | — | no ¹⁷ | Client private key PEM for the Envoy→RLS hop. |
 | `FLOWPLANE_DATAPLANE_TLS_CLIENT_CA` | server | — | no ¹⁷ | CA bundle the injected cluster verifies the RLS server certificate against. |
-| `FLOWPLANE_RLS_GRPC_LISTEN` | rls | `0.0.0.0:50051` | no | `flowplane-rls`: Envoy-facing gRPC `RateLimitService` bind address. |
-| `FLOWPLANE_RLS_ADMIN_LISTEN` | rls | `0.0.0.0:8081` | no | `flowplane-rls`: CP-facing HTTP admin bind address (`/api/v1/admin/rls/policies`, `/healthz`, `/readyz`). |
+| `FLOWPLANE_RLS_GRPC_LISTEN` | rls | `127.0.0.1:50051` | no ¹⁸ | `flowplane-rls`: Envoy-facing gRPC `RateLimitService` bind address (IP literal). **Fail-closed**: a non-loopback bind refuses to start without the `FLOWPLANE_RLS_GRPC_TLS_*` triad. |
+| `FLOWPLANE_RLS_ADMIN_LISTEN` | rls | `127.0.0.1:8081` | no | `flowplane-rls`: CP-facing HTTP admin bind address (`/api/v1/admin/rls/policies`, `/healthz`, `/readyz`). |
+| `FLOWPLANE_RLS_GRPC_TLS_CERT` | rls | — | no ¹⁸ | `flowplane-rls`: server certificate PEM the gRPC listener presents to Envoy (mTLS server half). |
+| `FLOWPLANE_RLS_GRPC_TLS_KEY` | rls | — | no ¹⁸ | `flowplane-rls`: server private key PEM for the gRPC listener. |
+| `FLOWPLANE_RLS_GRPC_TLS_CLIENT_CA` | rls | — | no ¹⁸ | `flowplane-rls`: CA bundle the Envoy **client** certificate must chain to. Client certs are required at the TLS layer when the triad is set. |
+| `FLOWPLANE_RLS_ALLOW_INSECURE_GRPC` | rls | — | no ¹⁸ | `flowplane-rls`: explicit acknowledgement (`yes-this-is-local-only`) that the gRPC listener may serve **plaintext on a loopback bind** (dev only). Never unlocks a non-loopback bind. |
 | `FLOWPLANE_AGENT_ENVOY_ADMIN_URL` | agent | `http://127.0.0.1:9901` | no | Envoy admin base URL (usually loopback). |
 | `FLOWPLANE_AGENT_CP_ENDPOINT` | agent | — | yes | Control-plane diagnostics gRPC endpoint. ¹⁰ |
 | `FLOWPLANE_AGENT_DATAPLANE_ID` | agent | — | yes | Dataplane UUID registered in Flowplane. |
@@ -104,6 +108,7 @@ Enforcement timing varies: rows ¹–⁵ are validated at **server startup** (`f
 | ¹⁵ | `FLOWPLANE_RLS_GRPC_URL` | Validated at server startup: `host:port` where host is an IP literal or DNS name and port is `1..=65535`. A malformed value **fails startup closed**. |
 | ¹⁶ | `FLOWPLANE_RLS_RECONCILE_SECS` | Parsed as a positive integer and **clamped to `1..=60`**; zero/invalid/unset fall back to `60`. The knob may only *lower* the cadence (e.g. for tests) — it can never raise the reconcile interval past the documented 60 s convergence backstop. |
 | ¹⁷ | `FLOWPLANE_DATAPLANE_TLS_CERT`, `_KEY`, `_CLIENT_CA` | All-or-none triad. With none set, the injected `rate_limit_cluster` dials the RLS in **plaintext h2c (dev only)**; in production set all three so the Envoy→RLS hop is mTLS. |
+| ¹⁸ | `FLOWPLANE_RLS_GRPC_TLS_CERT`, `_KEY`, `_CLIENT_CA`, `FLOWPLANE_RLS_ALLOW_INSECURE_GRPC` | **Fail-closed, all-or-none** (server half of the Envoy→RLS mTLS hop; pair with ¹⁷ on the CP). A partial triad **fails startup**. With no triad, `flowplane-rls` starts only when the gRPC bind is a loopback literal (`127.0.0.0/8`, `::1`, `::ffff:127.0.0.0/8`) **and** `FLOWPLANE_RLS_ALLOW_INSECURE_GRPC=yes-this-is-local-only` is set; a non-loopback plaintext bind is a startup error. Unreadable/empty/malformed PEM fails startup naming the offending variable. Loopback is decided from the literal bind value — never DNS. |
 
 ## TOML config file keys (server)
 
