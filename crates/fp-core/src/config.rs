@@ -13,6 +13,48 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+/// The CP-held RLS admin bearer credential. The secret is unreachable through `Debug`
+/// (the config struct derives `Debug` and must never log it).
+#[derive(Clone, PartialEq)]
+pub struct RlsAdminToken(String);
+
+impl RlsAdminToken {
+    pub fn secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for RlsAdminToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RlsAdminToken(<redacted>)")
+    }
+}
+
+/// Literal loopback test on the RLS admin URL host, mirroring the CLI dev-token gate
+/// (`server_is_loopback` in the CLI): the host must be the literal `localhost`, a
+/// `127.0.0.0/8` IPv4 literal, `::1`, or an IPv4-mapped `::ffff:127.0.0.0/8` literal.
+/// Deliberately no DNS resolution. Takes the already-parsed URL so the transport-scheme
+/// check and this decision read the SAME `reqwest::Url` interpretation the HTTP client uses.
+fn rls_admin_url_is_loopback(parsed: &reqwest::Url) -> bool {
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    if let Ok(v4) = host.parse::<std::net::Ipv4Addr>() {
+        return v4.is_loopback();
+    }
+    if let Ok(v6) = host.parse::<std::net::Ipv6Addr>() {
+        return v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback());
+    }
+    false
+}
+
 /// Fully resolved and validated server configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerConfig {
@@ -60,6 +102,14 @@ pub struct ServerConfig {
     /// `FLOWPLANE_RLS_ADMIN_URL`. (The RLS gRPC URL that drives S6 CDS injection,
     /// `FLOWPLANE_RLS_GRPC_URL`, is a separate listener.)
     pub rls_admin_url: Option<String>,
+    /// Bearer credential the `rls_sync` push presents to the RLS admin endpoint
+    /// (fpv2-9sf S3). Env `FLOWPLANE_RLS_ADMIN_TOKEN` xor `FLOWPLANE_RLS_ADMIN_TOKEN_FILE`.
+    /// **Fail-closed**: when set, a non-loopback plaintext (`http://`) `rls_admin_url` is a
+    /// startup error — the bearer never crosses a plaintext production channel.
+    pub rls_admin_token: Option<RlsAdminToken>,
+    /// CA bundle path the push client verifies the RLS admin server certificate against
+    /// (`None` => system roots). Env `FLOWPLANE_RLS_ADMIN_TLS_CA`.
+    pub rls_admin_tls_ca: Option<PathBuf>,
     /// Seconds between `rls_sync` reconcile pushes (S5). Defaults to 60 (the design's reconcile
     /// window) and is clamped to 1..=60 — the knob may only *lower* the interval to make automated
     /// tests converge quickly, never raise it past the documented 60 s backstop. Env
@@ -391,6 +441,71 @@ impl ServerConfig {
             .map(str::to_owned)
             .or(file.rls_grpc_url);
 
+        // CP-side RLS admin push credential (fpv2-9sf S3). Env-only, like the bootstrap
+        // token: secret material never comes from the TOML config file.
+        let rls_admin_token = match (
+            get("FLOWPLANE_RLS_ADMIN_TOKEN"),
+            get("FLOWPLANE_RLS_ADMIN_TOKEN_FILE"),
+        ) {
+            (Some(_), Some(_)) => {
+                return Err(DomainError::invalid_config(
+                    "FLOWPLANE_RLS_ADMIN_TOKEN and FLOWPLANE_RLS_ADMIN_TOKEN_FILE are both \
+                     set: exactly one may be used",
+                ))
+            }
+            (Some(inline), None) => Some(inline.to_string()),
+            (None, Some(path)) => Some(std::fs::read_to_string(path).map_err(|e| {
+                DomainError::invalid_config(format!(
+                    "cannot read FLOWPLANE_RLS_ADMIN_TOKEN_FILE at {path}: {e}"
+                ))
+            })?),
+            (None, None) => None,
+        };
+        let rls_admin_token = match rls_admin_token {
+            Some(raw) => {
+                let token = raw.trim();
+                if token.is_empty() {
+                    return Err(DomainError::invalid_config(
+                        "the RLS admin token is empty or whitespace-only \
+                         (FLOWPLANE_RLS_ADMIN_TOKEN[_FILE])",
+                    ));
+                }
+                Some(RlsAdminToken(token.to_string()))
+            }
+            None => None,
+        };
+        let rls_admin_tls_ca = get("FLOWPLANE_RLS_ADMIN_TLS_CA").map(PathBuf::from);
+
+        // Fail-closed: a configured bearer must never be emitted over a plaintext production
+        // channel. The URL is parsed ONCE with the same `reqwest::Url` semantics the push
+        // client uses (scheme is normalized, so `HTTPS://…` counts as https); a token with
+        // an unparseable URL is a hard error. Non-https + token => boot error, unless the
+        // URL host is a loopback LITERAL (127.0.0.0/8, ::1, ::ffff:127.0.0.0/8, or the
+        // literal "localhost" — never DNS-resolved) AND the explicit push hatch is set.
+        if let (Some(_), Some(url)) = (&rls_admin_token, &rls_admin_url) {
+            let parsed = reqwest::Url::parse(url).map_err(|e| {
+                DomainError::invalid_config(format!(
+                    "FLOWPLANE_RLS_ADMIN_TOKEN is set but FLOWPLANE_RLS_ADMIN_URL ({url}) \
+                     is not a valid URL: {e}"
+                ))
+            })?;
+            if parsed.scheme() != "https" {
+                let hatch = get("FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN_PUSH")
+                    == Some("yes-this-is-local-only");
+                if !(rls_admin_url_is_loopback(&parsed) && hatch) {
+                    return Err(DomainError::invalid_config(format!(
+                        "FLOWPLANE_RLS_ADMIN_TOKEN is set but FLOWPLANE_RLS_ADMIN_URL \
+                         ({url}) is not https: the bearer would cross a plaintext channel"
+                    ))
+                    .with_hint(
+                        "use an https:// RLS admin URL (FLOWPLANE_RLS_ADMIN_TLS_* on the \
+                         RLS side), or for loopback dev set \
+                         FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN_PUSH=yes-this-is-local-only",
+                    ));
+                }
+            }
+        }
+
         // Clamped to 1..=60: the knob exists only to make automated tests converge faster than the
         // design's 60 s reconcile window — it may LOWER the interval but never raise it past 60 s,
         // so the documented "missed delivery converges within 60 s" backstop always holds.
@@ -488,6 +603,8 @@ impl ServerConfig {
             allow_logged_bootstrap_token,
             dev_token_path,
             rls_admin_url,
+            rls_admin_token,
+            rls_admin_tls_ca,
             rls_reconcile_secs,
             rls_grpc_url,
             dataplane_tls,
@@ -827,6 +944,165 @@ mod tests {
         env.insert("FLOWPLANE_RLS_GRPC_URL".into(), "rls.internal:8081".into());
         let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
         assert_eq!(cfg.rls_grpc_url.as_deref(), Some("rls.internal:8081"));
+    }
+
+    // ---- fpv2-9sf S3: CP-side RLS admin push credential (AC7 config half) ---------------
+
+    fn env_with_admin_token(url: &str) -> HashMap<String, String> {
+        let mut env = base_env();
+        env.insert("FLOWPLANE_RLS_ADMIN_URL".into(), url.into());
+        env.insert("FLOWPLANE_RLS_ADMIN_TOKEN".into(), "push-sekrit".into());
+        env
+    }
+
+    // AC7: token + non-loopback http URL is a startup error (bearer never over plaintext).
+    #[test]
+    fn admin_token_with_non_loopback_http_url_fails_closed() {
+        let env = env_with_admin_token("http://rls.internal:8081");
+        let err = ServerConfig::resolve(&env, FileConfig::default()).unwrap_err();
+        assert!(err.message.contains("not https"), "{}", err.message);
+
+        // The push hatch does NOT unlock a non-loopback URL.
+        let mut env = env_with_admin_token("http://rls.internal:8081");
+        env.insert(
+            "FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN_PUSH".into(),
+            "yes-this-is-local-only".into(),
+        );
+        assert!(ServerConfig::resolve(&env, FileConfig::default()).is_err());
+    }
+
+    // AC7: https + token resolves; loopback http needs the explicit push hatch.
+    #[test]
+    fn admin_token_transport_matrix() {
+        let cfg = ServerConfig::resolve(
+            &env_with_admin_token("https://rls.internal:8081"),
+            FileConfig::default(),
+        )
+        .expect("https + token resolves");
+        assert_eq!(cfg.rls_admin_token.unwrap().secret(), "push-sekrit");
+
+        // Scheme is judged on the PARSED URL (reqwest normalizes ASCII scheme case):
+        // uppercase HTTPS is still https, not a spurious fail-closed rejection.
+        ServerConfig::resolve(
+            &env_with_admin_token("HTTPS://rls.internal:8081"),
+            FileConfig::default(),
+        )
+        .expect("uppercase HTTPS scheme + token resolves");
+
+        // Loopback http without the hatch: refused.
+        for url in [
+            "http://127.0.0.1:8081",
+            "http://localhost:8081",
+            "http://[::1]:8081",
+        ] {
+            assert!(
+                ServerConfig::resolve(&env_with_admin_token(url), FileConfig::default()).is_err(),
+                "{url} without the push hatch must be refused"
+            );
+            let mut env = env_with_admin_token(url);
+            env.insert(
+                "FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN_PUSH".into(),
+                "yes-this-is-local-only".into(),
+            );
+            ServerConfig::resolve(&env, FileConfig::default())
+                .unwrap_or_else(|e| panic!("{url} + hatch must resolve: {}", e.message));
+        }
+
+        // An unparseable URL with a token fails closed even with the hatch.
+        let mut env = env_with_admin_token("not a url at all");
+        env.insert(
+            "FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN_PUSH".into(),
+            "yes-this-is-local-only".into(),
+        );
+        assert!(ServerConfig::resolve(&env, FileConfig::default()).is_err());
+
+        // No token: any URL scheme is allowed (loopback dev push, no bearer at risk).
+        let mut env = base_env();
+        env.insert(
+            "FLOWPLANE_RLS_ADMIN_URL".into(),
+            "http://rls.internal:8081".into(),
+        );
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("no token, no gate");
+        assert!(cfg.rls_admin_token.is_none());
+    }
+
+    // AC7: token source rules — xor, empty rejection, file trim, unreadable file named.
+    #[test]
+    fn admin_token_source_rules() {
+        let mut env = env_with_admin_token("https://rls.internal:8081");
+        env.insert("FLOWPLANE_RLS_ADMIN_TOKEN_FILE".into(), "/tmp/tok".into());
+        let err = ServerConfig::resolve(&env, FileConfig::default()).unwrap_err();
+        assert!(err.message.contains("exactly one"), "{}", err.message);
+
+        let mut env = base_env();
+        env.insert(
+            "FLOWPLANE_RLS_ADMIN_URL".into(),
+            "https://rls.internal:8081".into(),
+        );
+        env.insert("FLOWPLANE_RLS_ADMIN_TOKEN".into(), "   ".into());
+        let err = ServerConfig::resolve(&env, FileConfig::default()).unwrap_err();
+        assert!(
+            err.message.contains("empty or whitespace-only"),
+            "{}",
+            err.message
+        );
+
+        let dir = std::env::temp_dir().join(format!("fp-s3-tok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tok = dir.join("token");
+        std::fs::write(&tok, "file-sekrit\n").unwrap();
+        let mut env = base_env();
+        env.insert(
+            "FLOWPLANE_RLS_ADMIN_URL".into(),
+            "https://rls.internal:8081".into(),
+        );
+        env.insert(
+            "FLOWPLANE_RLS_ADMIN_TOKEN_FILE".into(),
+            tok.to_str().unwrap().into(),
+        );
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("file token resolves");
+        assert_eq!(cfg.rls_admin_token.unwrap().secret(), "file-sekrit");
+        std::fs::remove_dir_all(&dir).ok();
+
+        let mut env = base_env();
+        env.insert(
+            "FLOWPLANE_RLS_ADMIN_TOKEN_FILE".into(),
+            "/nonexistent-fpv2-9sf-cp-token".into(),
+        );
+        let err = ServerConfig::resolve(&env, FileConfig::default()).unwrap_err();
+        assert!(
+            err.message.contains("FLOWPLANE_RLS_ADMIN_TOKEN_FILE"),
+            "{}",
+            err.message
+        );
+    }
+
+    // The CP-held token never appears through Debug (the config struct is Debug-derived).
+    #[test]
+    fn admin_token_debug_is_redacted() {
+        let cfg = ServerConfig::resolve(
+            &env_with_admin_token("https://rls.internal:8081"),
+            FileConfig::default(),
+        )
+        .expect("resolves");
+        let debug = format!("{cfg:?}");
+        assert!(!debug.contains("push-sekrit"), "{debug}");
+        assert!(debug.contains("<redacted>"), "{debug}");
+    }
+
+    // The CA path is carried verbatim (client construction validates the material).
+    #[test]
+    fn admin_tls_ca_path_is_carried() {
+        let mut env = env_with_admin_token("https://rls.internal:8081");
+        env.insert(
+            "FLOWPLANE_RLS_ADMIN_TLS_CA".into(),
+            "/certs/rls-admin-ca.pem".into(),
+        );
+        let cfg = ServerConfig::resolve(&env, FileConfig::default()).expect("resolves");
+        assert_eq!(
+            cfg.rls_admin_tls_ca,
+            Some(PathBuf::from("/certs/rls-admin-ca.pem"))
+        );
     }
 
     #[test]

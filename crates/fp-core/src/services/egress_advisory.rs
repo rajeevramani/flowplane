@@ -781,6 +781,8 @@ mod tests {
             allow_logged_bootstrap_token: false,
             dev_token_path: None,
             rls_admin_url: None,
+            rls_admin_token: None,
+            rls_admin_tls_ca: None,
             rls_reconcile_secs: 60,
             rls_grpc_url: None,
             dataplane_tls: None,

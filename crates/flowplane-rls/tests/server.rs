@@ -54,6 +54,7 @@ impl Harness {
         let admin_addr = admin_listener.local_addr().unwrap();
         let state = AdminState {
             policies: Arc::clone(&policies),
+            credential: None,
         };
         tokio::spawn(async move {
             axum::serve(admin_listener, router(state)).await.unwrap();

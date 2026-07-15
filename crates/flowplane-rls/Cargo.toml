@@ -22,6 +22,12 @@ prost = { workspace = true }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 axum = { workspace = true }
+# Admin HTTPS acceptor (fpv2-9sf S2): axum-server carries no bundled crypto provider — the
+# ring provider is installed explicitly in server.rs, mirroring the CP wiring.
+axum-server = { workspace = true }
+rustls = { workspace = true }
+# Constant-time bearer comparison for the admin middleware.
+subtle = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -34,3 +40,6 @@ tonic = { workspace = true }
 tokio = { workspace = true }
 envoy-types = { workspace = true }
 serde_json = { workspace = true }
+# mTLS integration tests (fpv2-9sf S1): rcgen mints a throwaway CA + client/server leaf
+# certs; the tonic client dials with `tls-ring` (already in the workspace tonic features).
+rcgen = "0.13"

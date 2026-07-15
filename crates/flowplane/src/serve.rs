@@ -205,14 +205,27 @@ pub async fn run() -> anyhow::Result<()> {
         let worker_notify = Arc::clone(&notify);
         let worker_shutdown = xds_shutdown_tx.subscribe();
         let reconcile_secs = config.rls_reconcile_secs;
+        // Build the push client BEFORE spawning so bad CA material fails startup closed
+        // (fpv2-9sf S3), never silently downgrades trust at push time.
+        let worker_client = rls_push_client(config.rls_admin_tls_ca.as_deref())?;
+        let worker_token = config
+            .rls_admin_token
+            .as_ref()
+            .map(|t| t.secret().to_string());
         tokio::spawn(run_rls_sync(
             worker_pool,
             admin_url,
+            worker_token,
+            worker_client,
             reconcile_secs,
             worker_notify,
             worker_shutdown,
         ));
-        tracing::info!(reconcile_secs, "rls_sync worker started");
+        tracing::info!(
+            reconcile_secs,
+            authenticated = config.rls_admin_token.is_some(),
+            "rls_sync worker started"
+        );
         Some(notify)
     } else {
         None
@@ -368,11 +381,12 @@ async fn run_observability_sampler(
 async fn run_rls_sync(
     pool: sqlx::PgPool,
     admin_url: String,
+    admin_token: Option<String>,
+    client: reqwest::Client,
     reconcile_secs: u64,
     repush: Arc<tokio::sync::Notify>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
-    let client = reqwest::Client::new();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(reconcile_secs.max(1)));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -388,11 +402,54 @@ async fn run_rls_sync(
                 continue;
             }
         }
-        match fp_core::services::rls_sync::reconcile_once(&pool, &admin_url, &client).await {
+        match fp_core::services::rls_sync::reconcile_once(
+            &pool,
+            &admin_url,
+            admin_token.as_deref(),
+            &client,
+        )
+        .await
+        {
             Ok(count) => tracing::debug!(policies = count, "rls policy reconcile pushed"),
             Err(e) => tracing::warn!("rls policy reconcile failed: {e}"),
         }
     }
+}
+
+/// Build the CP→RLS push client. With `FLOWPLANE_RLS_ADMIN_TLS_CA` set, the RLS admin server
+/// certificate must chain to that bundle (private-CA deployments); unset uses system roots.
+/// Unreadable or non-PEM CA material is a startup error (fail-closed), never a downgrade.
+fn rls_push_client(ca_path: Option<&std::path::Path>) -> anyhow::Result<reqwest::Client> {
+    // No redirects: the push targets one fixed endpoint, and following a redirect could
+    // re-send the bearer — reqwest's default policy keeps `Authorization` across a
+    // same-host/port https→http downgrade. Refusing redirects outright closes that hole.
+    let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+    if let Some(path) = ca_path {
+        let pem = std::fs::read(path).map_err(|e| {
+            anyhow::anyhow!(
+                "cannot read FLOWPLANE_RLS_ADMIN_TLS_CA at {}: {e}",
+                path.display()
+            )
+        })?;
+        let certs = reqwest::Certificate::from_pem_bundle(&pem).map_err(|e| {
+            anyhow::anyhow!(
+                "FLOWPLANE_RLS_ADMIN_TLS_CA at {} is not a valid PEM certificate bundle: {e}",
+                path.display()
+            )
+        })?;
+        if certs.is_empty() {
+            anyhow::bail!(
+                "FLOWPLANE_RLS_ADMIN_TLS_CA at {} contains no certificates",
+                path.display()
+            );
+        }
+        for cert in certs {
+            builder = builder.add_root_certificate(cert);
+        }
+    }
+    builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("cannot build the RLS push HTTP client: {e}"))
 }
 
 /// Fixed sweep cadence for expired AI trace rows. Hourly is deliberately coarse: expiry
@@ -799,6 +856,71 @@ async fn shutdown_signal() {
     }
     #[cfg(not(unix))]
     ctrl_c.await;
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod rls_push_client_tests {
+    use super::*;
+
+    /// The push client must never follow a redirect: reqwest's default policy can keep the
+    /// `Authorization` header across a same-host/port https→http downgrade, which would put
+    /// the bearer on a plaintext channel. Policy::none() closes the hole — a redirect
+    /// answer is a push FAILURE (worker retries next tick), not a followed hop.
+    #[tokio::test]
+    async fn push_client_does_not_follow_redirects() {
+        use axum::routing::post;
+        let victim_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let victim_hits_clone = std::sync::Arc::clone(&victim_hits);
+        let victim = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let victim_addr = victim.local_addr().unwrap();
+        let victim_router = axum::Router::new().route(
+            "/api/v1/admin/rls/policies",
+            post(move || {
+                victim_hits_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async { axum::http::StatusCode::NO_CONTENT }
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(victim, victim_router).await.unwrap();
+        });
+
+        let redirector = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let redirector_addr = redirector.local_addr().unwrap();
+        let target = format!("http://{victim_addr}/api/v1/admin/rls/policies");
+        let redirector_router = axum::Router::new().route(
+            "/api/v1/admin/rls/policies",
+            post(move || {
+                let target = target.clone();
+                async move {
+                    (
+                        axum::http::StatusCode::TEMPORARY_REDIRECT,
+                        [(axum::http::header::LOCATION, target)],
+                    )
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(redirector, redirector_router).await.unwrap();
+        });
+
+        let client = rls_push_client(None).expect("client builds");
+        let resp = client
+            .post(format!(
+                "http://{redirector_addr}/api/v1/admin/rls/policies"
+            ))
+            .bearer_auth("push-sekrit")
+            .json(&serde_json::json!({"policies": []}))
+            .send()
+            .await
+            .expect("request completes without following the redirect");
+        assert_eq!(resp.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            victim_hits.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the redirect target must never be contacted"
+        );
+    }
 }
 
 #[cfg(test)]

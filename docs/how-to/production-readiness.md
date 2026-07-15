@@ -81,8 +81,8 @@ Run Envoy with that bootstrap and run `flowplane-agent` beside it in the datapla
 | Operator/API traffic to CP | `FLOWPLANE_API_ADDR`, usually `:8080` behind TLS/load balancer | operators/API teams -> CP | Terminate public TLS before or at the CP API. Do not expose plaintext production API. |
 | Dataplane xDS/diagnostics to CP | `FLOWPLANE_XDS_ADDR`, default `:18000` | Envoy/agent -> CP | Production is mTLS-or-off. Non-loopback deployments must use the xDS TLS triad. |
 | CP to PostgreSQL | database URL | CP -> PostgreSQL | Database must not be directly internet-addressable. |
-| CP to RLS admin | `FLOWPLANE_RLS_ADMIN_URL`, commonly `http://rls.example:8081` | CP -> RLS | Used by the RLS reconcile worker to push policy. |
-| Envoy to RLS gRPC | `FLOWPLANE_RLS_GRPC_URL`, commonly `rls.example:50051` | Envoy -> RLS | Use the dataplane TLS triad for production Envoy-to-RLS mTLS when enabled. |
+| CP to RLS admin | `FLOWPLANE_RLS_ADMIN_URL`, commonly `https://rls.example:8081` | CP -> RLS | Policy push. Production is HTTPS + bearer token: the RLS refuses a non-loopback admin bind without `FLOWPLANE_RLS_ADMIN_TLS_*` + `FLOWPLANE_RLS_ADMIN_TOKEN[_FILE]`, and the CP refuses to start if its token would cross a plaintext non-loopback URL. |
+| Envoy to RLS gRPC | `FLOWPLANE_RLS_GRPC_URL`, commonly `rls.example:50051` | Envoy -> RLS | Production is mTLS-or-off, like xDS: the RLS refuses a non-loopback gRPC bind without its `FLOWPLANE_RLS_GRPC_TLS_*` server triad; pair it with the `FLOWPLANE_DATAPLANE_TLS_*` client triad on the CP. |
 | Envoy listener traffic | listener config | clients -> Envoy | Request traffic never passes through the control plane. |
 | Envoy admin | `127.0.0.1:9901` | dataplane-local only | Keep loopback-only. Product diagnostics go through `flowplane-agent`. |
 | Agent health | `127.0.0.1:19902` | dataplane-local only | Use for local process health checks on the dataplane host. |
@@ -125,7 +125,18 @@ Server process:
 | Observability | `FLOWPLANE_LOG`, `FLOWPLANE_LOG_FORMAT`, `FLOWPLANE_OTLP_ENDPOINT` |
 | MCP | `FLOWPLANE_MCP_ALLOWED_ORIGINS` |
 | Throttling/discovery | `FLOWPLANE_TENANT_WRITE_LIMIT_PER_MIN`, `FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS` |
-| Rate Limit Service (`flowplane-rls`) | `FLOWPLANE_RLS_GRPC_URL`, `FLOWPLANE_RLS_ADMIN_URL`, `FLOWPLANE_RLS_RECONCILE_SECS`; in production also set the `FLOWPLANE_DATAPLANE_TLS_*` triad for the Envoy-to-RLS hop |
+| Rate Limit Service (CP side) | `FLOWPLANE_RLS_GRPC_URL`, `FLOWPLANE_RLS_ADMIN_URL` (https in production), `FLOWPLANE_RLS_ADMIN_TOKEN` or `FLOWPLANE_RLS_ADMIN_TOKEN_FILE`, `FLOWPLANE_RLS_ADMIN_TLS_CA` (private-CA trust for the RLS admin cert), `FLOWPLANE_RLS_RECONCILE_SECS`, plus the `FLOWPLANE_DATAPLANE_TLS_*` client triad for the Envoy-to-RLS mTLS hop |
+
+`flowplane-rls` process (fail-closed: a non-loopback listener refuses to start without its
+security material; loopback plaintext requires the explicit `yes-this-is-local-only`
+acknowledgements — dev only):
+
+| Area | Variables |
+| --- | --- |
+| Listeners | `FLOWPLANE_RLS_GRPC_LISTEN`, `FLOWPLANE_RLS_ADMIN_LISTEN` (defaults `127.0.0.1:50051` / `127.0.0.1:8081`) |
+| gRPC mTLS (server half) | `FLOWPLANE_RLS_GRPC_TLS_CERT`, `FLOWPLANE_RLS_GRPC_TLS_KEY`, `FLOWPLANE_RLS_GRPC_TLS_CLIENT_CA` (all-or-none; Envoy client certs required at the TLS layer) |
+| Admin HTTPS + auth | `FLOWPLANE_RLS_ADMIN_TLS_CERT`, `FLOWPLANE_RLS_ADMIN_TLS_KEY`, `FLOWPLANE_RLS_ADMIN_TOKEN` or `FLOWPLANE_RLS_ADMIN_TOKEN_FILE` (TLS pair + token are all-or-none; same token value as the CP side) |
+| Dev-only escape hatches | `FLOWPLANE_RLS_ALLOW_INSECURE_GRPC`, `FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN` (RLS, loopback binds only), `FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN_PUSH` (CP, loopback URL only) |
 | Dataplane cert issuer | `FLOWPLANE_CERT_ISSUER_CA_CERT_PATH`, `FLOWPLANE_CERT_ISSUER_CA_KEY_PATH`, `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN` |
 | Upstream TLS trust | `FLOWPLANE_UPSTREAM_CA_BUNDLE` (CA bundle path **in the Envoy/dataplane container** used to verify materialized TLS upstreams; default `/etc/ssl/certs/ca-certificates.crt`) |
 
@@ -171,7 +182,9 @@ AI providers, routes, budgets, and usage are runtime product config through the 
 | Release package validation | GitHub Release assets, image digests, `SHA256SUMS` | Verify published artifacts before deployment; rebuild only through the release process if any artifact is missing or inconsistent. |
 | Split-node TLS failure | Agent/RLS logs show TLS name, CA, or client-certificate errors | Check CP xDS server cert SAN vs `FLOWPLANE_AGENT_TLS_SERVER_NAME`, server-trust CA, issued client cert/key, and CP `FLOWPLANE_XDS_TLS_CLIENT_CA`. |
 | Remote bootstrap still points at localhost | Envoy bootstrap contains `127.0.0.1` or `localhost` for `xds_cluster` | Regenerate bootstrap with `--xds-host <cp-xds-host>` and verify the generated file before starting Envoy. |
-| RLS unreachable | Route returns 5xx/429 behavior does not match policy, RLS health fails, CP RLS reconcile errors | Check CP `FLOWPLANE_RLS_ADMIN_URL`, Envoy-facing `FLOWPLANE_RLS_GRPC_URL`, firewall rules, and dataplane TLS settings for the Envoy-to-RLS hop. |
+| RLS unreachable | Route returns 5xx/429 behavior does not match policy, RLS health fails, CP RLS reconcile errors | Check CP `FLOWPLANE_RLS_ADMIN_URL`, Envoy-facing `FLOWPLANE_RLS_GRPC_URL`, firewall rules, and both halves of the Envoy-to-RLS mTLS material (`FLOWPLANE_DATAPLANE_TLS_*` on the CP vs `FLOWPLANE_RLS_GRPC_TLS_*` on the RLS — the CAs must cross-trust). |
+| RLS policy push rejected | CP log shows `rls policy reconcile failed … HTTP 401` repeatedly; policies never reach the RLS (fresh RLS enforces nothing) | Token mismatch between CP `FLOWPLANE_RLS_ADMIN_TOKEN[_FILE]` and RLS `FLOWPLANE_RLS_ADMIN_TOKEN[_FILE]` — set the same value on both sides. A TLS trust failure instead shows a connection/certificate error: set CP `FLOWPLANE_RLS_ADMIN_TLS_CA` to the CA that signed the RLS admin cert. The RLS keeps serving its last good policy set; the loop retries every reconcile tick. |
+| RLS refuses to start | Startup error naming a `FLOWPLANE_RLS_*` variable | Fail-closed by design: a non-loopback bind needs its full TLS material (gRPC triad / admin pair + token); partial material never starts. For local dev bind loopback and set the explicit `…_ALLOW_INSECURE_*=yes-this-is-local-only` acknowledgements. |
 
 ## Backup And Restore Drill
 
