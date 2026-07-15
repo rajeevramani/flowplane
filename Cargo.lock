@@ -927,6 +927,7 @@ dependencies = [
  "axum-server",
  "base64",
  "chrono",
+ "flowplane-rls",
  "fp-domain",
  "fp-storage",
  "getrandom 0.3.4",

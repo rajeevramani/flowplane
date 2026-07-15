@@ -500,7 +500,7 @@ async fn reconcile_once_posts_full_snapshot_and_succeeds_on_204() {
     let (addr, captured) = spawn_stub(axum::http::StatusCode::NO_CONTENT).await;
     let client = reqwest::Client::new();
 
-    let count = sync::reconcile_once(&h.pool, &format!("http://{addr}"), &client)
+    let count = sync::reconcile_once(&h.pool, &format!("http://{addr}"), None, &client)
         .await
         .expect("reconcile_once over 204 must succeed");
     assert!(count >= 1, "returns the number of pushed policies");
@@ -535,7 +535,7 @@ async fn reconcile_once_errors_on_non_2xx_response() {
     let (addr, _captured) = spawn_stub(axum::http::StatusCode::INTERNAL_SERVER_ERROR).await;
     let client = reqwest::Client::new();
 
-    let err = sync::reconcile_once(&h.pool, &format!("http://{addr}"), &client)
+    let err = sync::reconcile_once(&h.pool, &format!("http://{addr}"), None, &client)
         .await
         .expect_err("a 500 from the RLS admin endpoint must be an error");
     // Don't over-fit the exact code, but a transport/admin failure must not masquerade as Ok.
@@ -548,7 +548,7 @@ async fn reconcile_once_errors_on_unreachable_endpoint() {
     let client = reqwest::Client::new();
 
     // Loopback port 1 is reserved and never listening: the connection must fail, surfacing Err.
-    let err = sync::reconcile_once(&h.pool, "http://127.0.0.1:1", &client)
+    let err = sync::reconcile_once(&h.pool, "http://127.0.0.1:1", None, &client)
         .await
         .expect_err("an unreachable RLS admin endpoint must be an error");
     let _ = err;

@@ -36,6 +36,9 @@ toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# Integration test: CP->RLS push auth round-trip (tests/rls_push_auth.rs) drives the
+# REAL flowplane-rls admin router over HTTPS as the receiving end.
+flowplane-rls = { path = "../flowplane-rls" }
 rsa = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }
