@@ -10,7 +10,7 @@ use std::path::Path;
 
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 
-use crate::config::{RlsConfig, RlsGrpcTls};
+use crate::config::{RlsAdminTls, RlsConfig, RlsGrpcTls};
 
 /// Read one PEM file, surfacing unreadable, empty, and non-PEM material as a boot error
 /// naming the offending variable and path. (A structurally-PEM-but-unparsable file is
@@ -72,6 +72,49 @@ pub fn grpc_server(config: &RlsConfig) -> Result<Server, String> {
     }
 }
 
+/// Install the process-wide rustls crypto provider (ring) if none is set. axum-server is
+/// built with `tls-rustls-no-provider`, so the provider is wired explicitly — mirroring the
+/// CP's `serve.rs` — rather than picked up implicitly from a feature flag.
+pub fn install_crypto_provider() -> Result<(), String> {
+    if rustls::crypto::CryptoProvider::get_default().is_some() {
+        return Ok(());
+    }
+    // Losing the install race to a concurrent caller is fine — only "still no default
+    // provider afterwards" is a real failure.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    if rustls::crypto::CryptoProvider::get_default().is_some() {
+        Ok(())
+    } else {
+        Err("failed to install rustls ring crypto provider".to_string())
+    }
+}
+
+/// Build the axum-server rustls config for the admin listener (one-way server TLS). TLS
+/// material problems fail here at boot, naming the offending variable/path.
+pub async fn admin_rustls_config(
+    tls: &RlsAdminTls,
+) -> Result<axum_server::tls_rustls::RustlsConfig, String> {
+    install_crypto_provider()?;
+    let cert = read_pem(
+        &tls.cert_path,
+        "admin server certificate (FLOWPLANE_RLS_ADMIN_TLS_CERT)",
+    )?;
+    let key = read_pem(
+        &tls.key_path,
+        "admin server key (FLOWPLANE_RLS_ADMIN_TLS_KEY)",
+    )?;
+    axum_server::tls_rustls::RustlsConfig::from_pem(cert, key)
+        .await
+        .map_err(|e| {
+            format!(
+                "invalid RLS admin TLS material (check FLOWPLANE_RLS_ADMIN_TLS_CERT={}, \
+                 FLOWPLANE_RLS_ADMIN_TLS_KEY={}): {e}",
+                tls.cert_path.display(),
+                tls.key_path.display()
+            )
+        })
+}
+
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -119,6 +162,8 @@ mod tests {
         let config = RlsConfig {
             grpc_listen: "127.0.0.1:0".parse().unwrap(),
             admin_listen: "127.0.0.1:0".parse().unwrap(),
+            admin_tls: None,
+            admin_credential: None,
             grpc_tls: Some(triad(&dir)),
         };
         let err = grpc_server(&config).unwrap_err();
@@ -127,6 +172,31 @@ mod tests {
             "names the var: {err}"
         );
         assert!(err.contains("server.pem"), "names the path: {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // AC9 (admin): unreadable / malformed admin TLS material is a named boot error.
+    #[tokio::test]
+    async fn admin_tls_material_errors_are_named() {
+        let missing = RlsAdminTls {
+            cert_path: PathBuf::from("/nonexistent-fpv2-9sf-admin.pem"),
+            key_path: PathBuf::from("/nonexistent-fpv2-9sf-admin.key"),
+        };
+        let err = admin_rustls_config(&missing).await.unwrap_err();
+        assert!(err.contains("FLOWPLANE_RLS_ADMIN_TLS_CERT"), "{err}");
+
+        let dir = std::env::temp_dir().join(format!("rls-s2-admin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake =
+            b"-----BEGIN CERTIFICATE-----\nnot base64 at all!!!\n-----END CERTIFICATE-----\n";
+        std::fs::write(dir.join("admin.pem"), fake).unwrap();
+        std::fs::write(dir.join("admin.key"), fake).unwrap();
+        let corrupt = RlsAdminTls {
+            cert_path: dir.join("admin.pem"),
+            key_path: dir.join("admin.key"),
+        };
+        let err = admin_rustls_config(&corrupt).await.unwrap_err();
+        assert!(err.contains("FLOWPLANE_RLS_ADMIN_TLS_KEY"), "{err}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -144,6 +214,8 @@ mod tests {
         let config = RlsConfig {
             grpc_listen: "127.0.0.1:0".parse().unwrap(),
             admin_listen: "127.0.0.1:0".parse().unwrap(),
+            admin_tls: None,
+            admin_credential: None,
             grpc_tls: Some(triad(&dir)),
         };
         let err = grpc_server(&config).unwrap_err();

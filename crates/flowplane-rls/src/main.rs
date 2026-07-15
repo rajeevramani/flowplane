@@ -26,21 +26,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let admin_router = admin::router(AdminState {
         policies: Arc::clone(&policies),
+        credential: config.admin_credential.clone().map(Arc::new),
     });
-    let admin_listener = tokio::net::TcpListener::bind(config.admin_listen).await?;
 
     tracing::info!(
         grpc = %config.grpc_listen,
         grpc_security = if config.grpc_tls.is_some() { "mtls" } else { "plaintext (loopback dev)" },
         admin = %config.admin_listen,
+        admin_security = if config.admin_tls.is_some() { "https + bearer" } else { "plaintext, unauthenticated (loopback dev)" },
         "flowplane-rls starting"
     );
 
-    let admin_handle = tokio::spawn(async move {
-        if let Err(error) = axum::serve(admin_listener, admin_router).await {
-            tracing::error!(%error, "admin server stopped");
+    let admin_handle = match &config.admin_tls {
+        Some(tls) => {
+            let rustls_config = flowplane_rls::server::admin_rustls_config(tls).await?;
+            let listener = std::net::TcpListener::bind(config.admin_listen)?;
+            listener.set_nonblocking(true)?;
+            tokio::spawn(async move {
+                if let Err(error) = axum_server::from_tcp_rustls(listener, rustls_config)
+                    .serve(admin_router.into_make_service())
+                    .await
+                {
+                    tracing::error!(%error, "admin server stopped");
+                }
+            })
         }
-    });
+        None => {
+            let listener = tokio::net::TcpListener::bind(config.admin_listen).await?;
+            tokio::spawn(async move {
+                if let Err(error) = axum::serve(listener, admin_router).await {
+                    tracing::error!(%error, "admin server stopped");
+                }
+            })
+        }
+    };
 
     let result = flowplane_rls::server::grpc_server(&config)?
         .add_service(RateLimitServiceServer::new(service))

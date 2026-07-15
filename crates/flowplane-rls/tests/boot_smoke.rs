@@ -60,7 +60,27 @@ fn loopback_plaintext_without_hatch_refuses_to_boot() {
     );
 }
 
-/// The documented loopback dev path (hatch set, ephemeral ports) boots and stays up.
+/// The gRPC hatch alone is not enough (S2): the admin listener has its own escape hatch.
+#[test]
+fn grpc_hatch_alone_refuses_to_boot() {
+    let child = rls_cmd(&[
+        ("FLOWPLANE_RLS_GRPC_LISTEN", "127.0.0.1:0"),
+        ("FLOWPLANE_RLS_ADMIN_LISTEN", "127.0.0.1:0"),
+        (
+            "FLOWPLANE_RLS_ALLOW_INSECURE_GRPC",
+            "yes-this-is-local-only",
+        ),
+    ])
+    .spawn()
+    .unwrap();
+    let err = stderr_of(child);
+    assert!(
+        err.contains("FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN"),
+        "refusal must name the admin escape hatch: {err}"
+    );
+}
+
+/// The documented loopback dev path (both hatches, ephemeral ports) boots and stays up.
 #[test]
 fn loopback_dev_path_boots_with_hatch() {
     let mut child = rls_cmd(&[
@@ -68,6 +88,10 @@ fn loopback_dev_path_boots_with_hatch() {
         ("FLOWPLANE_RLS_ADMIN_LISTEN", "127.0.0.1:0"),
         (
             "FLOWPLANE_RLS_ALLOW_INSECURE_GRPC",
+            "yes-this-is-local-only",
+        ),
+        (
+            "FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN",
             "yes-this-is-local-only",
         ),
     ])

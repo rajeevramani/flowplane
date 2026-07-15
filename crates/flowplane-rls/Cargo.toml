@@ -22,6 +22,12 @@ prost = { workspace = true }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 axum = { workspace = true }
+# Admin HTTPS acceptor (fpv2-9sf S2): axum-server carries no bundled crypto provider — the
+# ring provider is installed explicitly in server.rs, mirroring the CP wiring.
+axum-server = { workspace = true }
+rustls = { workspace = true }
+# Constant-time bearer comparison for the admin middleware.
+subtle = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

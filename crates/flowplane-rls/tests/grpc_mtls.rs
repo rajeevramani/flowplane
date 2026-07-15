@@ -237,6 +237,7 @@ impl MtlsHarness {
         let admin_addr = admin_listener.local_addr().unwrap();
         let state = AdminState {
             policies: Arc::clone(&policies),
+            credential: None,
         };
         tokio::spawn(async move {
             axum::serve(admin_listener, router(state)).await.unwrap();
@@ -250,6 +251,8 @@ impl MtlsHarness {
             // the listen addrs in the config are placeholders.
             grpc_listen: "127.0.0.1:0".parse().unwrap(),
             admin_listen: "127.0.0.1:0".parse().unwrap(),
+            admin_tls: None,
+            admin_credential: None,
             grpc_tls: Some(RlsGrpcTls {
                 cert_path,
                 key_path,
@@ -577,6 +580,7 @@ async fn grpc_tls_none_still_serves_plaintext() {
     let admin_addr = admin_listener.local_addr().unwrap();
     let state = AdminState {
         policies: Arc::clone(&policies),
+        credential: None,
     };
     tokio::spawn(async move {
         axum::serve(admin_listener, router(state)).await.unwrap();
@@ -588,6 +592,8 @@ async fn grpc_tls_none_still_serves_plaintext() {
     let config = RlsConfig {
         grpc_listen: "127.0.0.1:0".parse().unwrap(),
         admin_listen: "127.0.0.1:0".parse().unwrap(),
+        admin_tls: None,
+        admin_credential: None,
         grpc_tls: None,
     };
     let mut server = grpc_server(&config).expect("grpc_server without TLS");
