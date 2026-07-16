@@ -31,9 +31,43 @@ struct McpSession {
     principal: String,
     principal_kind: &'static str,
     org_id: Option<uuid::Uuid>,
-    connection_id: uuid::Uuid,
-    created_at: Instant,
     last_seen: Instant,
+    // Requests currently executing against this session (validated, not yet finished).
+    // Cleanup never reaps a session with in-flight requests: a request validated at the
+    // TTL boundary must still find its session when its authorization succeeds and it
+    // stamps. This is presence, not lifetime — it does not move last_seen, so denied
+    // traffic still cannot extend the session beyond its in-flight window.
+    in_flight: u32,
+    // Display metadata for the team-scoped status/connections endpoints only.
+    // Authorization is re-evaluated per request and never reads this map.
+    team_activity: HashMap<uuid::Uuid, TeamActivity>,
+}
+
+/// Decrements a session's in-flight counter on drop (cancellation-safe: fires even if the
+/// request future is dropped mid-await). Created by `validate_session`.
+struct InFlightGuard {
+    session_id: String,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        if let Some(session) = sessions().get_mut(&self.session_id) {
+            session.in_flight = session.in_flight.saturating_sub(1);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct TeamActivity {
+    // Random per (session, team): teams must never receive a shared identifier
+    // for one session, or the endpoint becomes a cross-team correlation channel.
+    team_connection_id: uuid::Uuid,
+    first_authorized_at: Instant,
+    last_authorized_at: Instant,
+}
+
+fn team_activity_stale(activity: &TeamActivity, now: Instant, ttl: Duration) -> bool {
+    now.duration_since(activity.last_authorized_at) > ttl
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -143,12 +177,24 @@ pub async fn post(
         "notifications/initialized" | "initialized" => notification(req.id),
         "ping" => with_session(&headers, &principal, req.id, rid, || json!({})),
         "tools/list" => match validate_session(&headers, &principal, id, rid) {
-            Some(response) => response,
-            None => tools_list(&state, &ctx, req.id, req.params, rid).await,
+            Err(response) => *response,
+            Ok(guard) => {
+                // guard held for the whole handler: keeps the session unreapable until
+                // dispatch (and its post-authz stamp) completes, then decrements on drop.
+                let response =
+                    tools_list(&state, &ctx, req.id, req.params, rid, &guard.session_id).await;
+                drop(guard);
+                response
+            }
         },
         "tools/call" => match validate_session(&headers, &principal, id, rid) {
-            Some(response) => response,
-            None => tools_call(&state, &ctx, req.id, req.params, rid).await,
+            Err(response) => *response,
+            Ok(guard) => {
+                let response =
+                    tools_call(&state, &ctx, req.id, req.params, rid, &guard.session_id).await;
+                drop(guard);
+                response
+            }
         },
         _ => rpc_error(req.id, -32601, "method not found", rid, "method").into_response(),
     };
@@ -158,6 +204,8 @@ pub async fn post(
     response
 }
 
+/// MCP transport status for one team. `active_sessions` counts live sessions with recent,
+/// successfully authorized MCP activity for this team on this control-plane node.
 #[utoipa::path(get, path = "/api/v1/teams/{team}/mcp/status",
     tag = "McpTools",
     params(("team" = String, Path, description = "Team name or UUID")),
@@ -184,7 +232,7 @@ pub async fn status(
             .await?
             .len();
         cleanup_sessions();
-        let active_sessions = visible_sessions(&ctx).len();
+        let active_sessions = visible_sessions(&ctx, team).len();
         Ok::<_, DomainError>(McpStatusView {
             transport: "streamable_http_post".into(),
             preferred_protocol_version: PREFERRED_VERSION.into(),
@@ -206,6 +254,9 @@ pub async fn status(
     run.await.map(Json).map_err(|e| ApiError::new(e, rid))
 }
 
+/// This team's attributed MCP connection records on this control-plane node: sessions with
+/// recent, successfully authorized activity for the team. `connection_id` is a per-team
+/// identifier — the same underlying session presents a different id to each team.
 #[utoipa::path(get, path = "/api/v1/teams/{team}/mcp/connections",
     tag = "McpTools",
     params(("team" = String, Path, description = "Team name or UUID")),
@@ -225,7 +276,7 @@ pub async fn connections(
         let team = resolve_team(&state, &ctx, &team).await?;
         authorize_mcp_read(&state, &ctx, team, rid).await?;
         cleanup_sessions();
-        Ok::<_, DomainError>(visible_sessions(&ctx))
+        Ok::<_, DomainError>(visible_sessions(&ctx, team))
     };
     run.await.map(Json).map_err(|e| ApiError::new(e, rid))
 }
@@ -619,9 +670,9 @@ fn initialize(
             principal: principal.to_string(),
             principal_kind: metadata.kind,
             org_id: metadata.org_id,
-            connection_id: uuid::Uuid::new_v4(),
-            created_at: now,
             last_seen: now,
+            in_flight: 0,
+            team_activity: HashMap::new(),
         },
     );
     let mut response = rpc_result(
@@ -661,6 +712,7 @@ async fn tools_list(
     id: Option<Value>,
     params: Value,
     rid: RequestId,
+    session_id: &str,
 ) -> Response {
     let team = match resolve_tool_team(state, ctx, &params).await {
         Ok(team) => team,
@@ -682,8 +734,14 @@ async fn tools_list(
             })
         })
         .collect::<Vec<_>>();
+    let dynamic_allowed = dynamic_tool_allowed(ctx, team, Action::Execute);
+    // Attribution is authorization-based, not result-count-based: a passing grant check
+    // stamps even when the dynamic-tool query below returns zero rows.
+    if !tools.is_empty() || dynamic_allowed {
+        stamp_team_activity(session_id, team.id.as_uuid());
+    }
     let mut tools = tools;
-    if dynamic_tool_allowed(ctx, team, Action::Execute) {
+    if dynamic_allowed {
         match fp_storage::repos::api_lifecycle::list_enabled_published_api_tools(
             &state.pool,
             team.id,
@@ -703,6 +761,7 @@ async fn tools_call(
     id: Option<Value>,
     params: Value,
     rid: RequestId,
+    session_id: &str,
 ) -> Response {
     let name = match params.get("name").and_then(Value::as_str) {
         Some(name) => name,
@@ -722,7 +781,9 @@ async fn tools_call(
         .cloned()
         .unwrap_or_else(|| json!({}));
     if let Some(api_tool_name) = name.strip_prefix("api_") {
-        return match execute_dynamic_tool(state, ctx, api_tool_name, arguments, rid).await {
+        return match execute_dynamic_tool(state, ctx, api_tool_name, arguments, rid, session_id)
+            .await
+        {
             Ok(value) => tool_result_ok(id, value).into_response(),
             Err(e) => tool_result_error(id, e).into_response(),
         };
@@ -760,6 +821,7 @@ async fn tools_call(
         )
         .into_response();
     }
+    stamp_team_activity(session_id, team.id.as_uuid());
 
     match execute_static_tool(state, ctx, tool, team, arguments, rid).await {
         Ok(value) => tool_result_ok(id, value).into_response(),
@@ -773,6 +835,7 @@ async fn execute_dynamic_tool(
     api_tool_name: &str,
     arguments: Value,
     rid: RequestId,
+    session_id: &str,
 ) -> DomainResult<Value> {
     let team = resolve_tool_team(state, ctx, &arguments).await?;
     if let Decision::Deny(reason) =
@@ -794,6 +857,7 @@ async fn execute_dynamic_tool(
             reason,
         ));
     }
+    stamp_team_activity(session_id, team.id.as_uuid());
     let tool = fp_storage::repos::api_lifecycle::get_enabled_published_api_tool(
         &state.pool,
         team.id,
@@ -1438,15 +1502,16 @@ fn with_session(
         )
         .into_response();
     };
-    let mut sessions = sessions();
-    let Some(session) = sessions.get_mut(session_id) else {
+    let sessions = sessions();
+    let Some(session) = sessions.get(session_id) else {
         return rpc_error(id, -32600, "unknown MCP session", rid, "session").into_response();
     };
     if session.principal != principal {
         return rpc_error(id, -32600, "MCP session principal mismatch", rid, "authz")
             .into_response();
     }
-    session.last_seen = Instant::now();
+    // Deliberately no last_seen refresh: pings validate a session but never extend its
+    // lifetime — only successfully authorized team operations do (stamp_team_activity).
     rpc_result(id, result()).into_response()
 }
 
@@ -1455,13 +1520,13 @@ fn validate_session(
     principal: &str,
     id: Option<Value>,
     rid: RequestId,
-) -> Option<Response> {
+) -> Result<InFlightGuard, Box<Response>> {
     let Some(session_id) = headers
         .get("mcp-session-id")
         .and_then(|v| v.to_str().ok())
         .filter(|s| valid_session_id(s))
     else {
-        return Some(
+        return Err(Box::new(
             rpc_error(
                 id,
                 -32600,
@@ -1470,19 +1535,57 @@ fn validate_session(
                 "session",
             )
             .into_response(),
-        );
+        ));
     };
     let mut sessions = sessions();
     let Some(session) = sessions.get_mut(session_id) else {
-        return Some(rpc_error(id, -32600, "unknown MCP session", rid, "session").into_response());
+        return Err(Box::new(
+            rpc_error(id, -32600, "unknown MCP session", rid, "session").into_response(),
+        ));
     };
     if session.principal != principal {
-        return Some(
+        return Err(Box::new(
             rpc_error(id, -32600, "MCP session principal mismatch", rid, "authz").into_response(),
-        );
+        ));
     }
-    session.last_seen = Instant::now();
-    None
+    // Mark the session in-flight so concurrent TTL cleanup cannot reap it while this
+    // request's authorization crosses `.await` points — otherwise an authorized call at
+    // the TTL boundary could lose its session before its post-authz stamp runs (§4).
+    // Deliberately no last_seen refresh here (pre-authorization): denied or malformed
+    // tool requests must not extend the session. The refresh happens only in
+    // stamp_team_activity, after the operation's team authorization allowed it.
+    session.in_flight = session.in_flight.saturating_add(1);
+    Ok(InFlightGuard {
+        session_id: session_id.to_string(),
+    })
+}
+
+/// Records a successfully authorized team operation on the session: refreshes `last_seen`
+/// and inserts-or-refreshes the team's activity entry. A stale entry (older than `ttl`) is
+/// replaced rather than resumed, minting a fresh `team_connection_id`. Call strictly AFTER
+/// the operation's authorization allowed it — denied or malformed requests must never stamp.
+fn stamp_team_activity(session_id: &str, team_id: uuid::Uuid) {
+    let now = Instant::now();
+    let mut sessions = sessions();
+    let Some(session) = sessions.get_mut(session_id) else {
+        return;
+    };
+    session.last_seen = now;
+    match session.team_activity.get_mut(&team_id) {
+        Some(activity) if !team_activity_stale(activity, now, SESSION_TTL) => {
+            activity.last_authorized_at = now;
+        }
+        _ => {
+            session.team_activity.insert(
+                team_id,
+                TeamActivity {
+                    team_connection_id: uuid::Uuid::new_v4(),
+                    first_authorized_at: now,
+                    last_authorized_at: now,
+                },
+            );
+        }
+    }
 }
 
 async fn resolve_tool_team(
@@ -1531,19 +1634,32 @@ async fn authorize_mcp_read(
     }
 }
 
-fn visible_sessions(ctx: &PrincipalCtx) -> Vec<McpConnectionView> {
+// Team-scoped visibility (security-scan 742e6d3 finding 12): a session is listed for a
+// team only with non-stale, successfully authorized activity on that team, and each team
+// sees its own per-team connection id — never the session-global one.
+fn visible_sessions(ctx: &PrincipalCtx, team: TeamRef) -> Vec<McpConnectionView> {
     let meta = principal_metadata(ctx);
     let now = Instant::now();
     sessions()
         .values()
-        .filter(|session| session.org_id.is_some() && session.org_id == meta.org_id)
-        .map(|session| McpConnectionView {
-            connection_id: session.connection_id,
-            principal_kind: session.principal_kind.into(),
-            transport: "streamable_http_post".into(),
-            sse: false,
-            age_seconds: now.duration_since(session.created_at).as_secs(),
-            idle_seconds: now.duration_since(session.last_seen).as_secs(),
+        .filter(|session| {
+            session.org_id.is_some()
+                && session.org_id == meta.org_id
+                && session.org_id == Some(team.org_id.as_uuid())
+        })
+        .filter_map(|session| {
+            let activity = session.team_activity.get(&team.id.as_uuid())?;
+            if team_activity_stale(activity, now, SESSION_TTL) {
+                return None;
+            }
+            Some(McpConnectionView {
+                connection_id: activity.team_connection_id,
+                principal_kind: session.principal_kind.into(),
+                transport: "streamable_http_post".into(),
+                sse: false,
+                age_seconds: now.duration_since(activity.first_authorized_at).as_secs(),
+                idle_seconds: now.duration_since(activity.last_authorized_at).as_secs(),
+            })
         })
         .collect()
 }
@@ -2031,8 +2147,21 @@ fn principal_metadata(ctx: &PrincipalCtx) -> PrincipalMetadata {
 }
 
 fn cleanup_sessions() {
-    let now = Instant::now();
-    sessions().retain(|_, session| now.duration_since(session.last_seen) <= SESSION_TTL);
+    cleanup_sessions_at(Instant::now(), SESSION_TTL);
+}
+
+fn cleanup_sessions_at(now: Instant, ttl: Duration) {
+    let mut sessions = sessions();
+    // Never reap a session with in-flight requests: one may have validated just before
+    // its last_seen crossed the TTL and still be awaiting authorization, after which it
+    // will stamp and refresh. Idle sessions have in_flight == 0 and expire normally.
+    sessions
+        .retain(|_, session| session.in_flight > 0 || now.duration_since(session.last_seen) <= ttl);
+    for session in sessions.values_mut() {
+        session
+            .team_activity
+            .retain(|_, activity| !team_activity_stale(activity, now, ttl));
+    }
 }
 
 fn sessions() -> MutexGuard<'static, HashMap<String, McpSession>> {
@@ -2092,6 +2221,396 @@ mod tests {
     use metrics_exporter_prometheus::PrometheusBuilder;
     use sqlx::postgres::PgPoolOptions;
     use std::collections::HashSet;
+
+    fn test_user_ctx(org_id: OrgId) -> PrincipalCtx {
+        PrincipalCtx::User {
+            user_id: UserId::generate(),
+            platform_admin: false,
+            org_selector_required: false,
+            org: Some((org_id, OrgRole::Member)),
+            grants: GrantSet::new([]),
+        }
+    }
+
+    // The SESSIONS registry is process-global (shared across parallel tests): every test
+    // uses unique session ids / org ids / team ids and asserts only on its own entries.
+    fn insert_test_session(session_id: &str, org_id: Option<uuid::Uuid>) {
+        let now = Instant::now();
+        sessions().insert(
+            session_id.to_string(),
+            McpSession {
+                principal: format!("test:{session_id}"),
+                principal_kind: "user",
+                org_id,
+                last_seen: now,
+                in_flight: 0,
+                team_activity: HashMap::new(),
+            },
+        );
+    }
+
+    fn remove_test_sessions(ids: &[&str]) {
+        let mut sessions = sessions();
+        for id in ids {
+            sessions.remove(*id);
+        }
+    }
+
+    #[test]
+    fn stamp_creates_refreshes_and_isolates_per_team() {
+        let sid = format!("mcp-{}", uuid::Uuid::new_v4());
+        let team_a = uuid::Uuid::new_v4();
+        let team_b = uuid::Uuid::new_v4();
+        insert_test_session(&sid, Some(uuid::Uuid::new_v4()));
+
+        stamp_team_activity(&sid, team_a);
+        let (id_a1, first_a1) = {
+            let sessions = sessions();
+            let activity = &sessions[&sid].team_activity[&team_a];
+            (activity.team_connection_id, activity.first_authorized_at)
+        };
+
+        stamp_team_activity(&sid, team_a);
+        stamp_team_activity(&sid, team_b);
+        {
+            let sessions = sessions();
+            let session = &sessions[&sid];
+            let activity_a = &session.team_activity[&team_a];
+            let activity_b = &session.team_activity[&team_b];
+            // Re-stamp on a fresh entry keeps the id and first-authorized instant.
+            assert_eq!(activity_a.team_connection_id, id_a1);
+            assert_eq!(activity_a.first_authorized_at, first_a1);
+            assert!(activity_a.last_authorized_at >= first_a1);
+            // Per-team ids are distinct across teams.
+            assert_ne!(activity_b.team_connection_id, id_a1);
+        }
+        remove_test_sessions(&[&sid]);
+    }
+
+    #[test]
+    fn stamp_after_stale_entry_mints_new_team_connection_id() {
+        let sid = format!("mcp-{}", uuid::Uuid::new_v4());
+        let team = uuid::Uuid::new_v4();
+        insert_test_session(&sid, Some(uuid::Uuid::new_v4()));
+        let stale_instant = Instant::now() - (SESSION_TTL + Duration::from_secs(60));
+        let old_id = uuid::Uuid::new_v4();
+        sessions().get_mut(&sid).unwrap().team_activity.insert(
+            team,
+            TeamActivity {
+                team_connection_id: old_id,
+                first_authorized_at: stale_instant,
+                last_authorized_at: stale_instant,
+            },
+        );
+
+        stamp_team_activity(&sid, team);
+        {
+            let sessions = sessions();
+            let activity = &sessions[&sid].team_activity[&team];
+            assert_ne!(activity.team_connection_id, old_id);
+            assert!(activity.first_authorized_at > stale_instant);
+        }
+        remove_test_sessions(&[&sid]);
+    }
+
+    #[test]
+    fn stamp_on_unknown_session_is_a_noop() {
+        let sid = format!("mcp-{}", uuid::Uuid::new_v4());
+        stamp_team_activity(&sid, uuid::Uuid::new_v4());
+        assert!(!sessions().contains_key(&sid));
+    }
+
+    #[test]
+    fn visible_sessions_requires_nonstale_activity_on_the_requested_team() {
+        let org = OrgId::generate();
+        let other_org = OrgId::generate();
+        let team = fp_domain::TeamId::generate();
+        let team_ref = TeamRef {
+            id: team,
+            org_id: org,
+        };
+        let ctx = test_user_ctx(org);
+
+        let sid_active = format!("mcp-{}", uuid::Uuid::new_v4());
+        let sid_other_team = format!("mcp-{}", uuid::Uuid::new_v4());
+        let sid_stale = format!("mcp-{}", uuid::Uuid::new_v4());
+        let sid_other_org = format!("mcp-{}", uuid::Uuid::new_v4());
+        let sid_orgless = format!("mcp-{}", uuid::Uuid::new_v4());
+        insert_test_session(&sid_active, Some(org.as_uuid()));
+        insert_test_session(&sid_other_team, Some(org.as_uuid()));
+        insert_test_session(&sid_stale, Some(org.as_uuid()));
+        insert_test_session(&sid_other_org, Some(other_org.as_uuid()));
+        insert_test_session(&sid_orgless, None);
+
+        stamp_team_activity(&sid_active, team.as_uuid());
+        stamp_team_activity(&sid_other_team, uuid::Uuid::new_v4());
+        stamp_team_activity(&sid_other_org, team.as_uuid());
+        stamp_team_activity(&sid_orgless, team.as_uuid());
+        let stale_instant = Instant::now() - (SESSION_TTL + Duration::from_secs(60));
+        sessions()
+            .get_mut(&sid_stale)
+            .unwrap()
+            .team_activity
+            .insert(
+                team.as_uuid(),
+                TeamActivity {
+                    team_connection_id: uuid::Uuid::new_v4(),
+                    first_authorized_at: stale_instant,
+                    last_authorized_at: stale_instant,
+                },
+            );
+
+        let views = visible_sessions(&ctx, team_ref);
+        let expected_id = sessions()[&sid_active].team_activity[&team.as_uuid()].team_connection_id;
+        // Other parallel tests may add their own sessions, but none can produce this
+        // team's id: assert our session is present exactly once and the others absent.
+        assert_eq!(
+            views
+                .iter()
+                .filter(|view| view.connection_id == expected_id)
+                .count(),
+            1
+        );
+        // None of the other sessions' per-team ids may appear in this team's view.
+        let foreign_ids: Vec<uuid::Uuid> =
+            [&sid_other_team, &sid_stale, &sid_other_org, &sid_orgless]
+                .iter()
+                .flat_map(|sid| {
+                    sessions()[sid.as_str()]
+                        .team_activity
+                        .values()
+                        .map(|activity| activity.team_connection_id)
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+        for view in &views {
+            assert!(!foreign_ids.contains(&view.connection_id));
+        }
+        remove_test_sessions(&[
+            &sid_active,
+            &sid_other_team,
+            &sid_stale,
+            &sid_other_org,
+            &sid_orgless,
+        ]);
+    }
+
+    #[test]
+    fn session_validation_and_ping_do_not_extend_lifetime_but_stamping_does() {
+        let sid = format!("mcp-{}", uuid::Uuid::new_v4());
+        insert_test_session(&sid, Some(uuid::Uuid::new_v4()));
+        let t_old = Instant::now() - Duration::from_secs(100);
+        sessions().get_mut(&sid).unwrap().last_seen = t_old;
+        let principal = format!("test:{sid}");
+        let mut headers = HeaderMap::new();
+        headers.insert("mcp-session-id", HeaderValue::from_str(&sid).unwrap());
+        let rid = RequestId::generate();
+
+        // validate_session succeeds but must not refresh last_seen (pre-authz); it does
+        // mark the session in-flight so concurrent cleanup can't reap it mid-request.
+        let guard = validate_session(&headers, &principal, None, rid).expect("must validate");
+        assert_eq!(
+            sessions()[&sid].last_seen,
+            t_old,
+            "validate must not refresh"
+        );
+        assert_eq!(sessions()[&sid].in_flight, 1, "validate marks in-flight");
+        drop(guard);
+        assert_eq!(sessions()[&sid].in_flight, 0, "guard drop clears in-flight");
+
+        // ping (with_session) succeeds but must not refresh last_seen.
+        let response = with_session(&headers, &principal, None, rid, || json!({}));
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(sessions()[&sid].last_seen, t_old, "ping must not refresh");
+
+        // A successfully authorized team operation (the stamp) is what refreshes.
+        stamp_team_activity(&sid, uuid::Uuid::new_v4());
+        assert!(sessions()[&sid].last_seen > t_old, "stamp must refresh");
+        remove_test_sessions(&[&sid]);
+    }
+
+    #[test]
+    fn unstamped_stale_session_is_reaped_while_stamped_one_survives() {
+        let sid_stale = format!("mcp-{}", uuid::Uuid::new_v4());
+        let sid_stamped = format!("mcp-{}", uuid::Uuid::new_v4());
+        insert_test_session(&sid_stale, Some(uuid::Uuid::new_v4()));
+        insert_test_session(&sid_stamped, Some(uuid::Uuid::new_v4()));
+        let t_old = Instant::now() - (SESSION_TTL + Duration::from_secs(60));
+        {
+            let mut sessions = sessions();
+            sessions.get_mut(&sid_stale).unwrap().last_seen = t_old;
+            sessions.get_mut(&sid_stamped).unwrap().last_seen = t_old;
+        }
+        // Only the session with an authorized operation gets its lifetime extended.
+        stamp_team_activity(&sid_stamped, uuid::Uuid::new_v4());
+
+        cleanup_sessions_at(Instant::now(), SESSION_TTL);
+        {
+            let sessions = sessions();
+            assert!(
+                !sessions.contains_key(&sid_stale),
+                "ping-/denied-only session expires at TTL"
+            );
+            assert!(
+                sessions.contains_key(&sid_stamped),
+                "authorized activity keeps the session alive"
+            );
+        }
+        remove_test_sessions(&[&sid_stamped]);
+    }
+
+    #[test]
+    fn in_flight_session_survives_cleanup_at_ttl_boundary() {
+        // Regression for the TTL-boundary race: a request that validated just before its
+        // last_seen crossed the TTL must not be reaped by a concurrent cleanup while its
+        // authorization is still in flight (before it can stamp).
+        let sid = format!("mcp-{}", uuid::Uuid::new_v4());
+        insert_test_session(&sid, Some(uuid::Uuid::new_v4()));
+        let principal = format!("test:{sid}");
+        let mut headers = HeaderMap::new();
+        headers.insert("mcp-session-id", HeaderValue::from_str(&sid).unwrap());
+
+        // Session's last_seen is already past the TTL; a concurrent request validates it
+        // (guard alive = in flight) before cleanup runs.
+        sessions().get_mut(&sid).unwrap().last_seen =
+            Instant::now() - (SESSION_TTL + Duration::from_secs(60));
+        let guard = validate_session(&headers, &principal, None, RequestId::generate())
+            .expect("must validate");
+
+        cleanup_sessions_at(Instant::now(), SESSION_TTL);
+        assert!(
+            sessions().contains_key(&sid),
+            "in-flight session must survive cleanup even past its TTL"
+        );
+
+        // Once the request completes (guard dropped) and no authorized stamp refreshed it,
+        // a later cleanup reaps it normally.
+        drop(guard);
+        cleanup_sessions_at(Instant::now(), SESSION_TTL);
+        assert!(
+            !sessions().contains_key(&sid),
+            "after the request finishes with no stamp, the stale session is reaped"
+        );
+    }
+
+    #[test]
+    fn visible_sessions_renders_team_relative_age_and_idle() {
+        // Deterministic pin of team-relative clock rendering (no sleeps, crafted
+        // Instants): a session-global idle/age source would fail these assertions.
+        let org = OrgId::generate();
+        let team_a = fp_domain::TeamId::generate();
+        let team_b = fp_domain::TeamId::generate();
+        let ctx = test_user_ctx(org);
+        let sid = format!("mcp-{}", uuid::Uuid::new_v4());
+        insert_test_session(&sid, Some(org.as_uuid()));
+
+        let now = Instant::now();
+        {
+            let mut sessions = sessions();
+            let session = sessions.get_mut(&sid).unwrap();
+            // Team A: first authorized 300s ago, last authorized 100s ago.
+            session.team_activity.insert(
+                team_a.as_uuid(),
+                TeamActivity {
+                    team_connection_id: uuid::Uuid::new_v4(),
+                    first_authorized_at: now - Duration::from_secs(300),
+                    last_authorized_at: now - Duration::from_secs(100),
+                },
+            );
+            // Team B: authorized just now.
+            session.team_activity.insert(
+                team_b.as_uuid(),
+                TeamActivity {
+                    team_connection_id: uuid::Uuid::new_v4(),
+                    first_authorized_at: now,
+                    last_authorized_at: now,
+                },
+            );
+            // A session-global source would read this and report ~0 idle everywhere.
+            session.last_seen = now;
+        }
+
+        let view_a = visible_sessions(
+            &ctx,
+            TeamRef {
+                id: team_a,
+                org_id: org,
+            },
+        );
+        let view_b = visible_sessions(
+            &ctx,
+            TeamRef {
+                id: team_b,
+                org_id: org,
+            },
+        );
+        let expected_a = sessions()[&sid].team_activity[&team_a.as_uuid()].team_connection_id;
+        let entry_a = view_a
+            .iter()
+            .find(|view| view.connection_id == expected_a)
+            .expect("team A entry");
+        // ±1s tolerance for elapsed test time around the crafted instants.
+        assert!(
+            (99..=101).contains(&entry_a.idle_seconds),
+            "A idle from A's last_authorized_at"
+        );
+        assert!(
+            (299..=301).contains(&entry_a.age_seconds),
+            "A age from A's first_authorized_at"
+        );
+        let expected_b = sessions()[&sid].team_activity[&team_b.as_uuid()].team_connection_id;
+        let entry_b = view_b
+            .iter()
+            .find(|view| view.connection_id == expected_b)
+            .expect("team B entry");
+        assert!(entry_b.idle_seconds <= 1, "B idle from B's own clock");
+        assert!(entry_b.age_seconds <= 1, "B age from B's own clock");
+        remove_test_sessions(&[&sid]);
+    }
+
+    #[test]
+    fn cleanup_prunes_stale_sessions_and_stale_team_entries() {
+        let sid_live = format!("mcp-{}", uuid::Uuid::new_v4());
+        let sid_dead = format!("mcp-{}", uuid::Uuid::new_v4());
+        let team_fresh = uuid::Uuid::new_v4();
+        let team_stale = uuid::Uuid::new_v4();
+        insert_test_session(&sid_live, Some(uuid::Uuid::new_v4()));
+        insert_test_session(&sid_dead, Some(uuid::Uuid::new_v4()));
+
+        let now = Instant::now();
+        let stale_instant = now - (SESSION_TTL + Duration::from_secs(60));
+        {
+            let mut sessions = sessions();
+            let live = sessions.get_mut(&sid_live).unwrap();
+            live.team_activity.insert(
+                team_fresh,
+                TeamActivity {
+                    team_connection_id: uuid::Uuid::new_v4(),
+                    first_authorized_at: now,
+                    last_authorized_at: now,
+                },
+            );
+            live.team_activity.insert(
+                team_stale,
+                TeamActivity {
+                    team_connection_id: uuid::Uuid::new_v4(),
+                    first_authorized_at: stale_instant,
+                    last_authorized_at: stale_instant,
+                },
+            );
+            sessions.get_mut(&sid_dead).unwrap().last_seen = stale_instant;
+        }
+
+        cleanup_sessions_at(now, SESSION_TTL);
+        {
+            let sessions = sessions();
+            assert!(!sessions.contains_key(&sid_dead));
+            let live = &sessions[&sid_live];
+            assert!(live.team_activity.contains_key(&team_fresh));
+            assert!(!live.team_activity.contains_key(&team_stale));
+        }
+        remove_test_sessions(&[&sid_live]);
+    }
 
     #[test]
     fn origin_match_ignores_port() {
