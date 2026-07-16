@@ -14,6 +14,16 @@ CLI surface, and configuration contract become subject to semantic versioning.
 
 ### Security
 
+- **MCP session listings are now team-scoped.** `GET /api/v1/teams/{team}/mcp/status`
+  (`active_sessions`) and `GET /api/v1/teams/{team}/mcp/connections` previously returned
+  metadata for every live MCP session in the caller's org. They now list only sessions
+  with recent, successfully authorized MCP activity for the requested team (attribution
+  is recorded when a `tools/list` or `tools/call` passes that team's authorization —
+  denied or malformed requests never attribute), and the reported `connection_id` is a
+  per-team identifier: the same underlying session presents a different id to each team,
+  so listings cannot be correlated across teams. `age_seconds`/`idle_seconds` are now
+  relative to the team's authorized activity. Listings remain node-local.
+
 - **Team grant reads now require authorization.** `GET /api/v1/teams/{team}/grants`
   (and `flowplane team grant list`) previously returned a team's grant roster to any
   same-org caller, including agents. It is now gated through the shared resource-grant
