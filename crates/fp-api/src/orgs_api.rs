@@ -136,11 +136,10 @@ pub async fn get_org(
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
 ) -> Result<Json<OrgView>, ApiError> {
-    let run = async {
-        let org_id = resolve_org(&state, &org).await?;
-        svc::get_org(&state.pool, &ctx, org_id, rid).await
-    };
-    run.await
+    // The service resolves the name/UUID reference itself, after authorization, so an
+    // existing foreign org and a missing one produce the identical 404 (anti-enumeration).
+    svc::get_org(&state.pool, &ctx, &org, rid)
+        .await
         .map(|o| Json(view(o)))
         .map_err(|e| ApiError::new(e, rid))
 }
