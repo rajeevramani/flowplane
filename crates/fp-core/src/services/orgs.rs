@@ -7,7 +7,8 @@ use crate::authz::{check_resource_access, Decision, PrincipalCtx};
 use crate::services::{actor_of, deny_to_error, record_authz_denial};
 use fp_domain::authz::{Action, Resource};
 use fp_domain::{
-    DomainError, DomainResult, ErrorCode, OrgId, OrgRole, Organization, RequestId, UserId,
+    DomainError, DomainResult, EntityStatus, ErrorCode, OrgId, OrgRole, Organization, RequestId,
+    UserId,
 };
 use fp_storage::repos::{audit, identity};
 use sqlx::PgPool;
@@ -88,19 +89,66 @@ pub async fn list_orgs(
     request_id: RequestId,
 ) -> DomainResult<Vec<Organization>> {
     authorize_governance(pool, ctx, Action::Read, request_id).await?;
-    identity::list_orgs(pool).await
+    if ctx.is_platform_admin() {
+        // Governance enumeration: every active org.
+        identity::list_orgs(pool).await
+    } else {
+        match ctx.user_id() {
+            // Tenant caller: only the orgs they are a member of (active only).
+            Some(user_id) => identity::list_orgs_for_user(pool, user_id).await,
+            // Unreachable in practice: authorize_governance already denied every non-user
+            // principal above. Defensive fail-closed default rather than a real path.
+            None => Ok(Vec::new()),
+        }
+    }
 }
 
+fn org_not_found() -> DomainError {
+    DomainError::new(ErrorCode::NotFound, "organization not found")
+}
+
+/// Read one org by name or UUID. Authorization runs before the reference is even resolved,
+/// and every failure (unknown name, unknown id, non-member, suspended-to-tenant) is the same
+/// generic 404 — an existing foreign org must be indistinguishable from a missing one.
 pub async fn get_org(
     pool: &PgPool,
     ctx: &PrincipalCtx,
-    org_id: OrgId,
+    org_ref: &str,
     request_id: RequestId,
 ) -> DomainResult<Organization> {
     authorize_governance(pool, ctx, Action::Read, request_id).await?;
-    identity::get_org(pool, org_id)
+    let org_id = match org_ref.parse::<OrgId>() {
+        Ok(id) => id,
+        // Name resolution is active-only for every caller (matches list/by-name parity;
+        // platform admin reads a suspended org by UUID).
+        Err(_) => identity::resolve_org_by_name(pool, org_ref)
+            .await?
+            .ok_or_else(org_not_found)?,
+    };
+    let is_admin = ctx.is_platform_admin();
+    if !is_admin {
+        // Non-platform caller: must be a member. Anti-enumeration → 404 before fetching, so
+        // a non-member's request is indistinguishable from a missing org (mirrors
+        // list_org_members below).
+        let member = match ctx.user_id() {
+            Some(user_id) => identity::get_org_membership_role(pool, user_id, org_id)
+                .await?
+                .is_some(),
+            None => false,
+        };
+        if !member {
+            return Err(org_not_found());
+        }
+    }
+    let org = identity::get_org(pool, org_id)
         .await?
-        .ok_or_else(|| DomainError::new(ErrorCode::NotFound, "organization not found"))
+        .ok_or_else(org_not_found)?;
+    // Status parity: tenant callers see ACTIVE orgs only (matches list_orgs_for_user and
+    // by-name resolution, which exclude suspended). Platform admin manages any status.
+    if !is_admin && org.status != EntityStatus::Active {
+        return Err(org_not_found());
+    }
+    Ok(org)
 }
 
 pub async fn delete_org(
