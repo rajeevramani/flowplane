@@ -800,10 +800,114 @@ async fn idle_seconds_is_team_relative_not_session_global() {
     );
     // Relative bound, not wall-clock: with B read before A (above), b_idle is bounded
     // by an earlier read against a later stamp and a_idle by a later read against an
-    // earlier stamp, so b_idle < a_idle cannot flake from request latency; only a
-    // session-global idle clock (the regression under test) would violate it.
+    // earlier stamp, so b_idle < a_idle cannot flake from request latency. (Sanity
+    // check only — the deterministic session-global-regression pin is the crafted-clock
+    // `visible_sessions` unit test in mcp_api.rs.)
     assert!(
         b_idle < a_idle,
         "B's idle clock must be fresher than A's (team-relative clocks): a={a_idle}s b={b_idle}s"
+    );
+}
+
+// --- Slice 2: the session is not an authorization cache (per-request re-auth) ----------
+
+/// Revoking a grant, then issuing tools/call on the SAME session, must deny: earlier
+/// successful authorization on the session confers nothing to later requests. The
+/// pre-revocation connections entry may legitimately remain listed (attribution is a
+/// recent-activity display, not a live-grants view), but the denied call must not add
+/// a second entry.
+#[tokio::test]
+async fn grant_revocation_denies_next_call_on_same_session() {
+    let Some(env) = env().await else { return };
+    let fx = org_with_two_teams(&env).await;
+
+    let agent_token = create_agent(
+        &env,
+        &fx.admin_token,
+        "cp-tool",
+        vec![(fx.team_a_id, "clusters", "read")],
+    )
+    .await;
+    // Locate the grant row to revoke. Team A is uuid-unique to this test and this agent
+    // holds its only clusters:read grant, so the row is unambiguous. (Direct row lookup
+    // mirrors tests/agent_auth.rs; revocation itself goes through the product surface.)
+    let grant_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM grants \
+         WHERE principal_type = 'agent' AND team_id = $1 \
+           AND resource = 'clusters' AND action = 'read'",
+    )
+    .bind(fx.team_a_id.as_uuid())
+    .fetch_one(&env.pool)
+    .await
+    .expect("agent grant row");
+
+    let a_before = connection_ids(&env, &fx.admin_token, &fx.team_a_name).await;
+
+    // Same-session authorized call succeeds and attributes one connection to A.
+    let session = initialize(&env, &agent_token).await;
+    let granted = tools_call(
+        &env,
+        &agent_token,
+        &session,
+        "cp_clusters_list",
+        serde_json::json!({ "team": fx.team_a_name }),
+    )
+    .await;
+    assert_eq!(
+        granted["result"]["isError"], false,
+        "pre-revocation cp_clusters_list on A must succeed: {granted}"
+    );
+    let a_after_grant = connection_ids(&env, &fx.admin_token, &fx.team_a_name).await;
+    assert_eq!(
+        new_ids(&a_before, &a_after_grant).len(),
+        1,
+        "the authorized call attributes exactly one connection to A"
+    );
+
+    // Revoke the grant through the product grant-management surface.
+    let response = env
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/api/v1/teams/{}/grants/{grant_id}",
+                    fx.team_a_name
+                ))
+                .header("authorization", format!("Bearer {}", fx.admin_token))
+                .body(Body::empty())
+                .expect("revoke request"),
+        )
+        .await
+        .expect("revoke response");
+    assert_eq!(
+        response.status(),
+        StatusCode::NO_CONTENT,
+        "grant revocation must succeed"
+    );
+
+    // The SAME session's next call must be denied: per-request re-auth, no session cache.
+    let denied = tools_call(
+        &env,
+        &agent_token,
+        &session,
+        "cp_clusters_list",
+        serde_json::json!({ "team": fx.team_a_name }),
+    )
+    .await;
+    assert_eq!(
+        denied["error"]["data"]["kind"], "authz",
+        "post-revocation call on the same session must be an authz error \
+         (the session is not an authorization cache): {denied}"
+    );
+
+    // The denied call must not attribute a SECOND entry to A. (The pre-revocation entry
+    // may still be listed — attribution is recent-activity display, not live grants.)
+    let a_after_denied = connection_ids(&env, &fx.admin_token, &fx.team_a_name).await;
+    assert!(
+        new_ids(&a_after_grant, &a_after_denied).is_empty(),
+        "a denied post-revocation call must not add a new connection entry: new {:?}",
+        new_ids(&a_after_grant, &a_after_denied)
     );
 }

@@ -32,9 +32,29 @@ struct McpSession {
     principal_kind: &'static str,
     org_id: Option<uuid::Uuid>,
     last_seen: Instant,
+    // Requests currently executing against this session (validated, not yet finished).
+    // Cleanup never reaps a session with in-flight requests: a request validated at the
+    // TTL boundary must still find its session when its authorization succeeds and it
+    // stamps. This is presence, not lifetime — it does not move last_seen, so denied
+    // traffic still cannot extend the session beyond its in-flight window.
+    in_flight: u32,
     // Display metadata for the team-scoped status/connections endpoints only.
     // Authorization is re-evaluated per request and never reads this map.
     team_activity: HashMap<uuid::Uuid, TeamActivity>,
+}
+
+/// Decrements a session's in-flight counter on drop (cancellation-safe: fires even if the
+/// request future is dropped mid-await). Created by `validate_session`.
+struct InFlightGuard {
+    session_id: String,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        if let Some(session) = sessions().get_mut(&self.session_id) {
+            session.in_flight = session.in_flight.saturating_sub(1);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -158,11 +178,23 @@ pub async fn post(
         "ping" => with_session(&headers, &principal, req.id, rid, || json!({})),
         "tools/list" => match validate_session(&headers, &principal, id, rid) {
             Err(response) => *response,
-            Ok(session_id) => tools_list(&state, &ctx, req.id, req.params, rid, &session_id).await,
+            Ok(guard) => {
+                // guard held for the whole handler: keeps the session unreapable until
+                // dispatch (and its post-authz stamp) completes, then decrements on drop.
+                let response =
+                    tools_list(&state, &ctx, req.id, req.params, rid, &guard.session_id).await;
+                drop(guard);
+                response
+            }
         },
         "tools/call" => match validate_session(&headers, &principal, id, rid) {
             Err(response) => *response,
-            Ok(session_id) => tools_call(&state, &ctx, req.id, req.params, rid, &session_id).await,
+            Ok(guard) => {
+                let response =
+                    tools_call(&state, &ctx, req.id, req.params, rid, &guard.session_id).await;
+                drop(guard);
+                response
+            }
         },
         _ => rpc_error(req.id, -32601, "method not found", rid, "method").into_response(),
     };
@@ -639,6 +671,7 @@ fn initialize(
             principal_kind: metadata.kind,
             org_id: metadata.org_id,
             last_seen: now,
+            in_flight: 0,
             team_activity: HashMap::new(),
         },
     );
@@ -1469,15 +1502,16 @@ fn with_session(
         )
         .into_response();
     };
-    let mut sessions = sessions();
-    let Some(session) = sessions.get_mut(session_id) else {
+    let sessions = sessions();
+    let Some(session) = sessions.get(session_id) else {
         return rpc_error(id, -32600, "unknown MCP session", rid, "session").into_response();
     };
     if session.principal != principal {
         return rpc_error(id, -32600, "MCP session principal mismatch", rid, "authz")
             .into_response();
     }
-    session.last_seen = Instant::now();
+    // Deliberately no last_seen refresh: pings validate a session but never extend its
+    // lifetime — only successfully authorized team operations do (stamp_team_activity).
     rpc_result(id, result()).into_response()
 }
 
@@ -1486,7 +1520,7 @@ fn validate_session(
     principal: &str,
     id: Option<Value>,
     rid: RequestId,
-) -> Result<String, Box<Response>> {
+) -> Result<InFlightGuard, Box<Response>> {
     let Some(session_id) = headers
         .get("mcp-session-id")
         .and_then(|v| v.to_str().ok())
@@ -1514,8 +1548,16 @@ fn validate_session(
             rpc_error(id, -32600, "MCP session principal mismatch", rid, "authz").into_response(),
         ));
     }
-    session.last_seen = Instant::now();
-    Ok(session_id.to_string())
+    // Mark the session in-flight so concurrent TTL cleanup cannot reap it while this
+    // request's authorization crosses `.await` points — otherwise an authorized call at
+    // the TTL boundary could lose its session before its post-authz stamp runs (§4).
+    // Deliberately no last_seen refresh here (pre-authorization): denied or malformed
+    // tool requests must not extend the session. The refresh happens only in
+    // stamp_team_activity, after the operation's team authorization allowed it.
+    session.in_flight = session.in_flight.saturating_add(1);
+    Ok(InFlightGuard {
+        session_id: session_id.to_string(),
+    })
 }
 
 /// Records a successfully authorized team operation on the session: refreshes `last_seen`
@@ -2110,7 +2152,11 @@ fn cleanup_sessions() {
 
 fn cleanup_sessions_at(now: Instant, ttl: Duration) {
     let mut sessions = sessions();
-    sessions.retain(|_, session| now.duration_since(session.last_seen) <= ttl);
+    // Never reap a session with in-flight requests: one may have validated just before
+    // its last_seen crossed the TTL and still be awaiting authorization, after which it
+    // will stamp and refresh. Idle sessions have in_flight == 0 and expire normally.
+    sessions
+        .retain(|_, session| session.in_flight > 0 || now.duration_since(session.last_seen) <= ttl);
     for session in sessions.values_mut() {
         session
             .team_activity
@@ -2197,6 +2243,7 @@ mod tests {
                 principal_kind: "user",
                 org_id,
                 last_seen: now,
+                in_flight: 0,
                 team_activity: HashMap::new(),
             },
         );
@@ -2346,6 +2393,104 @@ mod tests {
             &sid_other_org,
             &sid_orgless,
         ]);
+    }
+
+    #[test]
+    fn session_validation_and_ping_do_not_extend_lifetime_but_stamping_does() {
+        let sid = format!("mcp-{}", uuid::Uuid::new_v4());
+        insert_test_session(&sid, Some(uuid::Uuid::new_v4()));
+        let t_old = Instant::now() - Duration::from_secs(100);
+        sessions().get_mut(&sid).unwrap().last_seen = t_old;
+        let principal = format!("test:{sid}");
+        let mut headers = HeaderMap::new();
+        headers.insert("mcp-session-id", HeaderValue::from_str(&sid).unwrap());
+        let rid = RequestId::generate();
+
+        // validate_session succeeds but must not refresh last_seen (pre-authz); it does
+        // mark the session in-flight so concurrent cleanup can't reap it mid-request.
+        let guard = validate_session(&headers, &principal, None, rid).expect("must validate");
+        assert_eq!(
+            sessions()[&sid].last_seen,
+            t_old,
+            "validate must not refresh"
+        );
+        assert_eq!(sessions()[&sid].in_flight, 1, "validate marks in-flight");
+        drop(guard);
+        assert_eq!(sessions()[&sid].in_flight, 0, "guard drop clears in-flight");
+
+        // ping (with_session) succeeds but must not refresh last_seen.
+        let response = with_session(&headers, &principal, None, rid, || json!({}));
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(sessions()[&sid].last_seen, t_old, "ping must not refresh");
+
+        // A successfully authorized team operation (the stamp) is what refreshes.
+        stamp_team_activity(&sid, uuid::Uuid::new_v4());
+        assert!(sessions()[&sid].last_seen > t_old, "stamp must refresh");
+        remove_test_sessions(&[&sid]);
+    }
+
+    #[test]
+    fn unstamped_stale_session_is_reaped_while_stamped_one_survives() {
+        let sid_stale = format!("mcp-{}", uuid::Uuid::new_v4());
+        let sid_stamped = format!("mcp-{}", uuid::Uuid::new_v4());
+        insert_test_session(&sid_stale, Some(uuid::Uuid::new_v4()));
+        insert_test_session(&sid_stamped, Some(uuid::Uuid::new_v4()));
+        let t_old = Instant::now() - (SESSION_TTL + Duration::from_secs(60));
+        {
+            let mut sessions = sessions();
+            sessions.get_mut(&sid_stale).unwrap().last_seen = t_old;
+            sessions.get_mut(&sid_stamped).unwrap().last_seen = t_old;
+        }
+        // Only the session with an authorized operation gets its lifetime extended.
+        stamp_team_activity(&sid_stamped, uuid::Uuid::new_v4());
+
+        cleanup_sessions_at(Instant::now(), SESSION_TTL);
+        {
+            let sessions = sessions();
+            assert!(
+                !sessions.contains_key(&sid_stale),
+                "ping-/denied-only session expires at TTL"
+            );
+            assert!(
+                sessions.contains_key(&sid_stamped),
+                "authorized activity keeps the session alive"
+            );
+        }
+        remove_test_sessions(&[&sid_stamped]);
+    }
+
+    #[test]
+    fn in_flight_session_survives_cleanup_at_ttl_boundary() {
+        // Regression for the TTL-boundary race: a request that validated just before its
+        // last_seen crossed the TTL must not be reaped by a concurrent cleanup while its
+        // authorization is still in flight (before it can stamp).
+        let sid = format!("mcp-{}", uuid::Uuid::new_v4());
+        insert_test_session(&sid, Some(uuid::Uuid::new_v4()));
+        let principal = format!("test:{sid}");
+        let mut headers = HeaderMap::new();
+        headers.insert("mcp-session-id", HeaderValue::from_str(&sid).unwrap());
+
+        // Session's last_seen is already past the TTL; a concurrent request validates it
+        // (guard alive = in flight) before cleanup runs.
+        sessions().get_mut(&sid).unwrap().last_seen =
+            Instant::now() - (SESSION_TTL + Duration::from_secs(60));
+        let guard = validate_session(&headers, &principal, None, RequestId::generate())
+            .expect("must validate");
+
+        cleanup_sessions_at(Instant::now(), SESSION_TTL);
+        assert!(
+            sessions().contains_key(&sid),
+            "in-flight session must survive cleanup even past its TTL"
+        );
+
+        // Once the request completes (guard dropped) and no authorized stamp refreshed it,
+        // a later cleanup reaps it normally.
+        drop(guard);
+        cleanup_sessions_at(Instant::now(), SESSION_TTL);
+        assert!(
+            !sessions().contains_key(&sid),
+            "after the request finishes with no stamp, the stale session is reaped"
+        );
     }
 
     #[test]

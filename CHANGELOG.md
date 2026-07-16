@@ -24,6 +24,15 @@ CLI surface, and configuration contract become subject to semantic versioning.
   so listings cannot be correlated across teams. `age_seconds`/`idle_seconds` are now
   relative to the team's authorized activity. Listings remain node-local.
 
+- **MCP session lifetime requires authorized activity.** The session's sliding 1-hour
+  TTL was previously refreshed by any request carrying a valid session id — including
+  bare pings and denied tool calls — so a session could be kept alive indefinitely
+  without ever passing authorization. Now only a successfully authorized `tools/list`
+  or `tools/call` extends the session; a client that only pings (or is only denied)
+  gets `unknown MCP session` after the TTL and must re-initialize — `initialize` is
+  cheap and mints a fresh session. Clients that already handle session expiry per the
+  MCP spec are unaffected.
+
 - **Team grant reads now require authorization.** `GET /api/v1/teams/{team}/grants`
   (and `flowplane team grant list`) previously returned a team's grant roster to any
   same-org caller, including agents. It is now gated through the shared resource-grant
