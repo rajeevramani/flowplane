@@ -919,6 +919,22 @@ pub async fn list_orgs(pool: &PgPool) -> DomainResult<Vec<Organization>> {
     rows.iter().map(org_from_row).collect()
 }
 
+/// Active orgs the user is a member of — the membership-scoped counterpart of `list_orgs`
+/// for non-platform callers (scoped by construction; same JOIN the principal loader uses).
+pub async fn list_orgs_for_user(pool: &PgPool, user_id: UserId) -> DomainResult<Vec<Organization>> {
+    let rows = sqlx::query(
+        "SELECT o.id, o.name, o.display_name, o.status, o.created_at, o.updated_at \
+         FROM organizations o \
+         JOIN org_memberships m ON m.org_id = o.id \
+         WHERE m.user_id = $1 AND o.status = 'active' ORDER BY o.name",
+    )
+    .bind(user_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list orgs for user: {e}")))?;
+    rows.iter().map(org_from_row).collect()
+}
+
 pub async fn get_org(pool: &PgPool, org_id: OrgId) -> DomainResult<Option<Organization>> {
     let row = sqlx::query(
         "SELECT id, name, display_name, status, created_at, updated_at \

@@ -88,7 +88,18 @@ pub async fn list_orgs(
     request_id: RequestId,
 ) -> DomainResult<Vec<Organization>> {
     authorize_governance(pool, ctx, Action::Read, request_id).await?;
-    identity::list_orgs(pool).await
+    if ctx.is_platform_admin() {
+        // Governance enumeration: every active org.
+        identity::list_orgs(pool).await
+    } else {
+        match ctx.user_id() {
+            // Tenant caller: only the orgs they are a member of (active only).
+            Some(user_id) => identity::list_orgs_for_user(pool, user_id).await,
+            // Unreachable in practice: authorize_governance already denied every non-user
+            // principal above. Defensive fail-closed default rather than a real path.
+            None => Ok(Vec::new()),
+        }
+    }
 }
 
 pub async fn get_org(
