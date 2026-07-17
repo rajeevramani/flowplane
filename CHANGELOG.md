@@ -12,7 +12,47 @@ CLI surface, and configuration contract become subject to semantic versioning.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-07-17
+
+A **major** release. Two changes narrow behavior that existing deployments relied on — the
+egress advisory (enforced by default outside dev mode) and the `flowplane-rls` fail-closed
+transport model. Read **Breaking changes** before upgrading. There is no in-place data
+migration; the change is behavioral/config only.
+
+### Breaking changes
+
+- **Egress advisory is enforced by default outside dev mode.** Cluster create/update, AI
+  provider `base_url`, the expose shortcut, and route-generation apply now reject specs whose
+  upstream target resolves into the denied CIDR set (private/link-local/metadata ranges) or
+  fails DNS resolution, with a new `400 egress_advisory_denied`. This narrows the accepted
+  input of existing REST/MCP write endpoints on upgrade. Operator-controllable:
+  `FLOWPLANE_EGRESS_ADVISORY_ENABLED=false` disables it, `FLOWPLANE_EGRESS_ADVISORY_DENIED_CIDRS`
+  tunes the set; dev mode defaults it off. (fpv2-1hp)
+
+- **`flowplane-rls` binds loopback-only and fails closed** *(also a security fix — scan
+  `742e6d3` finding 17: previously unauthenticated counter increments and unauthenticated
+  full-policy replacement).* Default binds flip wildcard → loopback
+  (`0.0.0.0:50051`/`:8081` → `127.0.0.1:...`). A non-loopback gRPC bind refuses to start
+  without the `FLOWPLANE_RLS_GRPC_TLS_{CERT,KEY,CLIENT_CA}` server-mTLS triad; a non-loopback
+  admin bind refuses without `FLOWPLANE_RLS_ADMIN_TLS_{CERT,KEY}` +
+  `FLOWPLANE_RLS_ADMIN_TOKEN[_FILE]`; loopback plaintext now requires explicit
+  `FLOWPLANE_RLS_ALLOW_INSECURE_{GRPC,ADMIN}=yes-this-is-local-only`. On the CP side, a
+  non-loopback plaintext `FLOWPLANE_RLS_ADMIN_URL` with a token set is a startup error. A
+  zero-config `flowplane-rls` boot (previously wildcard plaintext) now exits with an error;
+  the zero-config `flowplane serve` getting-started path launches no RLS and is unaffected.
+  Contract: FP-DEC-0013. (fpv2-9sf)
+
 ### Security
+
+- **Organization governance reads are scoped to the caller** *(scan `742e6d3` finding 19).*
+  `GET /api/v1/orgs` and `GET /api/v1/orgs/{org}` previously returned every organization in the
+  deployment to any org-scoped caller, leaking cross-org name/existence metadata. The unscoped
+  enumeration is now platform-admin-only; a non-platform caller sees only the organizations
+  they are a member of, and an out-of-scope org (by name or id, including a suspended org they
+  belong to) returns `404` — indistinguishable from a missing org, so it cannot be used to
+  probe existence. Platform-admin governance is unchanged; the authorization engine is
+  unchanged (the read is row-scoped in the org service + storage). Agents remain denied
+  `Organizations`. (fpv2-1co)
 
 - **MCP session listings are now team-scoped.** `GET /api/v1/teams/{team}/mcp/status`
   (`active_sessions`) and `GET /api/v1/teams/{team}/mcp/connections` previously returned
@@ -40,6 +80,47 @@ CLI surface, and configuration contract become subject to semantic versioning.
   or a same-org cp-tool agent) or a same-org org admin may read it. Other callers
   receive `403` (`404` cross-org); gateway-tool and API-consumer agents are always
   denied. Denials are audit-logged.
+
+### Added
+
+- **AI provider authentication schemes.** `AiProviderSpec` accepts an optional `auth_scheme`,
+  assembled into the AI ExtProc with a fail-closed `scheme_conflict` guard when it contradicts
+  other credential configuration. (fpv2-crv)
+
+- **Incremental SSE streaming through the AI ExtProc.** AI responses can stream via an ExtProc
+  `Streamed` response-body mode with a chunk-boundary-safe SSE transform, so Server-Sent-Events
+  responses are proxied incrementally rather than buffered. (fpv2-o6w)
+
+- **Local-token developer UX.** `flowplane serve` writes its per-boot dev token to
+  `~/.flowplane/dev-token` and the logged local bootstrap token to
+  `~/.flowplane/bootstrap-token` (both `0600`); the CLI gains a loopback-gated dev-token
+  fallback with self-diagnosing `401` hints. Dev convenience only — no effect on production
+  auth. (fpv2-wvp)
+
+- **SDS-preferred TLS guidance** in `docs/how-to/production-readiness.md`: use
+  `tls_certificate_sds_secret_name` / `validation_context_sds_secret_name` over inline file
+  paths for tenant TLS material, with the file-path shared-responsibility boundary documented.
+
+### Changed
+
+- **AI ExtProc rewrites `:authority`** to the selected provider origin (canonical
+  `AiProviderOrigin`), fixing upstream `421 Misdirected Request` from providers such as
+  Cloudflare. AI provider `base_url` validation is narrowed at create/update — userinfo
+  (`user:pw@host`), unparseable ports, and unbracketed IPv6 are rejected. (fpv2-ti2)
+
+- Workspace version bumped to `3.0.0`; release/operator docs
+  (`production-readiness.md`, `tutorials/evaluate-no-clone.md`, `README.md`) now reference
+  `3.0.0` artifacts; the `global-rate-limit.md` verification section corrects the composed RLS
+  domain label to the `namespace_uuid(org)|namespace_uuid(team)|<domain>` form actually emitted.
+
+### Fixed
+
+- **Owner-kind reference resolution.** Route configs and listeners resolve references matched
+  by owner kind, and a serve-time xDS guard withdraws cross-owner bindings from snapshots, so a
+  user resource can no longer resolve against an AI-owned cluster/route (or vice versa). (fpv2-qbv)
+
+- AI how-to documents the required `Bearer <key>` secret format for AI provider credentials.
+  (fpv2-yts)
 
 ## [2.2.0] - 2026-07-07
 
