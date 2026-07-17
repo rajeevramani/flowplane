@@ -135,10 +135,16 @@ jobs:
           docker run --rm --entrypoint /usr/local/bin/flowplane-agent flowplane:hardened-smoke --help >/dev/null
           docker run --rm --entrypoint /usr/local/bin/fp-agent flowplane:hardened-smoke --help >/dev/null
           set +e
+          # Since 3.0.0 (fpv2-9sf) flowplane-rls fails closed on plaintext binds: a
+          # loopback-plaintext boot requires the explicit dev-only acknowledgements, else it
+          # exits 1 instead of running. This liveness smoke uses the documented loopback dev
+          # path, so it must pass both acks (production binds use the TLS triads instead).
           docker run --rm \
             --entrypoint /usr/bin/timeout \
             -e FLOWPLANE_RLS_GRPC_LISTEN=127.0.0.1:0 \
             -e FLOWPLANE_RLS_ADMIN_LISTEN=127.0.0.1:0 \
+            -e FLOWPLANE_RLS_ALLOW_INSECURE_GRPC=yes-this-is-local-only \
+            -e FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN=yes-this-is-local-only \
             flowplane:hardened-smoke \
             3 /usr/local/bin/flowplane-rls
           rls_status=$?
