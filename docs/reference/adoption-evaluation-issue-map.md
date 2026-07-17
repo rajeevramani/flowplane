@@ -2,7 +2,7 @@
 
 > Audience: operators, platform-engineers, api-teams · Status: stable
 
-This reference maps the 2.1.1 adoption/evaluation documentation issues to the public docs that close or carry them. It is a release-oriented index, not a task guide.
+This reference maps the adoption/evaluation documentation issues (#199–#212) to the public docs that close or carry them. It is a release-oriented index, not a task guide.
 
 | Issue | Treatment | Public docs and examples |
 | --- | --- | --- |

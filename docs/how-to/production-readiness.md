@@ -87,6 +87,35 @@ Run Envoy with that bootstrap and run `flowplane-agent` beside it in the datapla
 | Envoy admin | `127.0.0.1:9901` | dataplane-local only | Keep loopback-only. Product diagnostics go through `flowplane-agent`. |
 | Agent health | `127.0.0.1:19902` | dataplane-local only | Use for local process health checks on the dataplane host. |
 
+## Tenant TLS Material: Prefer SDS Over File Paths
+
+Listener and cluster TLS can be sourced two ways, and they are mutually exclusive per field
+(supplying both is rejected `400` at config time):
+
+- **SDS secret references (preferred):** `tls_certificate_sds_secret_name` and
+  `validation_context_sds_secret_name` on a listener, and `validation_context_sds_secret_name`
+  on an upstream cluster. The named secret is a team-owned, write-only secret created through
+  `flowplane secret create` (`POST /api/v1/teams/{team}/secrets`) and rotated with
+  `flowplane secret rotate`. The material is delivered to Envoy over the authenticated
+  xDS/SDS channel — it is never an inline value in the gateway spec and never a host file the
+  control plane resolves.
+- **File paths (explicit deployment integration):** `cert_chain_file` / `private_key_file` /
+  `ca_cert_file` on a listener and `ca_cert_file` on a cluster, plus `access_logs.path`. These
+  strings are passed through to Envoy verbatim and **resolved by Envoy on the dataplane host,
+  under the Envoy process's OS identity** — the control plane does not (and on a remote host
+  cannot) canonicalize or confine them.
+
+Prefer SDS. File-backed TLS remains supported as an explicit deployment integration, but it is
+a **shared-responsibility boundary**: because a file path resolves on the team-operated
+dataplane host, whoever holds `listeners`/`clusters` write authority can direct the Envoy
+process at any path its OS user can read or write. Where you use file-backed material, the
+deployer owns the containing control — run Envoy with least privilege on each dataplane host:
+a dedicated non-root user, minimal **read-only** secret mounts, and a restricted **writable**
+directory for access logs. Do not grant gateway-config write authority to principals you would
+not also trust with filesystem access on that dataplane host. (This boundary is a standing
+project invariant; a control-plane path guard becomes mandatory only if a future deployment
+model has Flowplane operate the dataplane filesystem or co-locate multiple tenants on one host.)
+
 ## Upgrade, Rollback, And Version Skew
 
 For the `3.0.0` split-node release path, run the control plane, CLI, `flowplane-agent`, and `flowplane-rls` from the same `3.0.0` artifact set. Short-lived skew during a rolling restart is acceptable for replacing one process at a time, but do not plan a long-lived mixed-version CP/agent/RLS deployment until a later compatibility policy says so.
