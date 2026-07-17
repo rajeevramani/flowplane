@@ -239,7 +239,10 @@ missing cluster. See the [`global_rate_limit` reference](../reference/filters.md
 ## 6. Verify
 
 First confirm Envoy has the filter and the **composed** domain. The emitted domain is the
-tenant-namespaced form `{orgUUID}|{teamUUID}|checkout`, not the raw `checkout`:
+tenant-namespaced form `{namespaceUUID(org)}|{namespaceUUID(team)}|checkout`, not the raw
+`checkout`. The two leading segments are **SHA-256-derived** UUIDs — a stable, opaque namespace
+of your org and team ids, **not** the raw org/team UUIDs — so match them by shape, not by your
+own ids:
 
 ```bash
 curl -fsS http://127.0.0.1:9901/config_dump | grep -oE '[0-9a-f-]{36}\|[0-9a-f-]{36}\|checkout'
