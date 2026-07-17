@@ -1,6 +1,7 @@
 //! Shared application state for the API router.
 
 use fp_core::services::discovery::DiscoveryForwardingPolicy;
+use fp_core::services::egress_advisory::EgressAdvisoryPolicy;
 use fp_core::OidcValidator;
 use metrics_exporter_prometheus::PrometheusHandle;
 use sqlx::PgPool;
@@ -21,6 +22,10 @@ pub struct AppState {
     pub xds_readiness: Option<XdsReadiness>,
     /// Runtime deny policy for S9 discovery forwarding.
     pub discovery_forwarding_policy: DiscoveryForwardingPolicy,
+    /// Write-time egress advisory (FP-DEC-0008, fpv2-1hp): built once at boot from
+    /// `ServerConfig`; consumed by the mutation paths that accept tenant-authored upstream
+    /// hosts. `Default` = disabled (tests that don't exercise the advisory).
+    pub egress_advisory: EgressAdvisoryPolicy,
     /// Kicks the rate-limit `rls_sync` worker for an immediate reconcile (force-repush).
     /// `None` when the RLS admin URL is unconfigured (the worker is not running).
     pub rls_repush: Option<Arc<tokio::sync::Notify>>,

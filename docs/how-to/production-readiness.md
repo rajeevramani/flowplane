@@ -12,6 +12,7 @@ This is the operator entry point for a production-shaped Flowplane deployment. I
 - Platform evaluation sequence: [`evaluate-platform.md`](evaluate-platform.md)
 - Observability baseline: [`../reference/observability-alerts.md`](../reference/observability-alerts.md)
 - Configuration reference: [`../reference/configuration.md`](../reference/configuration.md)
+- **Dataplane egress / SSRF posture (required)**: [`dataplane-egress-security.md`](dataplane-egress-security.md)
 
 ## Deployment Shape
 
@@ -20,7 +21,7 @@ Deploy the control plane and dataplane bundle separately.
 Install the published operator binaries on the control-plane host, operator workstation, and dataplane host. Pick the archive for the host architecture:
 
 ```bash
-VER=2.1.1
+VER=3.0.0
 ARCH=linux-amd64   # or linux-arm64
 BASE="https://github.com/rajeevramani/flowplane/releases/download/v${VER}"
 
@@ -36,7 +37,7 @@ sudo install -m 0755 "flowplane-${VER}-${ARCH}/bin/flowplane-rls" /usr/local/bin
 
 Use `shasum -a 256 -c` instead of `sha256sum -c` on systems that do not provide `sha256sum`. The release archive also includes `bin/fp-agent` as a one-release compatibility alias, but public operator commands use `flowplane-agent`.
 
-The published `2.1.1` binary archives are Linux `amd64` and Linux `arm64`. Use a Linux host for the installed CLI, or run the published container image with an entrypoint override when your operator workstation is not Linux.
+The published `3.0.0` binary archives are Linux `amd64` and Linux `arm64`. Use a Linux host for the installed CLI, or run the published container image with an entrypoint override when your operator workstation is not Linux.
 
 Control plane:
 
@@ -80,15 +81,44 @@ Run Envoy with that bootstrap and run `flowplane-agent` beside it in the datapla
 | Operator/API traffic to CP | `FLOWPLANE_API_ADDR`, usually `:8080` behind TLS/load balancer | operators/API teams -> CP | Terminate public TLS before or at the CP API. Do not expose plaintext production API. |
 | Dataplane xDS/diagnostics to CP | `FLOWPLANE_XDS_ADDR`, default `:18000` | Envoy/agent -> CP | Production is mTLS-or-off. Non-loopback deployments must use the xDS TLS triad. |
 | CP to PostgreSQL | database URL | CP -> PostgreSQL | Database must not be directly internet-addressable. |
-| CP to RLS admin | `FLOWPLANE_RLS_ADMIN_URL`, commonly `http://rls.example:8081` | CP -> RLS | Used by the RLS reconcile worker to push policy. |
-| Envoy to RLS gRPC | `FLOWPLANE_RLS_GRPC_URL`, commonly `rls.example:50051` | Envoy -> RLS | Use the dataplane TLS triad for production Envoy-to-RLS mTLS when enabled. |
+| CP to RLS admin | `FLOWPLANE_RLS_ADMIN_URL`, commonly `https://rls.example:8081` | CP -> RLS | Policy push. Production is HTTPS + bearer token: the RLS refuses a non-loopback admin bind without `FLOWPLANE_RLS_ADMIN_TLS_*` + `FLOWPLANE_RLS_ADMIN_TOKEN[_FILE]`, and the CP refuses to start if its token would cross a plaintext non-loopback URL. |
+| Envoy to RLS gRPC | `FLOWPLANE_RLS_GRPC_URL`, commonly `rls.example:50051` | Envoy -> RLS | Production is mTLS-or-off, like xDS: the RLS refuses a non-loopback gRPC bind without its `FLOWPLANE_RLS_GRPC_TLS_*` server triad; pair it with the `FLOWPLANE_DATAPLANE_TLS_*` client triad on the CP. |
 | Envoy listener traffic | listener config | clients -> Envoy | Request traffic never passes through the control plane. |
 | Envoy admin | `127.0.0.1:9901` | dataplane-local only | Keep loopback-only. Product diagnostics go through `flowplane-agent`. |
 | Agent health | `127.0.0.1:19902` | dataplane-local only | Use for local process health checks on the dataplane host. |
 
+## Tenant TLS Material: Prefer SDS Over File Paths
+
+Listener and cluster TLS can be sourced two ways, and they are mutually exclusive per field
+(supplying both is rejected `400` at config time):
+
+- **SDS secret references (preferred):** `tls_certificate_sds_secret_name` and
+  `validation_context_sds_secret_name` on a listener, and `validation_context_sds_secret_name`
+  on an upstream cluster. The named secret is a team-owned, write-only secret created through
+  `flowplane secret create` (`POST /api/v1/teams/{team}/secrets`) and rotated with
+  `flowplane secret rotate`. The material is delivered to Envoy over the authenticated
+  xDS/SDS channel — it is never an inline value in the gateway spec and never a host file the
+  control plane resolves.
+- **File paths (explicit deployment integration):** `cert_chain_file` / `private_key_file` /
+  `ca_cert_file` on a listener and `ca_cert_file` on a cluster, plus `access_logs.path`. These
+  strings are passed through to Envoy verbatim and **resolved by Envoy on the dataplane host,
+  under the Envoy process's OS identity** — the control plane does not (and on a remote host
+  cannot) canonicalize or confine them.
+
+Prefer SDS. File-backed TLS remains supported as an explicit deployment integration, but it is
+a **shared-responsibility boundary**: because a file path resolves on the team-operated
+dataplane host, whoever holds `listeners`/`clusters` write authority can direct the Envoy
+process at any path its OS user can read or write. Where you use file-backed material, the
+deployer owns the containing control — run Envoy with least privilege on each dataplane host:
+a dedicated non-root user, minimal **read-only** secret mounts, and a restricted **writable**
+directory for access logs. Do not grant gateway-config write authority to principals you would
+not also trust with filesystem access on that dataplane host. (This boundary is a standing
+project invariant; a control-plane path guard becomes mandatory only if a future deployment
+model has Flowplane operate the dataplane filesystem or co-locate multiple tenants on one host.)
+
 ## Upgrade, Rollback, And Version Skew
 
-For the `2.1.1` split-node release path, run the control plane, CLI, `flowplane-agent`, and `flowplane-rls` from the same `2.1.1` artifact set. Short-lived skew during a rolling restart is acceptable for replacing one process at a time, but do not plan a long-lived mixed-version CP/agent/RLS deployment until a later compatibility policy says so.
+For the `3.0.0` split-node release path, run the control plane, CLI, `flowplane-agent`, and `flowplane-rls` from the same `3.0.0` artifact set. Short-lived skew during a rolling restart is acceptable for replacing one process at a time, but do not plan a long-lived mixed-version CP/agent/RLS deployment until a later compatibility policy says so.
 
 Upgrade:
 
@@ -124,7 +154,18 @@ Server process:
 | Observability | `FLOWPLANE_LOG`, `FLOWPLANE_LOG_FORMAT`, `FLOWPLANE_OTLP_ENDPOINT` |
 | MCP | `FLOWPLANE_MCP_ALLOWED_ORIGINS` |
 | Throttling/discovery | `FLOWPLANE_TENANT_WRITE_LIMIT_PER_MIN`, `FLOWPLANE_DISCOVERY_ALLOWED_DESTINATIONS` |
-| Rate Limit Service (`flowplane-rls`) | `FLOWPLANE_RLS_GRPC_URL`, `FLOWPLANE_RLS_ADMIN_URL`, `FLOWPLANE_RLS_RECONCILE_SECS`; in production also set the `FLOWPLANE_DATAPLANE_TLS_*` triad for the Envoy-to-RLS hop |
+| Rate Limit Service (CP side) | `FLOWPLANE_RLS_GRPC_URL`, `FLOWPLANE_RLS_ADMIN_URL` (https in production), `FLOWPLANE_RLS_ADMIN_TOKEN` or `FLOWPLANE_RLS_ADMIN_TOKEN_FILE`, `FLOWPLANE_RLS_ADMIN_TLS_CA` (private-CA trust for the RLS admin cert), `FLOWPLANE_RLS_RECONCILE_SECS`, plus the `FLOWPLANE_DATAPLANE_TLS_*` client triad for the Envoy-to-RLS mTLS hop |
+
+`flowplane-rls` process (fail-closed: a non-loopback listener refuses to start without its
+security material; loopback plaintext requires the explicit `yes-this-is-local-only`
+acknowledgements — dev only):
+
+| Area | Variables |
+| --- | --- |
+| Listeners | `FLOWPLANE_RLS_GRPC_LISTEN`, `FLOWPLANE_RLS_ADMIN_LISTEN` (defaults `127.0.0.1:50051` / `127.0.0.1:8081`) |
+| gRPC mTLS (server half) | `FLOWPLANE_RLS_GRPC_TLS_CERT`, `FLOWPLANE_RLS_GRPC_TLS_KEY`, `FLOWPLANE_RLS_GRPC_TLS_CLIENT_CA` (all-or-none; Envoy client certs required at the TLS layer) |
+| Admin HTTPS + auth | `FLOWPLANE_RLS_ADMIN_TLS_CERT`, `FLOWPLANE_RLS_ADMIN_TLS_KEY`, `FLOWPLANE_RLS_ADMIN_TOKEN` or `FLOWPLANE_RLS_ADMIN_TOKEN_FILE` (TLS pair + token are all-or-none; same token value as the CP side) |
+| Dev-only escape hatches | `FLOWPLANE_RLS_ALLOW_INSECURE_GRPC`, `FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN` (RLS, loopback binds only), `FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN_PUSH` (CP, loopback URL only) |
 | Dataplane cert issuer | `FLOWPLANE_CERT_ISSUER_CA_CERT_PATH`, `FLOWPLANE_CERT_ISSUER_CA_KEY_PATH`, `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN` |
 | Upstream TLS trust | `FLOWPLANE_UPSTREAM_CA_BUNDLE` (CA bundle path **in the Envoy/dataplane container** used to verify materialized TLS upstreams; default `/etc/ssl/certs/ca-certificates.crt`) |
 
@@ -170,7 +211,9 @@ AI providers, routes, budgets, and usage are runtime product config through the 
 | Release package validation | GitHub Release assets, image digests, `SHA256SUMS` | Verify published artifacts before deployment; rebuild only through the release process if any artifact is missing or inconsistent. |
 | Split-node TLS failure | Agent/RLS logs show TLS name, CA, or client-certificate errors | Check CP xDS server cert SAN vs `FLOWPLANE_AGENT_TLS_SERVER_NAME`, server-trust CA, issued client cert/key, and CP `FLOWPLANE_XDS_TLS_CLIENT_CA`. |
 | Remote bootstrap still points at localhost | Envoy bootstrap contains `127.0.0.1` or `localhost` for `xds_cluster` | Regenerate bootstrap with `--xds-host <cp-xds-host>` and verify the generated file before starting Envoy. |
-| RLS unreachable | Route returns 5xx/429 behavior does not match policy, RLS health fails, CP RLS reconcile errors | Check CP `FLOWPLANE_RLS_ADMIN_URL`, Envoy-facing `FLOWPLANE_RLS_GRPC_URL`, firewall rules, and dataplane TLS settings for the Envoy-to-RLS hop. |
+| RLS unreachable | Route returns 5xx/429 behavior does not match policy, RLS health fails, CP RLS reconcile errors | Check CP `FLOWPLANE_RLS_ADMIN_URL`, Envoy-facing `FLOWPLANE_RLS_GRPC_URL`, firewall rules, and both halves of the Envoy-to-RLS mTLS material (`FLOWPLANE_DATAPLANE_TLS_*` on the CP vs `FLOWPLANE_RLS_GRPC_TLS_*` on the RLS — the CAs must cross-trust). |
+| RLS policy push rejected | CP log shows `rls policy reconcile failed … HTTP 401` repeatedly; policies never reach the RLS (fresh RLS enforces nothing) | Token mismatch between CP `FLOWPLANE_RLS_ADMIN_TOKEN[_FILE]` and RLS `FLOWPLANE_RLS_ADMIN_TOKEN[_FILE]` — set the same value on both sides. A TLS trust failure instead shows a connection/certificate error: set CP `FLOWPLANE_RLS_ADMIN_TLS_CA` to the CA that signed the RLS admin cert. The RLS keeps serving its last good policy set; the loop retries every reconcile tick. |
+| RLS refuses to start | Startup error naming a `FLOWPLANE_RLS_*` variable | Fail-closed by design: a non-loopback bind needs its full TLS material (gRPC triad / admin pair + token); partial material never starts. For local dev bind loopback and set the explicit `…_ALLOW_INSECURE_*=yes-this-is-local-only` acknowledgements. |
 
 ## Backup And Restore Drill
 

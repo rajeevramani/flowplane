@@ -182,6 +182,39 @@ async fn forbidden_403_server_hint_survives() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Criterion 3c (fpv2-d6c.1 parity): a 403 from the team-grants listing surfaces through
+// `team grant list` as the SAME standard envelope — code and server hint (naming
+// resource=grants action=read) survive, exit code 3 per the auth row of the table.
+// ---------------------------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn team_grant_list_403_keeps_standard_envelope_and_exit_code() {
+    let mock = common::start_mock().await;
+    let home = common::unique_tempdir();
+    let out = common::flowplane_cmd(&home)
+        .env("FLOWPLANE_SERVER", mock.base_url())
+        .env("FLOWPLANE_TOKEN", "t")
+        .args(["team", "grant", "list", "--team", "err-403", "-o", "json"])
+        .output()
+        .expect("run team grant list err-403");
+
+    let v = parse_error_envelope(&out, "team grant list err-403");
+    assert_eq!(v["code"], "forbidden", "server error code survives: {v}");
+    assert_eq!(
+        v["status"].as_i64(),
+        Some(403),
+        "envelope carries the HTTP status: {v}"
+    );
+    let hint = v["hint"]
+        .as_str()
+        .unwrap_or_else(|| panic!("403 envelope must carry the server-supplied `hint`: {v}"));
+    assert!(
+        hint.contains("grants") && hint.contains("read"),
+        "403 server hint naming resource=grants action=read must survive, got: {hint:?}"
+    );
+    assert_eq!(exit_code(&out), 3, "403 auth → exit 3 (CLI-R-31)");
+}
+
+// ---------------------------------------------------------------------------------------------
 // Criterion 4: exit-code table (CLI-R-31), the full 0–7 range, adversarially per status class.
 // ---------------------------------------------------------------------------------------------
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

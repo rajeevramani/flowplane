@@ -364,6 +364,7 @@ async fn user_cluster_in_team_is_accepted_with_verbatim_domain() {
         &cluster_name,
         cluster_spec("10.0.0.5"),
         RequestId::generate(),
+        Default::default(),
     )
     .await
     .expect("create user rls cluster");
@@ -438,6 +439,7 @@ async fn user_cluster_absent_or_cross_team_is_rejected_not_found() {
         &foreign_cluster,
         cluster_spec("10.0.0.9"),
         RequestId::generate(),
+        Default::default(),
     )
     .await
     .expect("create cluster in team2");

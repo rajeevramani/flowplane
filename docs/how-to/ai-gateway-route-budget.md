@@ -16,7 +16,7 @@ With that key set, create a secret holding the provider API key — `flowplane s
 
 Request verification in step 4 needs a connected dataplane that can receive the materialized listener over xDS. The `flowplane ai routes create` command creates the cluster, route config, and listener in the control plane; it does not start Envoy. For a production-shaped setup, use a dataplane registered over mTLS by the platform team (see [Register a dataplane and connect its agent over mTLS](register-dataplane-mtls.md) and [Evaluate a production-shaped platform setup](evaluate-platform.md)).
 
-`secret.json` (the `secret` value is **standard base64** of the raw provider API key — produce it with `printf %s "$API_KEY" | base64`):
+`secret.json` (the `secret` value is **standard base64** of the **bare provider API key** — the wire scheme is provider config, not secret content: the provider's `auth_scheme` below prepends `Bearer ` at injection time. Produce it with `printf %s "$API_KEY" | base64`):
 
 ```json
 {
@@ -28,9 +28,17 @@ Request verification in step 4 needs a connected dataplane that can receive the 
 }
 ```
 
+> **Verbatim mode:** a provider *without* `auth_scheme` injects the decoded secret into the
+> auth header verbatim. Use that for providers whose header carries no scheme — e.g.
+> Anthropic-style `x-api-key` — or for existing secrets that already store `Bearer <key>`.
+> Setting `auth_scheme: "Bearer"` on a secret that already starts with `Bearer ` fails closed
+> at the gateway (see the `scheme_conflict` row in
+> [trace-ai-requests.md](./trace-ai-requests.md)) instead of sending `Bearer Bearer <key>`
+> upstream for a confusing provider 401.
+
 ## 1. Create a provider
 
-The provider body is `{ "name", "spec" }`, where `spec` is the `AiProviderSpec`: a `kind` (`openai` or `openai-compatible`), an **origin-only** `base_url` (scheme + host, no path — use `path_prefix` for upstream paths), the `credential_secret_id` of your secret, the `models` the provider serves, and the `auth_header` the key is sent in (defaults to `authorization`).
+The provider body is `{ "name", "spec" }`, where `spec` is the `AiProviderSpec`: a `kind` (`openai` or `openai-compatible`), an **origin-only** `base_url` (scheme + host, no path — use `path_prefix` for upstream paths), the `credential_secret_id` of your secret, the `models` the provider serves, the `auth_header` the key is sent in (defaults to `authorization`), and an optional `auth_scheme` — an RFC 7235 token (e.g. `Bearer`) that the gateway prepends to the decoded secret at injection time (`Bearer <key>`). Omit `auth_scheme` for verbatim injection.
 
 `provider.json`:
 
@@ -42,7 +50,8 @@ The provider body is `{ "name", "spec" }`, where `spec` is the `AiProviderSpec`:
     "base_url": "https://api.openai.com",
     "credential_secret_id": "00000000-0000-0000-0000-0000000000aa",
     "models": ["gpt-4o-mini", "gpt-4o"],
-    "auth_header": "authorization"
+    "auth_header": "authorization",
+    "auth_scheme": "Bearer"
   }
 }
 ```
@@ -52,6 +61,8 @@ flowplane ai providers create --file provider.json
 ```
 
 This POSTs to `/api/v1/teams/{team}/ai/providers` and returns the provider view, including its `id` — note it for the route backend.
+
+Provider updates propagate live: changing a provider (e.g. its `base_url`) re-materializes the backend clusters of every AI route that references it in the same request and pushes the change to the dataplane over xDS — you never need to recreate routes after a provider change. Each dependent route's `revision` is bumped by the update, so a concurrent route edit holding the old revision fails with `revision_mismatch` instead of applying stale provider state.
 
 ## 2. Create a route to the provider
 
@@ -164,6 +175,44 @@ flowplane ai usage --provider-id <provider-id-from-step-1>
 ```
 
 This GETs `/api/v1/teams/{team}/ai/usage` and returns `AiUsageSummary` rows with `prompt_tokens`, `completion_tokens`, `total_tokens`, and `event_count`. A non-zero `event_count` confirms the request routed to the provider and was accounted against the budget. You can also filter by `--route-config-id`.
+
+### Streaming
+
+Set `"stream": true` to receive the response as server-sent events. Chunks are
+delivered incrementally as the provider emits them — response headers and the
+first `data:` line arrive as soon as the model starts generating. Pass `-N` to
+curl so it doesn't buffer the output on its side:
+
+```bash
+curl -N http://127.0.0.1:19000/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"count slowly to 20"}]}'
+```
+
+Expect `content-type: text/event-stream` and `data:` lines appearing one by one
+while the model generates, ending with `data: [DONE]`:
+
+```
+data: {"id":"chatcmpl-...","choices":[{"index":0,"delta":{"content":"1"}}]}
+
+data: {"id":"chatcmpl-...","choices":[{"index":0,"delta":{"content":", 2"}}]}
+
+data: [DONE]
+```
+
+Token usage is recorded for streams too: rerun the `flowplane ai usage` check
+above and the stream's tokens appear, counted exactly once. To get usage
+numbers out of providers on streaming requests, Flowplane injects
+`stream_options: {"include_usage": true}` into the upstream request and strips
+the provider's final usage event from the response before it reaches the
+client — the stream you receive is the provider's output, byte-identical,
+minus that one event. If your request already sets
+`stream_options.include_usage` yourself, nothing is injected or stripped and
+the provider's usage event passes through to you unmodified.
+
+A client that disconnects mid-stream still leaves a partial trace row with the
+upstream hop marked `client_disconnect` — see
+[Trace an AI request through the gateway](./trace-ai-requests.md).
 
 Every request through the AI listener also records a per-hop trace — including
 budget rejections (enforcing mode) and `would_reject` verdicts (shadow mode) —

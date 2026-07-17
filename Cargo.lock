@@ -762,7 +762,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "flowplane"
-version = "2.2.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -798,15 +798,19 @@ dependencies = [
 
 [[package]]
 name = "flowplane-rls"
-version = "2.2.0"
+version = "3.0.0"
 dependencies = [
  "axum",
+ "axum-server",
  "envoy-types",
  "fp-domain",
  "prost",
+ "rcgen",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
+ "subtle",
  "tokio",
  "tonic",
  "tonic-prost",
@@ -869,7 +873,7 @@ dependencies = [
 
 [[package]]
 name = "fp-agent"
-version = "2.2.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -888,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "fp-api"
-version = "2.2.0"
+version = "3.0.0"
 dependencies = [
  "axum",
  "chrono",
@@ -916,13 +920,14 @@ dependencies = [
 
 [[package]]
 name = "fp-core"
-version = "2.2.0"
+version = "3.0.0"
 dependencies = [
  "aes-gcm",
  "axum",
  "axum-server",
  "base64",
  "chrono",
+ "flowplane-rls",
  "fp-domain",
  "fp-storage",
  "getrandom 0.3.4",
@@ -942,25 +947,27 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-opentelemetry",
+ "tracing-subscriber",
  "uuid",
 ]
 
 [[package]]
 name = "fp-domain"
-version = "2.2.0"
+version = "3.0.0"
 dependencies = [
  "base64",
  "chrono",
  "serde",
  "serde_json",
  "thiserror",
+ "url",
  "utoipa",
  "uuid",
 ]
 
 [[package]]
 name = "fp-storage"
-version = "2.2.0"
+version = "3.0.0"
 dependencies = [
  "chrono",
  "fp-domain",
@@ -976,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "fp-xds"
-version = "2.2.0"
+version = "3.0.0"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -2843,9 +2850,9 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 dependencies = [
  "lock_api",
 ]

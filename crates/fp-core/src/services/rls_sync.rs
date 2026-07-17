@@ -75,9 +75,15 @@ pub async fn build_push(pool: &PgPool) -> DomainResult<PushBody> {
 }
 
 /// Build and push the full set to the RLS admin endpoint. Returns the number of policies pushed.
+///
+/// `admin_token` (fpv2-9sf S3): when configured, the push carries
+/// `Authorization: Bearer <token>` — the config layer has already refused any combination
+/// where that bearer would cross a plaintext non-loopback channel. `None` is the loopback
+/// dev path (no header, matching an RLS running behind its admin escape hatch).
 pub async fn reconcile_once(
     pool: &PgPool,
     admin_url: &str,
+    admin_token: Option<&str>,
     client: &reqwest::Client,
 ) -> DomainResult<usize> {
     let body = build_push(pool).await?;
@@ -86,10 +92,14 @@ pub async fn reconcile_once(
         "{}/api/v1/admin/rls/policies",
         admin_url.trim_end_matches('/')
     );
-    let resp =
-        client.post(&url).json(&body).send().await.map_err(|e| {
-            DomainError::unavailable(format!("rls policy push to {url} failed: {e}"))
-        })?;
+    let mut request = client.post(&url).json(&body);
+    if let Some(token) = admin_token {
+        request = request.bearer_auth(token);
+    }
+    let resp = request
+        .send()
+        .await
+        .map_err(|e| DomainError::unavailable(format!("rls policy push to {url} failed: {e}")))?;
     if !resp.status().is_success() {
         return Err(DomainError::unavailable(format!(
             "rls policy push to {url} returned HTTP {}",

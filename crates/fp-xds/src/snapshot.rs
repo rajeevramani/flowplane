@@ -623,7 +623,7 @@ struct XdsListener {
 async fn load_xds_resources(pool: &PgPool, team_id: TeamId) -> DomainResult<XdsResources> {
     let ai_clusters = ai_cluster_metadata(pool, team_id).await?;
     let cluster_rows = sqlx::query(
-        "SELECT id, team_id, name, spec, version, created_at, updated_at \
+        "SELECT id, team_id, name, spec, version, created_at, updated_at, owner_kind \
          FROM clusters WHERE team_id = $1 ORDER BY name LIMIT 500",
     )
     .bind(team_id.as_uuid())
@@ -631,7 +631,7 @@ async fn load_xds_resources(pool: &PgPool, team_id: TeamId) -> DomainResult<XdsR
     .await
     .map_err(|err| DomainError::internal(format!("list xDS clusters: {err}")))?;
     let route_rows = sqlx::query(
-        "SELECT id, team_id, name, spec, version, created_at, updated_at \
+        "SELECT id, team_id, name, spec, version, created_at, updated_at, owner_kind \
          FROM route_configs WHERE team_id = $1 ORDER BY name LIMIT 500",
     )
     .bind(team_id.as_uuid())
@@ -646,6 +646,18 @@ async fn load_xds_resources(pool: &PgPool, team_id: TeamId) -> DomainResult<XdsR
     .fetch_all(pool)
     .await
     .map_err(|err| DomainError::internal(format!("list xDS listeners: {err}")))?;
+
+    // Owner-kind maps for the serve-time cross-owner guard below. Taken from every row
+    // (even ones whose spec fails to parse) so the guard never mistakes an unparseable
+    // child for an absent one.
+    let cluster_owner_kinds: HashMap<String, String> = cluster_rows
+        .iter()
+        .map(|row| (row.get("name"), row.get("owner_kind")))
+        .collect();
+    let rc_owner_kinds: HashMap<String, String> = route_rows
+        .iter()
+        .map(|row| (row.get("name"), row.get("owner_kind")))
+        .collect();
 
     let mut clusters = Vec::with_capacity(cluster_rows.len());
     let mut cluster_failures = HashMap::new();
@@ -663,12 +675,50 @@ async fn load_xds_resources(pool: &PgPool, team_id: TeamId) -> DomainResult<XdsR
         }
     }
 
+    // Serve-time owner-kind guard (fail-closed for pre-existing state): a user-owned
+    // parent bound to a non-user child is withdrawn from the snapshot rather than served.
+    // The write-path resolver rejects new cross-owner bindings; this guard makes any
+    // binding that predates that fix (or slips around it) inert at the serving boundary
+    // without touching the rows. Offending route configs must be dropped HERE, before the
+    // listener-build loop, so the existing "listener references an unavailable route
+    // config" check transitively drops dependent user listeners (no dangling RDS ref).
     let mut route_configs = Vec::with_capacity(route_rows.len());
     let mut route_failures = HashMap::new();
     for row in route_rows {
         let name: String = row.get("name");
+        let owner_kind: String = row.get("owner_kind");
         match route_config_from_xds_row(&row) {
-            Ok(route_config) => route_configs.push(route_config),
+            Ok(route_config) => {
+                // referenced_clusters() is a HashSet; pick the smallest offending name so
+                // the failure text (compared when installing failure maps) is stable
+                // across rebuilds.
+                let cross_owner_ref = if owner_kind == "user" {
+                    route_config
+                        .spec
+                        .referenced_clusters()
+                        .into_iter()
+                        .filter_map(|cluster_name| {
+                            cluster_owner_kinds
+                                .get(cluster_name)
+                                .filter(|kind| kind.as_str() != "user")
+                                .map(|kind| (cluster_name.to_owned(), kind.clone()))
+                        })
+                        .min()
+                } else {
+                    None
+                };
+                match cross_owner_ref {
+                    Some((cluster_name, kind)) => {
+                        let error = format!(
+                            "user-owned route config references {kind}-owned cluster \
+                             \"{cluster_name}\"; cross-owner binding withdrawn from snapshot"
+                        );
+                        skip_xds_resource(team_id, "route-config", &name, &error);
+                        route_failures.insert(name, error);
+                    }
+                    None => route_configs.push(route_config),
+                }
+            }
             Err(error) => {
                 skip_xds_resource(team_id, "route-config", &name, &error);
                 route_failures.insert(name, error);
@@ -681,10 +731,33 @@ async fn load_xds_resources(pool: &PgPool, team_id: TeamId) -> DomainResult<XdsR
     for row in listener_rows {
         let name: String = row.get("name");
         match listener_from_xds_row(&row) {
-            Ok(listener) => listeners.push(XdsListener {
-                listener,
-                owner_kind: row.get("owner_kind"),
-            }),
+            Ok(listener) => {
+                let owner_kind: String = row.get("owner_kind");
+                let cross_owner_ref = if owner_kind == "user" {
+                    listener.spec.route_config.as_ref().and_then(|rc_name| {
+                        rc_owner_kinds
+                            .get(rc_name)
+                            .filter(|kind| kind.as_str() != "user")
+                            .map(|kind| (rc_name.clone(), kind.clone()))
+                    })
+                } else {
+                    None
+                };
+                match cross_owner_ref {
+                    Some((rc_name, kind)) => {
+                        let error = format!(
+                            "user-owned listener references {kind}-owned route config \
+                             \"{rc_name}\"; cross-owner binding withdrawn from snapshot"
+                        );
+                        skip_xds_resource(team_id, "listener", &name, &error);
+                        listener_failures.insert(name, error);
+                    }
+                    None => listeners.push(XdsListener {
+                        listener,
+                        owner_kind,
+                    }),
+                }
+            }
             Err(error) => {
                 skip_xds_resource(team_id, "listener", &name, &error);
                 listener_failures.insert(name, error);
@@ -1331,6 +1404,7 @@ mod tests {
             &upstream,
             cluster_spec("10.0.0.1"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("a cluster");
@@ -1372,6 +1446,7 @@ mod tests {
             &unique("other"),
             cluster_spec("10.9.9.9"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("b cluster");
@@ -1424,6 +1499,7 @@ mod tests {
             cluster_spec("10.0.0.2"),
             1,
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("update");
@@ -1480,6 +1556,7 @@ mod tests {
             &cluster_a,
             cluster_spec("10.0.0.1"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("a cluster");
@@ -1490,6 +1567,7 @@ mod tests {
             &cluster_b,
             cluster_spec("10.0.0.2"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("b cluster");
@@ -1697,6 +1775,7 @@ mod tests {
             &unique("other"),
             cluster_spec("10.9.9.9"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("b cluster");
@@ -1741,6 +1820,7 @@ mod tests {
             &good_cluster,
             cluster_spec("10.0.0.1"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("good cluster");
@@ -1814,6 +1894,7 @@ mod tests {
             &unique("other"),
             cluster_spec("10.9.9.9"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("b cluster");
@@ -1888,6 +1969,7 @@ mod tests {
             &upstream,
             cluster_spec("10.0.0.1"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("cluster");
@@ -1912,6 +1994,7 @@ mod tests {
             cluster_spec("10.0.0.2"),
             1,
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("update");
@@ -1963,6 +2046,7 @@ mod tests {
             cluster_spec("10.0.0.3"),
             2,
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("fix");
@@ -2025,8 +2109,10 @@ mod tests {
                 credential_secret_id: secret.id,
                 models: vec!["gpt-5".into()],
                 auth_header: "authorization".into(),
+                auth_scheme: None,
             },
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("provider");
@@ -2153,7 +2239,7 @@ mod tests {
                 request_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
                 response_header_mode: ext_proc::processing_mode::HeaderSendMode::Send as i32,
                 request_body_mode: ext_proc::processing_mode::BodySendMode::Buffered as i32,
-                response_body_mode: ext_proc::processing_mode::BodySendMode::BufferedPartial as i32,
+                response_body_mode: ext_proc::processing_mode::BodySendMode::Streamed as i32,
                 request_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
                 response_trailer_mode: ext_proc::processing_mode::HeaderSendMode::Skip as i32,
             }),
@@ -2281,8 +2367,10 @@ mod tests {
                 credential_secret_id: secret.id,
                 models: vec!["gpt-5".into()],
                 auth_header: "authorization".into(),
+                auth_scheme: None,
             },
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("provider");

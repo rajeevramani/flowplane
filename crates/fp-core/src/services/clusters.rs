@@ -3,6 +3,7 @@
 //! they commit together or not at all.
 
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
+use crate::services::egress_advisory::EgressAdvisoryPolicy;
 use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
@@ -44,10 +45,22 @@ pub async fn create_cluster(
     name: &str,
     spec: ClusterSpec,
     request_id: RequestId,
+    advisory: EgressAdvisoryPolicy,
 ) -> DomainResult<Cluster> {
     authorize(pool, ctx, Action::Create, team, request_id).await?;
     validate_cluster_name(name)?;
     spec.validate()?;
+    advisory
+        .enforce_hosts(
+            pool,
+            ctx,
+            request_id,
+            team,
+            "cluster.create",
+            &format!("clusters/{name}"),
+            spec.endpoints.iter().map(|e| e.host.clone()).collect(),
+        )
+        .await?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::Clusters).await?;
 
     let mut tx = pool
@@ -104,6 +117,7 @@ pub async fn list_clusters(
     clusters::list(pool, TeamScope::Team(team.id), limit, offset).await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn update_cluster(
     pool: &PgPool,
     ctx: &PrincipalCtx,
@@ -112,9 +126,21 @@ pub async fn update_cluster(
     spec: ClusterSpec,
     expected_version: i64,
     request_id: RequestId,
+    advisory: EgressAdvisoryPolicy,
 ) -> DomainResult<Cluster> {
     authorize(pool, ctx, Action::Update, team, request_id).await?;
     spec.validate()?;
+    advisory
+        .enforce_hosts(
+            pool,
+            ctx,
+            request_id,
+            team,
+            "cluster.update",
+            &format!("clusters/{name}"),
+            spec.endpoints.iter().map(|e| e.host.clone()).collect(),
+        )
+        .await?;
     let mut tx = pool
         .begin()
         .await

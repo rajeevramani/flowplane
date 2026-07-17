@@ -17,7 +17,6 @@ use fp_domain::{
     DomainResult, RequestId, AI_MODEL_HEADER, DEFAULT_AI_ROUTE_TIMEOUT_SECS,
 };
 use fp_storage::repos::{ai, ai_trace, audit, clusters as cluster_repo, gateway as gateway_repo};
-use reqwest::Url;
 use sqlx::PgPool;
 use std::collections::BTreeMap;
 
@@ -45,6 +44,7 @@ pub async fn create_provider(
     name: &str,
     spec: AiProviderSpec,
     request_id: RequestId,
+    advisory: crate::services::egress_advisory::EgressAdvisoryPolicy,
 ) -> DomainResult<AiProvider> {
     authorize(
         pool,
@@ -57,6 +57,21 @@ pub async fn create_provider(
     .await?;
     validate_ai_provider_name(name)?;
     validate_provider_spec(pool, ctx, team, &spec, request_id).await?;
+    advisory
+        .enforce_hosts(
+            pool,
+            ctx,
+            request_id,
+            team,
+            "ai_provider.create",
+            &format!("ai-providers/{name}"),
+            vec![
+                crate::services::egress_advisory::authority_host(&spec.base_url).ok_or_else(
+                    || DomainError::validation("AI provider base_url must include a host"),
+                )?,
+            ],
+        )
+        .await?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::AiProviders).await?;
 
     let mut tx = pool
@@ -123,6 +138,7 @@ pub async fn get_provider(
         .ok_or_else(|| DomainError::not_found("AI provider", name))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn update_provider(
     pool: &PgPool,
     ctx: &PrincipalCtx,
@@ -131,6 +147,7 @@ pub async fn update_provider(
     spec: AiProviderSpec,
     expected_version: i64,
     request_id: RequestId,
+    advisory: crate::services::egress_advisory::EgressAdvisoryPolicy,
 ) -> DomainResult<AiProvider> {
     authorize(
         pool,
@@ -142,12 +159,72 @@ pub async fn update_provider(
     )
     .await?;
     validate_provider_spec(pool, ctx, team, &spec, request_id).await?;
+    advisory
+        .enforce_hosts(
+            pool,
+            ctx,
+            request_id,
+            team,
+            "ai_provider.update",
+            &format!("ai-providers/{name}"),
+            vec![
+                crate::services::egress_advisory::authority_host(&spec.base_url).ok_or_else(
+                    || DomainError::validation("AI provider base_url must include a host"),
+                )?,
+            ],
+        )
+        .await?;
     let mut tx = pool
         .begin()
         .await
         .map_err(crate::services::db_err("update AI provider: begin"))?;
+    // Per-team AI-materialization lock; must be the first statement in the tx, before any
+    // materialization-sensitive read or write. Route create/update/delete take the same lock
+    // (fpv2-8am), so provider updates and route materialization serialize per team.
+    ai::acquire_materialization_lock(&mut tx, team.id).await?;
     let provider = ai::update(&mut tx, team.id, name, &spec, expected_version).await?;
-    ai::mark_routes_stale_for_provider(&mut tx, team.id, provider.id).await?;
+    // Re-materialize every dependent backend cluster from the committed-to-be provider spec
+    // and emit the ClusterUpserted events that drive the xDS re-push. base_url is the only
+    // provider field snapshotted into materialized state (endpoint host/port, use_tls, SNI);
+    // path_prefix/auth_header/credential are read live per-request by the ExtProc.
+    let dependents = ai::routes_referencing_provider(&mut tx, team.id, provider.id).await?;
+    if !dependents.is_empty() {
+        let cluster_spec = provider_cluster_spec(&provider)?;
+        for route in &dependents {
+            for (position, backend) in route.spec.backends.iter().enumerate() {
+                if backend.provider_id != provider.id {
+                    continue;
+                }
+                let cluster_name =
+                    route.materialized.cluster_names.get(position).ok_or_else(|| {
+                        DomainError::internal(format!(
+                            "AI route \"{}\" has no materialized cluster at backend position {position}",
+                            route.name
+                        ))
+                    })?;
+                let cluster = cluster_repo::update_ai_owned_spec(
+                    &mut tx,
+                    team.id,
+                    cluster_name,
+                    &cluster_spec,
+                )
+                .await?;
+                append_gateway_event(
+                    &mut tx,
+                    team,
+                    DomainEvent::ClusterUpserted {
+                        cluster_id: cluster.id.as_uuid(),
+                        name: cluster.name,
+                    },
+                )
+                .await?;
+            }
+        }
+        // Conflict signal for racing route writers holding a pre-update route snapshot:
+        // their OCC check fails with RevisionMismatch instead of silently materializing
+        // from the superseded provider spec. Deliberately no status write.
+        ai::bump_routes_version_for_provider(&mut tx, team.id, provider.id).await?;
+    }
     audit::record_in_tx(
         &mut tx,
         &mutation_audit(
@@ -273,32 +350,18 @@ pub async fn create_route(
     validate_ai_route_name(name)?;
     spec.validate()?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::AiRoutes).await?;
-    let providers = load_route_providers(pool, team, &spec).await?;
     let materialized = materialized_names(name, &spec)?;
-    let materialized_events =
-        create_materialized(pool, team, name, &spec, &providers, &materialized).await?;
+    // Single tx (fpv2-8am): lock first, then every materialization-sensitive read and write.
+    // Materialization, its outbox upserts, and the route row commit or roll back together —
+    // no transient half-materialized state, no best-effort cleanup on failure.
     let mut tx = pool
         .begin()
         .await
         .map_err(crate::services::db_err("create AI route: begin"))?;
-    let route = match ai::create_route(&mut tx, team, name, &spec, &materialized).await {
-        Ok(route) => route,
-        Err(err) => {
-            tx.rollback().await.ok();
-            cleanup_materialized(pool, team, &materialized).await;
-            return Err(err);
-        }
-    };
-    append_materialized_upserts(
-        &mut tx,
-        team,
-        &materialized_events.clusters,
-        materialized_events.route_config_id,
-        &materialized_events.route_config_name,
-        materialized_events.listener_id,
-        &materialized_events.listener_name,
-    )
-    .await?;
+    ai::acquire_materialization_lock(&mut tx, team.id).await?;
+    let providers = load_route_providers(&mut tx, team, &spec).await?;
+    create_materialized(&mut tx, team, name, &spec, &providers, &materialized).await?;
+    let route = ai::create_route(&mut tx, team, name, &spec, &materialized).await?;
     audit::record_in_tx(
         &mut tx,
         &mutation_audit(ctx, request_id, team, "ai_route.create", "ai-routes", name),
@@ -645,7 +708,19 @@ pub async fn update_route(
     .await?;
     authorize_materialized_cleanup(pool, ctx, team, request_id).await?;
     spec.validate()?;
-    let current = get_route(pool, ctx, team, name, request_id).await?;
+    let materialized = materialized_names(name, &spec)?;
+    // Single tx (fpv2-8am): the lock precedes the route-row read + revision check and the
+    // provider loads — a pre-lock check could pass, lose to a provider update's version
+    // bump, and strand a torn rebuild. Teardown, rebuild, upserts, and the route row commit
+    // or roll back together.
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("update AI route: begin"))?;
+    ai::acquire_materialization_lock(&mut tx, team.id).await?;
+    let current = ai::get_route_in_tx(&mut tx, team.id, name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("AI route", name))?;
     if current.version != expected_version {
         return Err(revision_mismatch(
             "AI route",
@@ -654,16 +729,11 @@ pub async fn update_route(
             expected_version,
         ));
     }
-    let providers = load_route_providers(pool, team, &spec).await?;
-    let materialized = materialized_names(name, &spec)?;
-    cleanup_materialized(pool, team, &current.materialized).await;
-    create_materialized(pool, team, name, &spec, &providers, &materialized).await?;
-
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(crate::services::db_err("update AI route: begin"))?;
-    let route = match ai::update_route(
+    reject_if_budgets_pin_route_config(&mut tx, team, name, &current.materialized).await?;
+    let providers = load_route_providers(&mut tx, team, &spec).await?;
+    cleanup_materialized(&mut tx, team, &current.materialized).await?;
+    create_materialized(&mut tx, team, name, &spec, &providers, &materialized).await?;
+    let route = ai::update_route(
         &mut tx,
         team.id,
         name,
@@ -671,15 +741,7 @@ pub async fn update_route(
         &materialized,
         expected_version,
     )
-    .await
-    {
-        Ok(route) => route,
-        Err(err) => {
-            tx.rollback().await.ok();
-            cleanup_materialized(pool, team, &materialized).await;
-            return Err(err);
-        }
-    };
+    .await?;
     audit::record_in_tx(
         &mut tx,
         &mutation_audit(ctx, request_id, team, "ai_route.update", "ai-routes", name),
@@ -709,21 +771,26 @@ pub async fn delete_route(
     )
     .await?;
     authorize_materialized_cleanup(pool, ctx, team, request_id).await?;
-    let route = get_route(pool, ctx, team, name, request_id).await?;
-    if route.version != expected_version {
-        return Err(DomainError::new(
-            fp_domain::ErrorCode::RevisionMismatch,
-            format!(
-                "AI route \"{name}\" is at revision {}, you supplied {expected_version}",
-                route.version
-            ),
-        ));
-    }
-    cleanup_materialized(pool, team, &route.materialized).await;
+    // Single tx (fpv2-8am): a failed teardown rolls the whole delete back — the route row
+    // can no longer outlive its materialized resources (or vice versa).
     let mut tx = pool
         .begin()
         .await
         .map_err(crate::services::db_err("delete AI route: begin"))?;
+    ai::acquire_materialization_lock(&mut tx, team.id).await?;
+    let route = ai::get_route_in_tx(&mut tx, team.id, name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("AI route", name))?;
+    if route.version != expected_version {
+        return Err(revision_mismatch(
+            "AI route",
+            name,
+            route.version,
+            expected_version,
+        ));
+    }
+    reject_if_budgets_pin_route_config(&mut tx, team, name, &route.materialized).await?;
+    cleanup_materialized(&mut tx, team, &route.materialized).await?;
     ai::delete_route(&mut tx, team.id, name, expected_version).await?;
     audit::record_in_tx(
         &mut tx,
@@ -761,14 +828,43 @@ async fn authorize_materialized_cleanup(
     Ok(())
 }
 
+/// Refuse route update/delete while an AI budget pins the route's materialized route config
+/// (FK `ai_budgets.route_config_id` ON DELETE RESTRICT). Mirrors delete_provider's dependent
+/// checks: a clean conflict with a hint beats the pre-fix behavior, which swallowed the FK
+/// failure and silently leaked the route config + clusters behind the budget (fpv2-8am).
+async fn reject_if_budgets_pin_route_config(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    team: TeamRef,
+    route_name: &str,
+    materialized: &AiRouteMaterializedResources,
+) -> DomainResult<()> {
+    let budgets = ai::budget_names_referencing_route_config_name(
+        tx,
+        team.id,
+        &materialized.route_config_name,
+    )
+    .await?;
+    if budgets.is_empty() {
+        return Ok(());
+    }
+    Err(DomainError::conflict(format!(
+        "AI route \"{route_name}\" is referenced by AI budgets scoped to its route config: {}",
+        budgets.join(", ")
+    ))
+    .with_hint("update or delete those AI budgets first"))
+}
+
+/// Load every backend's provider inside the mutation tx, after the AI-materialization lock
+/// (fpv2-8am): a pre-lock read could materialize clusters from a provider spec a concurrent
+/// provider update supersedes mid-mutation.
 async fn load_route_providers(
-    pool: &PgPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     team: TeamRef,
     spec: &AiRouteSpec,
 ) -> DomainResult<Vec<AiProvider>> {
     let mut providers = Vec::with_capacity(spec.backends.len());
     for backend in &spec.backends {
-        let provider = ai::get_provider_by_id(pool, team.id, backend.provider_id)
+        let provider = ai::get_provider_by_id_in_tx(tx, team.id, backend.provider_id)
             .await?
             .ok_or_else(|| {
                 DomainError::not_found("AI provider", &backend.provider_id.to_string())
@@ -947,14 +1043,17 @@ fn generated_name(route_name: &str, suffix: &str) -> String {
     format!("{prefix}{base}{suffix}")
 }
 
+/// Materialize a route's clusters/route-config/listener inside the caller's transaction
+/// (fpv2-8am: no own tx — creation, its outbox upserts, and the route-row write commit or
+/// roll back together, under the caller's AI-materialization lock).
 async fn create_materialized(
-    pool: &PgPool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     team: TeamRef,
     route_name: &str,
     spec: &AiRouteSpec,
     providers: &[AiProvider],
     names: &AiRouteMaterializedResources,
-) -> DomainResult<MaterializedResourceEvents> {
+) -> DomainResult<()> {
     let targets = ai_route_targets(route_name, spec)?;
     let backend_names = backend_cluster_names(names, spec.backends.len());
     let mut cluster_specs = Vec::with_capacity(names.cluster_names.len());
@@ -991,11 +1090,8 @@ async fn create_materialized(
         tls_context: None,
     };
     let owner_id = uuid::Uuid::now_v7();
-    let mut tx = pool.begin().await.map_err(crate::services::db_err(
-        "create AI materialized resources: begin",
-    ))?;
     let mut cluster_events = Vec::with_capacity(cluster_specs.len());
-    let existing_clusters = fp_storage::repos::clusters::count_for_team(pool, team.id).await?;
+    let existing_clusters = fp_storage::repos::clusters::count_for_team_in_tx(tx, team.id).await?;
     let cluster_limit = crate::services::quota::default_limit(Resource::Clusters);
     for (cluster_name, cluster_spec) in cluster_specs {
         let used = existing_clusters + cluster_events.len() as i64;
@@ -1007,28 +1103,22 @@ async fn create_materialized(
             ));
         }
         let cluster =
-            cluster_repo::create_ai_owned(&mut tx, team, owner_id, &cluster_name, &cluster_spec)
-                .await?;
+            cluster_repo::create_ai_owned(tx, team, owner_id, &cluster_name, &cluster_spec).await?;
         cluster_events.push((cluster.id.as_uuid(), cluster.name));
     }
     let route_config = gateway_repo::create_ai_route_config(
-        &mut tx,
+        tx,
         team,
         owner_id,
         &names.route_config_name,
         &route_config_spec,
     )
     .await?;
-    let listener = gateway_repo::create_ai_listener(
-        &mut tx,
-        team,
-        owner_id,
-        &names.listener_name,
-        &listener_spec,
-    )
-    .await?;
+    let listener =
+        gateway_repo::create_ai_listener(tx, team, owner_id, &names.listener_name, &listener_spec)
+            .await?;
     append_materialized_upserts(
-        &mut tx,
+        tx,
         team,
         &cluster_events,
         route_config.id.as_uuid(),
@@ -1037,24 +1127,7 @@ async fn create_materialized(
         &listener.name,
     )
     .await?;
-    tx.commit().await.map_err(crate::services::db_err(
-        "create AI materialized resources: commit",
-    ))?;
-    Ok(MaterializedResourceEvents {
-        clusters: cluster_events,
-        route_config_id: route_config.id.as_uuid(),
-        route_config_name: route_config.name,
-        listener_id: listener.id.as_uuid(),
-        listener_name: listener.name,
-    })
-}
-
-struct MaterializedResourceEvents {
-    clusters: Vec<(uuid::Uuid, String)>,
-    route_config_id: uuid::Uuid,
-    route_config_name: String,
-    listener_id: uuid::Uuid,
-    listener_name: String,
+    Ok(())
 }
 
 async fn append_materialized_upserts(
@@ -1114,65 +1187,66 @@ async fn append_gateway_event(
     .await
 }
 
-async fn cleanup_materialized(pool: &PgPool, team: TeamRef, names: &AiRouteMaterializedResources) {
-    let Ok(mut tx) = pool.begin().await else {
-        return;
-    };
-    if let Ok(Some(listener_id)) =
-        gateway_repo::delete_ai_listener(&mut tx, team.id, &names.listener_name).await
+/// Tear down a route's materialized resources inside the caller's transaction. Fallible by
+/// design (fpv2-8am): every repository delete and every outbox append propagates, so a failed
+/// cleanup rolls the whole mutation back instead of committing half-deleted materialized
+/// state or silently dropping deletion events. An absent row is not an error (idempotent
+/// teardown); only real failures propagate.
+async fn cleanup_materialized(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    team: TeamRef,
+    names: &AiRouteMaterializedResources,
+) -> DomainResult<()> {
+    if let Some(listener_id) =
+        gateway_repo::delete_ai_listener(tx, team.id, &names.listener_name).await?
     {
-        let _ = append_gateway_event(
-            &mut tx,
+        append_gateway_event(
+            tx,
             team,
             DomainEvent::ListenerDeleted {
                 listener_id: listener_id.as_uuid(),
                 name: names.listener_name.clone(),
             },
         )
-        .await;
+        .await?;
     }
-    if let Ok(Some(route_config_id)) =
-        gateway_repo::delete_ai_route_config(&mut tx, team.id, &names.route_config_name).await
+    if let Some(route_config_id) =
+        gateway_repo::delete_ai_route_config(tx, team.id, &names.route_config_name).await?
     {
-        let _ = append_gateway_event(
-            &mut tx,
+        append_gateway_event(
+            tx,
             team,
             DomainEvent::RouteConfigDeleted {
                 route_config_id: route_config_id.as_uuid(),
                 name: names.route_config_name.clone(),
             },
         )
-        .await;
+        .await?;
     }
     for cluster_name in &names.cluster_names {
-        if let Ok(Some(cluster_id)) =
-            cluster_repo::delete_ai_owned(&mut tx, team.id, cluster_name).await
-        {
-            let _ = append_gateway_event(
-                &mut tx,
+        if let Some(cluster_id) = cluster_repo::delete_ai_owned(tx, team.id, cluster_name).await? {
+            append_gateway_event(
+                tx,
                 team,
                 DomainEvent::ClusterDeleted {
                     cluster_id: cluster_id.as_uuid(),
                     name: cluster_name.clone(),
                 },
             )
-            .await;
-        };
+            .await?;
+        }
     }
-    let _ = tx.commit().await;
+    Ok(())
 }
 
 fn provider_cluster_spec(provider: &AiProvider) -> DomainResult<ClusterSpec> {
-    let url = Url::parse(&provider.spec.base_url)
-        .map_err(|_| DomainError::validation("AI provider base_url must be a valid URL"))?;
-    let host = url
-        .host_str()
-        .ok_or_else(|| DomainError::validation("AI provider base_url must include a host"))?
-        .to_string();
-    let use_tls = url.scheme() == "https";
-    let port = url
-        .port_or_known_default()
-        .ok_or_else(|| DomainError::validation("AI provider base_url must include a port"))?;
+    // Single canonical derivation shared with validate() and the ExtProc :authority
+    // rewrite (fpv2-ti2): endpoint host/port, use_tls, and SNI all come from origin(),
+    // so the TLS SNI and the rewritten Host can never disagree.
+    let origin = provider.spec.origin()?;
+    let host = origin.host;
+    let use_tls = origin.use_tls;
+    let port = origin.port;
     Ok(ClusterSpec {
         endpoints: vec![Endpoint {
             host: host.clone(),
@@ -1468,6 +1542,91 @@ mod tests {
             listener_port: 18_080,
             path: "/v1/chat/completions".into(),
             backends,
+        }
+    }
+
+    fn provider_with_base_url(base_url: &str) -> AiProvider {
+        AiProvider {
+            id: fp_domain::id::AiProviderId::generate(),
+            team_id: fp_domain::id::TeamId::generate(),
+            name: "prov".into(),
+            spec: AiProviderSpec {
+                kind: fp_domain::AiProviderKind::OpenaiCompatible,
+                base_url: base_url.into(),
+                path_prefix: None,
+                credential_secret_id: fp_domain::id::SecretId::generate(),
+                models: Vec::new(),
+                auth_header: "authorization".into(),
+                auth_scheme: None,
+            },
+            version: 1,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn provider_cluster_spec_endpoint_and_sni_match_origin_host() {
+        // fpv2-ti2 AC 2 consistency property: for every accepted base_url, the
+        // materialized endpoint host and SNI equal origin().host — the same value the
+        // ExtProc :authority rewrite uses.
+        let cases = [
+            "https://openrouter.ai",
+            "https://openrouter.ai/",
+            "https://host:8443",
+            "http://10.0.0.4:8080",
+            "https://[fd00::7]:8443",
+            "https://%65xample.com",
+        ];
+        for base_url in cases {
+            let provider = provider_with_base_url(base_url);
+            let origin = provider.spec.origin().expect(base_url);
+            let cluster = provider_cluster_spec(&provider).expect(base_url);
+            assert_eq!(
+                cluster.endpoints[0].host, origin.host,
+                "endpoint for {base_url}"
+            );
+            assert_eq!(
+                cluster.endpoints[0].port, origin.port,
+                "port for {base_url}"
+            );
+            assert_eq!(cluster.use_tls, origin.use_tls, "use_tls for {base_url}");
+            if origin.use_tls {
+                let tls = cluster.upstream_tls.as_ref().expect("tls config");
+                assert_eq!(
+                    tls.sni.as_deref(),
+                    Some(origin.host.as_str()),
+                    "sni for {base_url}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn provider_cluster_spec_is_byte_identical_across_auth_scheme_change() {
+        // Design AC 6 (2026-07-ai-credential-auth-scheme): the materialized cluster
+        // derives from base_url origin only, so an auth_scheme-only change must
+        // produce an identical ClusterSpec (no new xDS sensitivity).
+        let mut provider = provider_with_base_url("https://api.openai.com");
+        let before = provider_cluster_spec(&provider).expect("cluster before");
+        provider.spec.auth_scheme = Some("Bearer".into());
+        let after = provider_cluster_spec(&provider).expect("cluster after");
+        assert_eq!(
+            serde_json::to_vec(&before).expect("serialize before"),
+            serde_json::to_vec(&after).expect("serialize after"),
+            "auth_scheme change must not alter materialized cluster content"
+        );
+    }
+
+    #[test]
+    fn provider_cluster_spec_rejects_what_origin_rejects() {
+        for base_url in [
+            "https://user:pw@host",
+            "https://host:abc",
+            "https://host/api",
+        ] {
+            let provider = provider_with_base_url(base_url);
+            assert!(provider_cluster_spec(&provider).is_err(), "{base_url}");
         }
     }
 

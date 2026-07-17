@@ -80,7 +80,11 @@ anything is persisted. Envoy is never handed a filter that points at a cluster t
 
 The RLS does not read the product database (that would give a second process tenant-wide DB access
 and couple deployments). Instead the control plane **pushes** the full, namespaced policy set to the
-RLS admin endpoint over HTTP — on every change and on a 60 s reconcile timer.
+RLS admin endpoint — on every change and on a 60 s reconcile timer. In production that channel
+is HTTPS with a bearer credential (`FLOWPLANE_RLS_ADMIN_TLS_*` + `FLOWPLANE_RLS_ADMIN_TOKEN` on
+the RLS, the matching token on the CP); plaintext HTTP exists only on a loopback bind behind
+explicit `yes-this-is-local-only` escape hatches — see
+[Enable global rate limiting](../how-to/global-rate-limit.md).
 
 The reconcile is **level-triggered**: each push is the complete set, so a missed change self-heals
 within the window — there is no per-event delivery guarantee to get right. A deleted policy

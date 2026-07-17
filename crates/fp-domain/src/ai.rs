@@ -256,6 +256,11 @@ pub struct AiProviderSpec {
     pub models: Vec<String>,
     #[serde(default = "default_auth_header")]
     pub auth_header: String,
+    /// RFC 7235 auth-scheme token prepended to the decoded credential at injection
+    /// time (`<auth_scheme> <secret>`). `None` = the decoded secret is injected
+    /// verbatim (the secret then carries any scheme itself).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_scheme: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -293,6 +298,28 @@ fn default_auth_header() -> String {
     "authorization".into()
 }
 
+/// RFC 7235 `auth-scheme` is an RFC 7230 `token`: 1+ tchar.
+fn is_auth_scheme_token_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || matches!(
+            b,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
+}
+
 fn default_chat_path() -> String {
     "/v1/chat/completions".into()
 }
@@ -309,36 +336,88 @@ fn default_completion_weight() -> u32 {
     1
 }
 
+/// Canonical origin derived from a provider's `base_url`. This is the **single**
+/// derivation feeding the materialized cluster endpoint + SNI (`provider_cluster_spec`)
+/// and the ExtProc `:authority` rewrite, so the TLS and HTTP layers can never disagree
+/// on the provider host (fpv2-ti2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiProviderOrigin {
+    /// `Url::host_str()` — canonical: IDNA/punycode, percent-decoded, bracketed IPv6.
+    pub host: String,
+    /// Explicit port, or the scheme default.
+    pub port: u16,
+    /// `true` iff the scheme is `https`.
+    pub use_tls: bool,
+    /// `host` when the port is the scheme default, else `host:port`.
+    pub authority: String,
+}
+
 impl AiProviderSpec {
-    pub fn validate(&self) -> DomainResult<()> {
-        if !matches!(self.base_url.as_str(), url if url.starts_with("https://") || url.starts_with("http://"))
-        {
+    /// Parse `base_url` into its canonical origin: `url::Url` parsing plus the
+    /// origin-only rules (no userinfo, no path/query/fragment, http(s) only).
+    pub fn origin(&self) -> DomainResult<AiProviderOrigin> {
+        let url = url::Url::parse(&self.base_url).map_err(|_| {
+            DomainError::validation("AI provider base_url must be a valid http:// or https:// URL")
+        })?;
+        let use_tls = match url.scheme() {
+            "https" => true,
+            "http" => false,
+            _ => {
+                return Err(DomainError::validation(
+                    "AI provider base_url must start with http:// or https://",
+                ))
+            }
+        };
+        if !url.username().is_empty() || url.password().is_some() {
             return Err(DomainError::validation(
-                "AI provider base_url must start with http:// or https://",
+                "AI provider base_url must not include userinfo; provider credentials belong in the credential secret",
             ));
         }
-        let Some(authority) = self.base_url.split_once("://").map(|(_, rest)| rest) else {
-            return Err(DomainError::validation(
-                "AI provider base_url must start with http:// or https://",
-            ));
-        };
-        if authority.is_empty()
-            || authority.contains('?')
-            || authority.contains('#')
-            || authority
-                .find('/')
-                .is_some_and(|idx| !authority[idx..].trim_matches('/').is_empty())
+        let host = url
+            .host_str()
+            .filter(|host| !host.is_empty())
+            .ok_or_else(|| DomainError::validation("AI provider base_url must include a host"))?
+            .to_string();
+        if !url.path().chars().all(|c| c == '/')
+            || url.query().is_some()
+            || url.fragment().is_some()
         {
             return Err(DomainError::validation(
                 "AI provider base_url must not include a path, query, or fragment; use path_prefix for upstream paths",
             ));
         }
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| DomainError::validation("AI provider base_url must include a port"))?;
+        // `Url::port()` is `None` when the port is the scheme default, even if the
+        // input spelled it out (`https://host:443`).
+        let authority = match url.port() {
+            Some(explicit) => format!("{host}:{explicit}"),
+            None => host.clone(),
+        };
+        Ok(AiProviderOrigin {
+            host,
+            port,
+            use_tls,
+            authority,
+        })
+    }
+
+    pub fn validate(&self) -> DomainResult<()> {
+        self.origin()?;
         if self.auth_header.trim().is_empty()
             || self.auth_header.bytes().any(|b| b <= b' ' || b == b':')
         {
             return Err(DomainError::validation(
                 "AI provider auth_header must be a non-empty HTTP header name",
             ));
+        }
+        if let Some(scheme) = &self.auth_scheme {
+            if scheme.is_empty() || !scheme.bytes().all(is_auth_scheme_token_byte) {
+                return Err(DomainError::validation(
+                    "AI provider auth_scheme must be a non-empty RFC 7235 token (letters, digits, or !#$%&'*+.^_`|~-; no whitespace)",
+                ));
+            }
         }
         if let Some(prefix) = &self.path_prefix {
             if !prefix.starts_with('/') {
@@ -541,37 +620,87 @@ pub fn openai_usage_from_json(value: &serde_json::Value) -> Option<OpenAiTokenUs
     })
 }
 
-pub fn strip_synthetic_openai_usage_sse(
-    body: &str,
-    include_usage_injected: bool,
-) -> (String, Option<OpenAiTokenUsage>) {
-    let mut usage = None;
-    if !include_usage_injected {
-        for event in body.split("\n\n") {
-            if let Some(parsed) = usage_from_sse_event(event) {
-                usage = Some(parsed);
-            }
-        }
-        return (body.to_string(), usage);
+/// Byte length of the SSE line terminator starting at `bytes[i]` (`\r\n`, `\n`, or lone
+/// `\r`), or 0 when `bytes[i]` does not start one. All terminators are ASCII, so scanning
+/// for them can never bisect a multi-byte UTF-8 sequence.
+fn sse_terminator_len(bytes: &[u8], i: usize) -> usize {
+    match bytes.get(i) {
+        Some(b'\r') if bytes.get(i + 1) == Some(&b'\n') => 2,
+        Some(b'\r') | Some(b'\n') => 1,
+        _ => 0,
     }
+}
 
-    let mut kept = Vec::new();
-    for event in body.split("\n\n") {
-        if event.is_empty() {
+/// End index (exclusive, including the delimiter) of the first SSE event that completes at
+/// or after `from`: an event ends at two consecutive line terminators (the SSE blank line).
+fn next_sse_event_end(bytes: &[u8], from: usize) -> Option<usize> {
+    let mut i = from;
+    while i < bytes.len() {
+        let first = sse_terminator_len(bytes, i);
+        if first == 0 {
+            i += 1;
             continue;
         }
-        if let Some(parsed) = usage_from_sse_event(event) {
-            usage = Some(parsed);
-        } else {
-            kept.push(event);
+        let second = sse_terminator_len(bytes, i + first);
+        if second == 0 {
+            i += first;
+            continue;
         }
+        return Some(i + first + second);
     }
-    let stripped = if kept.is_empty() {
-        String::new()
-    } else {
-        format!("{}\n\n", kept.join("\n\n"))
-    };
-    (stripped, usage)
+    None
+}
+
+/// End index (exclusive) of the complete-SSE-event prefix of `buffer`. Bytes past the
+/// returned index belong to an event whose blank-line delimiter has not arrived yet and
+/// must stay buffered. A trailing lone `\r` is deferred even when it would close a
+/// delimiter: a following `\n` could still extend it to `\r\n`, and splitting early would
+/// misattribute that `\n` to the next event. `end_of_stream` flushes everything.
+pub fn complete_sse_events_end(buffer: &[u8], end_of_stream: bool) -> usize {
+    if end_of_stream {
+        return buffer.len();
+    }
+    let mut last = 0;
+    let mut i = 0;
+    while let Some(end) = next_sse_event_end(buffer, i) {
+        if end == buffer.len() && buffer[end - 1] == b'\r' {
+            break;
+        }
+        last = end;
+        i = end;
+    }
+    last
+}
+
+/// Split `complete` (whole SSE events, as returned by [`complete_sse_events_end`], plus —
+/// at end of stream — a possibly delimiter-less final event) into the bytes to forward and
+/// the token usage it carried. Kept events are forwarded **byte-identical**, original
+/// delimiters included. When `include_usage_injected` is true (Flowplane itself forced
+/// `stream_options.include_usage`), events that parse as usage are dropped — delimiter and
+/// all — so the synthetic event never reaches a client that did not ask for usage;
+/// otherwise every byte passes through and usage is only observed.
+pub fn strip_synthetic_openai_usage_sse(
+    complete: &[u8],
+    include_usage_injected: bool,
+) -> (Vec<u8>, Option<OpenAiTokenUsage>) {
+    let mut usage = None;
+    let mut kept = Vec::with_capacity(complete.len());
+    let mut start = 0;
+    while start < complete.len() {
+        let end = next_sse_event_end(complete, start).unwrap_or(complete.len());
+        let event = &complete[start..end];
+        let event_usage = std::str::from_utf8(event)
+            .ok()
+            .and_then(usage_from_sse_event);
+        if let Some(parsed) = event_usage {
+            usage = Some(parsed);
+        }
+        if !(include_usage_injected && event_usage.is_some()) {
+            kept.extend_from_slice(event);
+        }
+        start = end;
+    }
+    (kept, usage)
 }
 
 fn usage_from_sse_event(event: &str) -> Option<OpenAiTokenUsage> {
@@ -619,6 +748,7 @@ mod tests {
             credential_secret_id: SecretId::generate(),
             models: vec!["gpt-5".into()],
             auth_header: "authorization".into(),
+            auth_scheme: None,
         };
         assert!(spec.validate().is_err());
 
@@ -627,6 +757,162 @@ mod tests {
 
         spec.base_url = "https://api.openai.com".into();
         spec.validate().expect("origin-only base_url");
+    }
+
+    #[test]
+    fn provider_spec_auth_scheme_token_rules() {
+        let mut spec = origin_spec("https://api.openai.com");
+
+        // Absent scheme is valid (verbatim injection).
+        spec.auth_scheme = None;
+        spec.validate().expect("no scheme");
+
+        // Valid RFC 7235 tokens.
+        for ok in [
+            "Bearer",
+            "bearer",
+            "Token",
+            "DPoP",
+            "X-Api.Key_1!#$%&'*+^`|~-",
+        ] {
+            spec.auth_scheme = Some(ok.into());
+            assert!(spec.validate().is_ok(), "{ok} must be accepted");
+        }
+
+        // Invalid: empty, whitespace anywhere, non-token characters.
+        for bad in [
+            "", " ", "Bearer ", " Bearer", "Bea rer", "Bearer\t", "Bearer\n", "Bear:er", "Bear;er",
+            "Bear\"er", "Bearér", "Bear(er)", "Bear[er]", "Bear{er}", "Bear=er", "Bear/er",
+            "Bear\\er", "Bear,er", "Bear?er", "Bear@er", "Bear<er>",
+        ] {
+            spec.auth_scheme = Some(bad.into());
+            assert!(spec.validate().is_err(), "{bad:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn provider_spec_auth_scheme_serde_shape() {
+        // Absent in JSON -> None; None -> absent in JSON (lossless, no empty-string leak).
+        let json = r#"{"kind":"openai-compatible","base_url":"https://api.openai.com",
+            "credential_secret_id":"018f4e6e-0000-7000-8000-000000000000"}"#;
+        let spec: AiProviderSpec = serde_json::from_str(json).expect("spec without scheme");
+        assert_eq!(spec.auth_scheme, None);
+        let out = serde_json::to_value(&spec).expect("serialize");
+        assert!(out.get("auth_scheme").is_none(), "None must not serialize");
+
+        let json = r#"{"kind":"openai-compatible","base_url":"https://api.openai.com",
+            "credential_secret_id":"018f4e6e-0000-7000-8000-000000000000",
+            "auth_scheme":"Bearer"}"#;
+        let spec: AiProviderSpec = serde_json::from_str(json).expect("spec with scheme");
+        assert_eq!(spec.auth_scheme.as_deref(), Some("Bearer"));
+        let out = serde_json::to_value(&spec).expect("serialize");
+        assert_eq!(out["auth_scheme"], "Bearer");
+    }
+
+    fn origin_spec(base_url: &str) -> AiProviderSpec {
+        AiProviderSpec {
+            kind: AiProviderKind::OpenaiCompatible,
+            base_url: base_url.into(),
+            path_prefix: None,
+            credential_secret_id: SecretId::generate(),
+            models: Vec::new(),
+            auth_header: "authorization".into(),
+            auth_scheme: None,
+        }
+    }
+
+    #[test]
+    fn provider_origin_canonicalizes_accepted_inputs() {
+        let cases = [
+            // (base_url, host, port, use_tls, authority)
+            (
+                "https://openrouter.ai",
+                "openrouter.ai",
+                443,
+                true,
+                "openrouter.ai",
+            ),
+            (
+                "https://openrouter.ai/",
+                "openrouter.ai",
+                443,
+                true,
+                "openrouter.ai",
+            ),
+            ("https://host:443", "host", 443, true, "host"),
+            ("http://host:80", "host", 80, false, "host"),
+            ("https://host:8443", "host", 8443, true, "host:8443"),
+            (
+                "http://10.0.0.4:8080",
+                "10.0.0.4",
+                8080,
+                false,
+                "10.0.0.4:8080",
+            ),
+            (
+                "https://[fd00::7]:8443",
+                "[fd00::7]",
+                8443,
+                true,
+                "[fd00::7]:8443",
+            ),
+            ("https://[fd00::7]:443", "[fd00::7]", 443, true, "[fd00::7]"),
+            // percent-encoded host canonicalizes exactly as the cluster/SNI derivation does
+            (
+                "https://%65xample.com",
+                "example.com",
+                443,
+                true,
+                "example.com",
+            ),
+            // Unicode domain -> punycode, same as SNI
+            (
+                "https://bücher.example",
+                "xn--bcher-kva.example",
+                443,
+                true,
+                "xn--bcher-kva.example",
+            ),
+            // non-canonical IPv4 spelling normalizes, same as SNI
+            (
+                "https://127.0.000.001:8443",
+                "127.0.0.1",
+                8443,
+                true,
+                "127.0.0.1:8443",
+            ),
+        ];
+        for (base_url, host, port, use_tls, authority) in cases {
+            let origin = origin_spec(base_url).origin().expect(base_url);
+            assert_eq!(origin.host, host, "host for {base_url}");
+            assert_eq!(origin.port, port, "port for {base_url}");
+            assert_eq!(origin.use_tls, use_tls, "use_tls for {base_url}");
+            assert_eq!(origin.authority, authority, "authority for {base_url}");
+        }
+    }
+
+    #[test]
+    fn provider_origin_rejects_non_origin_inputs() {
+        let rejected = [
+            "https://user:pw@provider.example", // userinfo must never reach :authority/trace
+            "https://user@provider.example",
+            "https://host:abc",
+            "https://fd00::7", // unbracketed IPv6
+            "ftp://host",
+            "https://",
+            "https://host/api/v1",
+            "https://host?x=1",
+            "https://host#frag",
+            "host:50051",
+        ];
+        for base_url in rejected {
+            let spec = origin_spec(base_url);
+            assert!(spec.origin().is_err(), "origin() must reject {base_url}");
+            assert!(
+                spec.validate().is_err(),
+                "validate() must reject {base_url}"
+            );
+        }
     }
 
     #[test]
@@ -712,10 +998,14 @@ mod tests {
             "data: [DONE]\n\n",
         );
 
-        let (stripped, usage) = strip_synthetic_openai_usage_sse(body, true);
+        let (stripped, usage) = strip_synthetic_openai_usage_sse(body.as_bytes(), true);
 
-        assert!(stripped.contains("\"content\":\"hi\""));
-        assert!(!stripped.contains("\"usage\""));
+        let expected = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n";
+        assert_eq!(
+            stripped,
+            expected.as_bytes(),
+            "kept events stay byte-identical"
+        );
         assert_eq!(
             usage,
             Some(OpenAiTokenUsage {
@@ -724,5 +1014,120 @@ mod tests {
                 total_tokens: 5,
             })
         );
+    }
+
+    #[test]
+    fn strip_without_injection_is_byte_identical_passthrough() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hé✓\"}}]}\r\n\r\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n",
+        );
+
+        let (kept, usage) = strip_synthetic_openai_usage_sse(body.as_bytes(), false);
+
+        assert_eq!(
+            kept,
+            body.as_bytes(),
+            "observing mode must never rewrite bytes"
+        );
+        assert_eq!(usage.expect("usage observed").total_tokens, 5);
+    }
+
+    #[test]
+    fn strip_handles_crlf_framed_events() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\r\n\r\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\r\n\r\n",
+            "data: [DONE]\r\n\r\n",
+        );
+
+        let (stripped, usage) = strip_synthetic_openai_usage_sse(body.as_bytes(), true);
+
+        let expected =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n";
+        assert_eq!(
+            stripped,
+            expected.as_bytes(),
+            "CRLF delimiters preserved verbatim"
+        );
+        assert_eq!(usage.expect("usage").total_tokens, 2);
+    }
+
+    #[test]
+    fn strip_keeps_invalid_utf8_events_verbatim() {
+        let mut body = b"data: \xff\xfe garbage".to_vec();
+        body.extend_from_slice(b"\n\n");
+
+        let (kept, usage) = strip_synthetic_openai_usage_sse(&body, true);
+
+        assert_eq!(kept, body, "undecodable events are never dropped");
+        assert!(usage.is_none());
+    }
+
+    #[test]
+    fn complete_sse_events_end_recognizes_all_terminator_framings() {
+        // (buffer, expected complete-prefix length without end_of_stream)
+        let cases: &[(&[u8], usize)] = &[
+            (b"data: a\n\ndata: b", 9),       // LF: one complete event
+            (b"data: a\r\n\r\ndata: b", 11),  // CRLF
+            (b"data: a\r\rdata: b", 9),       // lone-CR terminators
+            (b"data: a\n\r\ndata: b", 10),    // mixed LF + CRLF blank line
+            (b"data: a\ndata: b", 0),         // no blank line yet
+            (b"data: a\n\n", 9),              // complete event, empty remainder
+            (b"data: a\r\n\r", 0),            // trailing bare CR: deferred (may become CRLF)
+            (b"data: a\n\ndata: b\r\n\r", 9), // second event's delimiter still ambiguous
+            (b"", 0),
+        ];
+        for (buffer, expected) in cases {
+            assert_eq!(
+                complete_sse_events_end(buffer, false),
+                *expected,
+                "buffer {:?}",
+                String::from_utf8_lossy(buffer)
+            );
+        }
+        // end_of_stream flushes everything, delimiter or not.
+        assert_eq!(complete_sse_events_end(b"data: a\r\n\r", true), 10);
+        assert_eq!(
+            complete_sse_events_end(b"data: tail-no-delimiter", true),
+            23
+        );
+    }
+
+    #[test]
+    fn sse_stream_reassembles_identically_across_every_chunk_split() {
+        // Chunk-boundary fuzz at the domain layer: for every split point (including inside
+        // multi-byte UTF-8 content and inside delimiters), accumulating into a remainder,
+        // taking the complete prefix, stripping, and flushing at end-of-stream must yield
+        // the same bytes as stripping the whole stream at once.
+        for framing in ["\n\n", "\r\n\r\n"] {
+            let stream = format!(
+                "data: {{\"choices\":[{{\"delta\":{{\"content\":\"héllo✓\"}}}}]}}{framing}\
+                 data: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}}}{framing}\
+                 data: [DONE]{framing}"
+            );
+            let bytes = stream.as_bytes();
+            let (expected, expected_usage) = strip_synthetic_openai_usage_sse(bytes, true);
+            for split in 0..=bytes.len() {
+                let mut remainder: Vec<u8> = Vec::new();
+                let mut out: Vec<u8> = Vec::new();
+                let mut usage = None;
+                for (chunk, eos) in [(&bytes[..split], false), (&bytes[split..], true)] {
+                    remainder.extend_from_slice(chunk);
+                    let end = complete_sse_events_end(&remainder, eos);
+                    let (kept, chunk_usage) =
+                        strip_synthetic_openai_usage_sse(&remainder[..end], true);
+                    out.extend_from_slice(&kept);
+                    if let Some(parsed) = chunk_usage {
+                        assert!(usage.is_none(), "usage must be captured exactly once");
+                        usage = Some(parsed);
+                    }
+                    remainder.drain(..end);
+                }
+                assert!(remainder.is_empty(), "split {split} framing {framing:?}");
+                assert_eq!(out, expected, "split {split} framing {framing:?}");
+                assert_eq!(usage, expected_usage, "split {split} framing {framing:?}");
+            }
+        }
     }
 }

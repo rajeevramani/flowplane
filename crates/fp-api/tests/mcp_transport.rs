@@ -73,6 +73,7 @@ async fn app_with_tokens() -> Option<(axum::Router, String, String, String)> {
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
         discovery_forwarding_policy: Default::default(),
+        egress_advisory: Default::default(),
         rls_repush: None,
         rls_grpc_configured: false,
     });
@@ -195,7 +196,7 @@ async fn mcp_initialize_and_ping_allow_headless_clients() {
 }
 
 #[tokio::test]
-async fn mcp_status_and_connections_report_post_only_sessions() {
+async fn mcp_status_and_connections_report_team_attributed_sessions() {
     let Some((app, token, _, team)) = app_with_tokens().await else {
         return;
     };
@@ -206,7 +207,14 @@ async fn mcp_status_and_connections_report_post_only_sessions() {
         .await
         .expect("initialize response");
     assert_eq!(response.status(), StatusCode::OK);
+    let session = response
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("session id")
+        .to_string();
 
+    // initialize alone attributes the session to no team: listings stay empty.
     let response = app
         .clone()
         .oneshot(management_request(
@@ -223,6 +231,43 @@ async fn mcp_status_and_connections_report_post_only_sessions() {
     assert_eq!(body["resources_enabled"], false);
     assert_eq!(body["prompts_enabled"], false);
     assert_eq!(body["api_invocation_mode"], "gateway_invocation_descriptor");
+    assert_eq!(body["active_sessions"], 0);
+
+    // An authorized team operation attributes the session to that team.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/mcp")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .header("mcp-session-id", session)
+                .body(Body::from(
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/list",
+                        "params": { "team": team }
+                    })
+                    .to_string(),
+                ))
+                .expect("tools/list"),
+        )
+        .await
+        .expect("tools/list response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(management_request(
+            &token,
+            &format!("/api/v1/teams/{team}/mcp/status"),
+        ))
+        .await
+        .expect("status response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
     assert_eq!(body["active_sessions"], 1);
 
     let response = app

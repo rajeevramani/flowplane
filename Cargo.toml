@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.2.0"
+version = "3.0.0"
 edition = "2021"
 rust-version = "1.92"
 license = "Apache-2.0"
@@ -48,6 +48,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+subtle = "2"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "chrono", "uuid", "json", "macros"] }
 sha2 = "0.10"
 thiserror = "2"
@@ -67,6 +68,7 @@ rsa = "0.9"
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+url = "2"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
 [workspace.lints.rust]

@@ -146,6 +146,7 @@ you the class:
 | `route_match` | `no_eligible_backend` | 400 `no_eligible_ai_backend` | the request's model matches no backend on the route — check the route's `backends[].models` and the `x-flowplane-ai-model` header |
 | `budget` | verdict `rejected` | 429 `flowplane_ai_budget_exceeded` | an enforcing budget is exhausted — raise the budget or wait for the window to reset |
 | `credential_injection` | `secret_missing` or `decrypt_failed` | "AI provider credential unavailable" | the provider's credential secret is missing, expired, or undecryptable — rotate the secret referenced by the provider |
+| `credential_injection` | `scheme_conflict` | "AI provider credential unavailable" | the provider sets `auth_scheme` but the decoded secret already starts with that scheme (`Bearer Bearer <key>` misconfiguration) — store the bare key in the secret, or drop the provider's `auth_scheme` |
 | `upstream` | provider status (e.g. `500`) | provider error passthrough | the provider answered with an error — `detail.status` has the code |
 | `upstream` | `no_upstream_connection` | 503 | Envoy could not connect to the provider — check `base_url` and network reachability |
 | `upstream` | `client_disconnect` | — | the client dropped mid-stream; the partial row is still persisted |

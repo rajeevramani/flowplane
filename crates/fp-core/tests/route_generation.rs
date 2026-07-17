@@ -77,10 +77,16 @@ async fn route_plan_apply_replays_persisted_preview() {
     .expect("dry-run plan");
 
     assert!(plan.plan.conflicts.is_empty());
-    let applied =
-        route_generation::apply_plan(&w.pool, &w.admin, w.team, plan.id, RequestId::generate())
-            .await
-            .expect("apply");
+    let applied = route_generation::apply_plan(
+        &w.pool,
+        &w.admin,
+        w.team,
+        plan.id,
+        RequestId::generate(),
+        Default::default(),
+    )
+    .await
+    .expect("apply");
 
     assert_eq!(applied.cluster.spec, plan.plan.cluster_spec);
     assert_eq!(applied.route_config.spec, plan.plan.route_config_spec);
@@ -127,10 +133,16 @@ async fn route_plan_apply_fails_on_intervening_conflict() {
     .await
     .expect("intervening listener");
 
-    let err =
-        route_generation::apply_plan(&w.pool, &w.admin, w.team, plan.id, RequestId::generate())
-            .await
-            .expect_err("apply conflict");
+    let err = route_generation::apply_plan(
+        &w.pool,
+        &w.admin,
+        w.team,
+        plan.id,
+        RequestId::generate(),
+        Default::default(),
+    )
+    .await
+    .expect_err("apply conflict");
 
     assert_eq!(err.code, ErrorCode::Conflict);
     assert_eq!(
@@ -215,10 +227,16 @@ async fn route_plan_apply_rechecks_review_state() {
 
     append_decision(&w, spec_id, SpecReviewDecision::Rejected).await;
 
-    let err =
-        route_generation::apply_plan(&w.pool, &w.admin, w.team, plan.id, RequestId::generate())
-            .await
-            .expect_err("rejected spec cannot apply");
+    let err = route_generation::apply_plan(
+        &w.pool,
+        &w.admin,
+        w.team,
+        plan.id,
+        RequestId::generate(),
+        Default::default(),
+    )
+    .await
+    .expect_err("rejected spec cannot apply");
 
     assert_eq!(err.code, ErrorCode::Conflict);
     assert_eq!(

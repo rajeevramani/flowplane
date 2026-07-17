@@ -193,6 +193,10 @@ pub async fn run() -> anyhow::Result<()> {
     let discovery_forwarding_policy =
         fp_core::services::discovery::DiscoveryForwardingPolicy::from_server_config(&config).await;
 
+    // Write-time egress advisory (FP-DEC-0008): logs its own startup warning when disabled.
+    let egress_advisory =
+        fp_core::services::egress_advisory::EgressAdvisoryPolicy::from_server_config(&config).await;
+
     // CP→RLS policy sync (S5): when the RLS admin URL is set, run the 60 s reconcile worker and
     // expose a force-repush kick. The first reconcile fires immediately at startup.
     let rls_repush = if let Some(admin_url) = config.rls_admin_url.clone() {
@@ -201,14 +205,27 @@ pub async fn run() -> anyhow::Result<()> {
         let worker_notify = Arc::clone(&notify);
         let worker_shutdown = xds_shutdown_tx.subscribe();
         let reconcile_secs = config.rls_reconcile_secs;
+        // Build the push client BEFORE spawning so bad CA material fails startup closed
+        // (fpv2-9sf S3), never silently downgrades trust at push time.
+        let worker_client = rls_push_client(config.rls_admin_tls_ca.as_deref())?;
+        let worker_token = config
+            .rls_admin_token
+            .as_ref()
+            .map(|t| t.secret().to_string());
         tokio::spawn(run_rls_sync(
             worker_pool,
             admin_url,
+            worker_token,
+            worker_client,
             reconcile_secs,
             worker_notify,
             worker_shutdown,
         ));
-        tracing::info!(reconcile_secs, "rls_sync worker started");
+        tracing::info!(
+            reconcile_secs,
+            authenticated = config.rls_admin_token.is_some(),
+            "rls_sync worker started"
+        );
         Some(notify)
     } else {
         None
@@ -240,6 +257,7 @@ pub async fn run() -> anyhow::Result<()> {
             failed: xds_consumer_failed,
         }),
         discovery_forwarding_policy,
+        egress_advisory,
         rls_repush,
         rls_grpc_configured: config.rls_grpc_url.is_some(),
     };
@@ -363,11 +381,12 @@ async fn run_observability_sampler(
 async fn run_rls_sync(
     pool: sqlx::PgPool,
     admin_url: String,
+    admin_token: Option<String>,
+    client: reqwest::Client,
     reconcile_secs: u64,
     repush: Arc<tokio::sync::Notify>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
-    let client = reqwest::Client::new();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(reconcile_secs.max(1)));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -383,11 +402,54 @@ async fn run_rls_sync(
                 continue;
             }
         }
-        match fp_core::services::rls_sync::reconcile_once(&pool, &admin_url, &client).await {
+        match fp_core::services::rls_sync::reconcile_once(
+            &pool,
+            &admin_url,
+            admin_token.as_deref(),
+            &client,
+        )
+        .await
+        {
             Ok(count) => tracing::debug!(policies = count, "rls policy reconcile pushed"),
             Err(e) => tracing::warn!("rls policy reconcile failed: {e}"),
         }
     }
+}
+
+/// Build the CP→RLS push client. With `FLOWPLANE_RLS_ADMIN_TLS_CA` set, the RLS admin server
+/// certificate must chain to that bundle (private-CA deployments); unset uses system roots.
+/// Unreadable or non-PEM CA material is a startup error (fail-closed), never a downgrade.
+fn rls_push_client(ca_path: Option<&std::path::Path>) -> anyhow::Result<reqwest::Client> {
+    // No redirects: the push targets one fixed endpoint, and following a redirect could
+    // re-send the bearer — reqwest's default policy keeps `Authorization` across a
+    // same-host/port https→http downgrade. Refusing redirects outright closes that hole.
+    let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+    if let Some(path) = ca_path {
+        let pem = std::fs::read(path).map_err(|e| {
+            anyhow::anyhow!(
+                "cannot read FLOWPLANE_RLS_ADMIN_TLS_CA at {}: {e}",
+                path.display()
+            )
+        })?;
+        let certs = reqwest::Certificate::from_pem_bundle(&pem).map_err(|e| {
+            anyhow::anyhow!(
+                "FLOWPLANE_RLS_ADMIN_TLS_CA at {} is not a valid PEM certificate bundle: {e}",
+                path.display()
+            )
+        })?;
+        if certs.is_empty() {
+            anyhow::bail!(
+                "FLOWPLANE_RLS_ADMIN_TLS_CA at {} contains no certificates",
+                path.display()
+            );
+        }
+        for cert in certs {
+            builder = builder.add_root_certificate(cert);
+        }
+    }
+    builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("cannot build the RLS push HTTP client: {e}"))
 }
 
 /// Fixed sweep cadence for expired AI trace rows. Hourly is deliberately coarse: expiry
@@ -470,11 +532,32 @@ async fn setup_dev_mode(
         dev_token = %token,
         "dev bearer token (default 24h, set FLOWPLANE_DEV_TOKEN_TTL to change; this boot only)"
     );
-    // Dev-only file sink (#156): a compose `init`/sibling container can't read another
-    // container's stdout, so when an operator names a path we also write the raw token there.
-    if let Some(path) = dev_token_path {
-        write_dev_token(path, &token)?;
-        tracing::warn!(path = %path.display(), "dev bearer token also written to file (dev mode)");
+    // Dev-only file sink (#156, FP-DEC-0012): a compose `init`/sibling container can't read
+    // another container's stdout. An operator-named path (env or config file) is explicit —
+    // fatal on write failure, and it suppresses the default. With no path configured the token
+    // lands best-effort at the well-known ~/.flowplane/dev-token so the CLI can discover it;
+    // an unwritable $HOME must not stop a boot that used to succeed.
+    match resolve_dev_token_sink(dev_token_path, crate::paths::dev_token_path()) {
+        DevTokenSink::Explicit(path) => {
+            write_dev_token(&path, &token)?;
+            tracing::warn!(path = %path.display(), "dev bearer token also written to file (dev mode)");
+        }
+        DevTokenSink::Default(path) => match write_dev_token(&path, &token) {
+            Ok(()) => tracing::warn!(
+                path = %path.display(),
+                "dev bearer token also written to the default file (dev mode)"
+            ),
+            Err(err) => tracing::warn!(
+                path = %path.display(),
+                error = %format!("{err:#}"),
+                "could not write the dev token to the default file; continuing without it \
+                 (set FLOWPLANE_DEV_TOKEN_PATH to choose a writable path)"
+            ),
+        },
+        DevTokenSink::Unavailable => tracing::warn!(
+            "HOME is unset; dev token not written to a default file \
+             (set FLOWPLANE_DEV_TOKEN_PATH to name one)"
+        ),
     }
     let validator = fp_core::OidcValidator::new(issuer.oidc_config());
     validator
@@ -495,11 +578,43 @@ async fn setup_dev_mode(
     ))
 }
 
-/// Persist the minted dev token to an operator-named path so a sibling container can read it.
-/// Dev-mode only; a write failure is fatal so a misconfigured eval bundle fails loud, not silent.
+/// Where the minted dev token lands on disk (FP-DEC-0012). The discriminator is the
+/// RESOLVED `dev_token_path` config — env `FLOWPLANE_DEV_TOKEN_PATH` and the config file's
+/// `dev_token_path` are both explicit; the startup path has no env-vs-file provenance and
+/// must not invent one.
+#[cfg(feature = "dev-oidc")]
+#[derive(Debug, PartialEq)]
+enum DevTokenSink {
+    /// Operator-named path: write failure is fatal, the default is suppressed.
+    Explicit(std::path::PathBuf),
+    /// No path configured: the well-known `~/.flowplane/dev-token`, best-effort.
+    Default(std::path::PathBuf),
+    /// No path configured and no HOME to derive the default from.
+    Unavailable,
+}
+
+/// Pure sink resolution (unit-testable without env): explicit config wins and suppresses
+/// the default; otherwise the well-known default when HOME yields one.
+#[cfg(feature = "dev-oidc")]
+fn resolve_dev_token_sink(
+    explicit: Option<&std::path::Path>,
+    default: Option<std::path::PathBuf>,
+) -> DevTokenSink {
+    match (explicit, default) {
+        (Some(path), _) => DevTokenSink::Explicit(path.to_path_buf()),
+        (None, Some(path)) => DevTokenSink::Default(path),
+        (None, None) => DevTokenSink::Unavailable,
+    }
+}
+
+/// Persist the minted dev token so a sibling container or the local CLI can read it.
+/// Dev-mode only. For an operator-named path the caller treats a failure as fatal so a
+/// misconfigured eval bundle fails loud, not silent; for the default path the caller
+/// downgrades it to a WARN. Written as a private file — 0600, missing parents created —
+/// instead of a plain umask-inheriting `fs::write` (FP-DEC-0012).
 #[cfg(feature = "dev-oidc")]
 fn write_dev_token(path: &std::path::Path, token: &str) -> anyhow::Result<()> {
-    std::fs::write(path, token)
+    crate::paths::write_private_file(path, token)
         .with_context(|| format!("failed to write dev token to {}", path.display()))
 }
 
@@ -604,6 +719,25 @@ async fn seed_bootstrap_token(pool: &sqlx::PgPool, config: &ServerConfig) -> any
                         "LOCAL-ONLY: FLOWPLANE_ALLOW_LOGGED_BOOTSTRAP_TOKEN is set — generated and \
                          logged a one-shot bootstrap token (valid 24h). Do not use in production."
                     );
+                    // Additive local-only sink (FP-DEC-0012): the same one-shot token, so
+                    // `curl -H "Authorization: Bearer $(cat ~/.flowplane/bootstrap-token)"`
+                    // works without log surgery. Best-effort — this path is already an
+                    // explicitly local escape hatch, and a failed write must not block boot.
+                    // The operator-supplied branch above never reaches here: that token is
+                    // never logged and never written.
+                    match crate::paths::bootstrap_token_path() {
+                        Some(path) => {
+                            if crate::paths::write_private_file_best_effort(&path, &token) {
+                                tracing::warn!(
+                                    path = %path.display(),
+                                    "bootstrap token also written to file (local-only)"
+                                );
+                            }
+                        }
+                        None => {
+                            tracing::warn!("HOME is unset; bootstrap token not written to a file")
+                        }
+                    }
                 }
             } else if !is_initialized(pool).await? {
                 anyhow::bail!(
@@ -726,6 +860,71 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
+mod rls_push_client_tests {
+    use super::*;
+
+    /// The push client must never follow a redirect: reqwest's default policy can keep the
+    /// `Authorization` header across a same-host/port https→http downgrade, which would put
+    /// the bearer on a plaintext channel. Policy::none() closes the hole — a redirect
+    /// answer is a push FAILURE (worker retries next tick), not a followed hop.
+    #[tokio::test]
+    async fn push_client_does_not_follow_redirects() {
+        use axum::routing::post;
+        let victim_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let victim_hits_clone = std::sync::Arc::clone(&victim_hits);
+        let victim = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let victim_addr = victim.local_addr().unwrap();
+        let victim_router = axum::Router::new().route(
+            "/api/v1/admin/rls/policies",
+            post(move || {
+                victim_hits_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async { axum::http::StatusCode::NO_CONTENT }
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(victim, victim_router).await.unwrap();
+        });
+
+        let redirector = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let redirector_addr = redirector.local_addr().unwrap();
+        let target = format!("http://{victim_addr}/api/v1/admin/rls/policies");
+        let redirector_router = axum::Router::new().route(
+            "/api/v1/admin/rls/policies",
+            post(move || {
+                let target = target.clone();
+                async move {
+                    (
+                        axum::http::StatusCode::TEMPORARY_REDIRECT,
+                        [(axum::http::header::LOCATION, target)],
+                    )
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(redirector, redirector_router).await.unwrap();
+        });
+
+        let client = rls_push_client(None).expect("client builds");
+        let resp = client
+            .post(format!(
+                "http://{redirector_addr}/api/v1/admin/rls/policies"
+            ))
+            .bearer_auth("push-sekrit")
+            .json(&serde_json::json!({"policies": []}))
+            .send()
+            .await
+            .expect("request completes without following the redirect");
+        assert_eq!(resp.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            victim_hits.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the redirect target must never be contacted"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod bootstrap_token_tests {
     use super::*;
 
@@ -770,7 +969,37 @@ mod bootstrap_token_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod dev_token_tests {
     use super::*;
+    use std::path::{Path, PathBuf};
     use std::process;
+
+    #[test]
+    fn explicit_path_wins_and_suppresses_the_default() {
+        // Env- and TOML-sourced paths arrive here identically (the config resolver merges
+        // them); anything Some(_) is explicit regardless of source.
+        assert_eq!(
+            resolve_dev_token_sink(
+                Some(Path::new("/explicit/dev-token")),
+                Some(PathBuf::from("/home/u/.flowplane/dev-token")),
+            ),
+            DevTokenSink::Explicit(PathBuf::from("/explicit/dev-token"))
+        );
+    }
+
+    #[test]
+    fn no_explicit_path_falls_back_to_the_well_known_default() {
+        assert_eq!(
+            resolve_dev_token_sink(None, Some(PathBuf::from("/home/u/.flowplane/dev-token"))),
+            DevTokenSink::Default(PathBuf::from("/home/u/.flowplane/dev-token"))
+        );
+    }
+
+    #[test]
+    fn no_explicit_path_and_no_home_means_no_sink() {
+        assert_eq!(
+            resolve_dev_token_sink(None, None),
+            DevTokenSink::Unavailable
+        );
+    }
 
     #[test]
     fn write_dev_token_persists_exact_bytes() {
@@ -792,12 +1021,19 @@ mod dev_token_tests {
 
     #[test]
     fn write_dev_token_errors_with_context_on_bad_path() {
-        // A path whose parent does not exist is unwritable; the error must carry the path context.
-        let bad = std::path::Path::new("/nonexistent-flowplane-dir/does/not/exist/token.txt");
-        let err = write_dev_token(bad, "x").expect_err("must fail on unwritable path");
+        // The private write creates missing parent dirs (FP-DEC-0012), so a merely-absent
+        // parent no longer fails. A parent path component that is a regular FILE fails
+        // deterministically (NotADirectory) — even when running as root — without touching
+        // global filesystem state.
+        let blocker =
+            std::env::temp_dir().join(format!("flowplane-dev-token-blocker-{}", process::id()));
+        std::fs::write(&blocker, "not a directory").expect("create blocker file");
+        let bad = blocker.join("token.txt");
+        let err = write_dev_token(&bad, "x").expect_err("must fail when parent is a file");
         assert!(
             err.to_string().contains("failed to write dev token to"),
             "error must carry write context, got: {err}"
         );
+        std::fs::remove_file(&blocker).expect("cleanup");
     }
 }

@@ -1,6 +1,7 @@
 //! Flowplane binary: server subcommands now, CLI client subcommands from S7.
 
 mod cli;
+mod paths;
 mod serve;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};

@@ -67,7 +67,7 @@ Watch the startup logs for these signals:
 - `database connected and migrations applied`
 - `DEV MODE: in-process identity, seeded resources — never production`
 - `dev resources seeded`
-- a warning line containing `dev_token` (you will copy this in the next step)
+- a warning line saying the dev bearer token was `also written to the default file` — `~/.flowplane/dev-token` (the CLI discovers it there automatically; no copying needed)
 - `API listener starting`
 
 Dev mode seeds one organization, team, and user:
@@ -85,23 +85,18 @@ bootstrapped platform-admin environment; for that operator workflow, see
 
 ---
 
-## 3. Get a token and confirm authentication
+## 3. Confirm authentication — no token copying
 
-Dev mode mints a bearer token at startup and logs it once. Find the log line that looks like:
+Dev mode mints a per-boot bearer token at startup and writes it to the well-known file
+`~/.flowplane/dev-token` (mode 0600). For **loopback** servers the CLI discovers that file
+automatically as its last-resort token source, so there is nothing to copy.
 
-```text
-WARN ... dev_token=<long-token-string> dev bearer token (default 24h, set FLOWPLANE_DEV_TOKEN_TTL to change; this boot only)
-```
-
-The token is valid for this control-plane process only and, by default, expires after 24 hours (set `FLOWPLANE_DEV_TOKEN_TTL` in seconds to change it). If you restart the server, grab the new token.
-
-In a second terminal, point the CLI at the running server and export the token:
+In a second terminal, point the CLI at the running server:
 
 ```bash
 export FLOWPLANE_SERVER=http://127.0.0.1:8096
 export FLOWPLANE_ORG=dev-org
 export FLOWPLANE_TEAM=default
-export FLOWPLANE_TOKEN='<paste the full dev_token here>'
 ```
 
 Confirm authentication works:
@@ -110,13 +105,30 @@ Confirm authentication works:
 ./target/debug/flowplane auth whoami
 ```
 
-This calls `GET /api/v1/auth/whoami` and echoes the principal the server sees. A successful response shows your `user_id`, org membership, and grant count.
+This calls `GET /api/v1/auth/whoami` and echoes the principal the server sees. A successful
+response shows your `user_id`, org membership, and grant count, and the CLI prints one note
+on stderr — `using dev token from ~/.flowplane/dev-token (dev mode)` — so auto-discovered
+credentials are never silent. Need the raw token (for `curl`, Bruno, a frontend)?
+`./target/debug/flowplane auth token` prints it to stdout.
 
-If you get `401 token validation failed`, check that:
+The token is valid for this control-plane process only and, by default, expires after 24
+hours (set `FLOWPLANE_DEV_TOKEN_TTL` in seconds to change it). Restarting the server rewrites
+the file; the CLI transparently picks up the fresh token.
 
-- the token was copied in full (no missing trailing character),
-- it came from the *currently running* server process, and
-- `FLOWPLANE_SERVER` points at that same process.
+Notes on how the auto-discovery behaves:
+
+- **It never overrides a configured token.** `--token`, `FLOWPLANE_TOKEN`, a context token,
+  a config-file token, and `~/.flowplane/credentials` (written by `auth login`) all take
+  precedence. If a *stored* token goes stale (for example you once ran `auth login` with a
+  dev token and then restarted the CP), a 401 will hint that the stored credential is
+  shadowing the live dev token — `rm ~/.flowplane/credentials` restores auto-discovery.
+- **Loopback only.** The file is only used when `FLOWPLANE_SERVER` points at `localhost`,
+  a `127.x.x.x` address, or `[::1]` — a local dev token is never sent to a remote server.
+- **One local dev CP per user.** The file is last-writer-wins; running several local CPs
+  (or mixing dev and non-dev instances) needs explicit tokens or a per-instance
+  `FLOWPLANE_DEV_TOKEN_PATH`. The CP and the CLI must run as the same user (same `HOME`).
+- The token is still logged once at startup (the `dev_token=` WARN line), as in previous
+  releases.
 
 ---
 
@@ -236,7 +248,7 @@ acting. Answer `y`, or pass `--yes` to skip the prompt (required when running no
 
 ## You now have a working gateway
 
-You started Flowplane in dev mode, authenticated with a dev token, exposed an upstream, connected a local Envoy, and reached the upstream through the gateway. From here:
+You started Flowplane in dev mode, authenticated with zero token copying (the CLI auto-discovered the dev token from `~/.flowplane/dev-token`), exposed an upstream, connected a local Envoy, and reached the upstream through the gateway. From here:
 
 - **Securing the dataplane with mTLS:** [`../how-to/register-dataplane-mtls.md`](../how-to/register-dataplane-mtls.md)
 - **Every CLI command and flag:** [`../reference/cli.md`](../reference/cli.md)

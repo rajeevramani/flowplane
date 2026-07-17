@@ -255,7 +255,7 @@ pub async fn remove_member(
 
 #[utoipa::path(get, path = "/api/v1/teams/{team}/grants", tag = "Grants",
     params(("team" = String, Path, description = "Team name or UUID")),
-    responses((status = 200, body = [GrantView]), (status = 404, body = ErrorBody)))]
+    responses((status = 200, body = [GrantView]), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn list_grants(
     State(state): State<AppState>,
     Path(team): Path<String>,
@@ -264,7 +264,7 @@ pub async fn list_grants(
 ) -> Result<Json<Vec<GrantView>>, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
-        svc::list_grants(&state.pool, &ctx, team).await
+        svc::list_grants(&state.pool, &ctx, team, rid).await
     };
     let grants = run.await.map_err(|e| ApiError::new(e, rid))?;
     Ok(Json(

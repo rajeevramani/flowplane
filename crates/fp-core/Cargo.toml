@@ -36,9 +36,14 @@ toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# Integration test: CP->RLS push auth round-trip (tests/rls_push_auth.rs) drives the
+# REAL flowplane-rls admin router over HTTPS as the receiving end.
+flowplane-rls = { path = "../flowplane-rls" }
 rsa = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }
+# Unit test: capture the egress-advisory disabled startup warning (services/egress_advisory.rs).
+tracing-subscriber = { workspace = true }
 # Integration test: private-CA OIDC IdP over HTTPS (tests/oidc_ca_bundle.rs).
 # rcgen mints a throwaway CA + a SAN leaf cert; axum/axum-server serve the
 # discovery + JWKS endpoints over rustls; jsonwebtoken/rsa sign tokens.

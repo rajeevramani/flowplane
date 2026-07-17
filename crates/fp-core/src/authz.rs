@@ -76,6 +76,27 @@ pub enum PrincipalCtx {
     },
 }
 
+impl PrincipalCtx {
+    /// True only for a human owner of the platform organization (governance scope).
+    pub fn is_platform_admin(&self) -> bool {
+        matches!(
+            self,
+            Self::User {
+                platform_admin: true,
+                ..
+            }
+        )
+    }
+
+    /// The human user id; `None` for agent principals.
+    pub fn user_id(&self) -> Option<UserId> {
+        match self {
+            Self::User { user_id, .. } => Some(*user_id),
+            Self::Agent { .. } => None,
+        }
+    }
+}
+
 /// Why a decision came out the way it did. Stable wire strings feed audit `detail`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
@@ -300,6 +321,45 @@ mod tests {
             kind,
             org_id,
             grants,
+        }
+    }
+
+    // ---- PrincipalCtx accessors (org read-scoping branches on these) ----
+
+    #[test]
+    fn is_platform_admin_reflects_the_user_flag_and_is_never_true_for_agents() {
+        assert!(user(true, None, GrantSet::default()).is_platform_admin());
+        assert!(!user(
+            false,
+            Some((OrgId::generate(), OrgRole::Admin)),
+            GrantSet::default()
+        )
+        .is_platform_admin());
+        for kind in [
+            AgentKind::GatewayTool,
+            AgentKind::CpTool,
+            AgentKind::ApiConsumer,
+        ] {
+            assert!(!agent(kind, OrgId::generate(), GrantSet::default()).is_platform_admin());
+        }
+    }
+
+    #[test]
+    fn user_id_is_some_for_users_and_none_for_agents() {
+        let ctx = user(false, None, GrantSet::default());
+        match &ctx {
+            PrincipalCtx::User { user_id, .. } => assert_eq!(ctx.user_id(), Some(*user_id)),
+            PrincipalCtx::Agent { .. } => unreachable!(),
+        }
+        for kind in [
+            AgentKind::GatewayTool,
+            AgentKind::CpTool,
+            AgentKind::ApiConsumer,
+        ] {
+            assert_eq!(
+                agent(kind, OrgId::generate(), GrantSet::default()).user_id(),
+                None
+            );
         }
     }
 

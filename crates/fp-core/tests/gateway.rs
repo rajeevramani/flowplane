@@ -115,9 +115,17 @@ async fn create_emits_event_and_cross_org_caller_sees_not_found() {
     let name = unique("payments");
     let rid = RequestId::generate();
 
-    svc::create_cluster(&w.pool, &w.admin, w.team, &name, spec("10.0.0.1"), rid)
-        .await
-        .expect("create");
+    svc::create_cluster(
+        &w.pool,
+        &w.admin,
+        w.team,
+        &name,
+        spec("10.0.0.1"),
+        rid,
+        Default::default(),
+    )
+    .await
+    .expect("create");
 
     // The event committed with the row (transactional outbox).
     let (event_count,): (i64,) = sqlx::query_as(
@@ -197,6 +205,7 @@ async fn concurrent_updates_one_wins_one_gets_revision_mismatch() {
         &name,
         spec("a"),
         RequestId::generate(),
+        Default::default(),
     )
     .await
     .expect("create");
@@ -210,7 +219,8 @@ async fn concurrent_updates_one_wins_one_gets_revision_mismatch() {
             &name,
             spec("writer-one"),
             1,
-            RequestId::generate()
+            RequestId::generate(),
+            Default::default()
         ),
         svc::update_cluster(
             &w.pool,
@@ -219,7 +229,8 @@ async fn concurrent_updates_one_wins_one_gets_revision_mismatch() {
             &name,
             spec("writer-two"),
             1,
-            RequestId::generate()
+            RequestId::generate(),
+            Default::default()
         ),
     );
     let outcomes = [r1, r2];
@@ -254,6 +265,7 @@ async fn delete_requires_current_revision_and_emits_deletion_event() {
         &name,
         spec("a"),
         RequestId::generate(),
+        Default::default(),
     )
     .await
     .expect("create");
@@ -291,6 +303,7 @@ async fn quota_caps_cluster_count_per_team() {
             &format!("q{i}-{}", unique("c")),
             spec("h"),
             RequestId::generate(),
+            Default::default(),
         )
         .await
         .expect("create within quota");
@@ -302,6 +315,7 @@ async fn quota_caps_cluster_count_per_team() {
         &unique("over"),
         spec("h"),
         RequestId::generate(),
+        Default::default(),
     )
     .await
     .expect_err("51st cluster must trip the quota");
@@ -334,6 +348,7 @@ async fn grantless_member_denied_with_actionable_forbidden() {
         &unique("nope"),
         spec("h"),
         RequestId::generate(),
+        Default::default(),
     )
     .await
     .expect_err("no grant, no create");
@@ -406,6 +421,7 @@ mod referential {
             &cluster_name,
             spec("10.0.0.9"),
             rid(),
+            Default::default(),
         )
         .await
         .expect("cluster");
@@ -494,6 +510,7 @@ mod referential {
             &cluster_name,
             spec("10.0.0.9"),
             rid(),
+            Default::default(),
         )
         .await
         .expect("cluster");
@@ -602,6 +619,7 @@ mod expose_shortcut {
                         public_base_url: None,
                     },
                     RequestId::generate(),
+                    Default::default(),
                 )
                 .await
             }));

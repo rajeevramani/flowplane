@@ -183,7 +183,16 @@ pub async fn create_ai_provider(
 ) -> Result<(axum::http::StatusCode, Json<AiProviderView>), ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
-        ai_svc::create_provider(&state.pool, &ctx, team, &body.name, body.spec, rid).await
+        ai_svc::create_provider(
+            &state.pool,
+            &ctx,
+            team,
+            &body.name,
+            body.spec,
+            rid,
+            state.egress_advisory.clone(),
+        )
+        .await
     };
     let created = run.await.map_err(|e| ApiError::new(e, rid))?;
     Ok((
@@ -234,7 +243,17 @@ pub async fn update_ai_provider(
     let run = async {
         let revision = revision_from(&headers)?;
         let team = resolve_team(&state, &ctx, &team).await?;
-        ai_svc::update_provider(&state.pool, &ctx, team, &name, body.spec, revision, rid).await
+        ai_svc::update_provider(
+            &state.pool,
+            &ctx,
+            team,
+            &name,
+            body.spec,
+            revision,
+            rid,
+            state.egress_advisory.clone(),
+        )
+        .await
     };
     run.await
         .map(|v| Json(AiProviderView::from(v)))

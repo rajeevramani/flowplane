@@ -24,6 +24,10 @@ AI_STREAM_FALLBACK_PORT=$((GW_PORT+16))
 AI_MALFORMED_PORT=$((GW_PORT+17))
 AI_MALFORMED_GATEWAY_PORT=$((GW_PORT+18))
 MCP_PARITY_PORT=$((GW_PORT+19))
+AI_REMAT_GATEWAY_PORT=$((GW_PORT+25))
+AI_SCHEME_PROVIDER_PORT=$((GW_PORT+26))
+AI_SCHEME_GATEWAY_PORT=$((GW_PORT+27))
+AI_SCHEME_CONFLICT_GATEWAY_PORT=$((GW_PORT+28))
 DB=flowplane_e2e
 PG_ADMIN_URL=${FLOWPLANE_E2E_PG_ADMIN_URL:-postgres://postgres:postgres@127.0.0.1:5432/postgres}
 PG_DB_URL=${FLOWPLANE_E2E_DATABASE_URL:-postgres://postgres:postgres@127.0.0.1:5432/$DB}
@@ -42,6 +46,7 @@ cleanup() {
   [ -n "${UP2_PID:-}" ] && kill "$UP2_PID" >/dev/null 2>&1 || true
   [ -n "${AI_PID:-}" ] && kill "$AI_PID" >/dev/null 2>&1 || true
   [ -n "${AI_FALLBACK_PID:-}" ] && kill "$AI_FALLBACK_PID" >/dev/null 2>&1 || true
+  [ -n "${AI_SCHEME_STUB_PID:-}" ] && kill "$AI_SCHEME_STUB_PID" >/dev/null 2>&1 || true
   [ -n "${AI_STREAM_DIE_PID:-}" ] && kill "$AI_STREAM_DIE_PID" >/dev/null 2>&1 || true
   [ -n "${AI_STREAM_FALLBACK_PID:-}" ] && kill "$AI_STREAM_FALLBACK_PID" >/dev/null 2>&1 || true
   [ -n "${AI_MALFORMED_PID:-}" ] && kill "$AI_MALFORMED_PID" >/dev/null 2>&1 || true
@@ -80,6 +85,8 @@ redaction_sweep() {
     fp-e2e-ai-fallback-secret
     fp-e2e-ai-stream-primary
     fp-e2e-ai-stream-fallback
+    sk-e2e-scheme-key
+    sk-e2e-conflict-key
   )
   local artifacts=(
     /tmp/fp-e2e-cp.log
@@ -164,8 +171,11 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length", "0"))
         self.rfile.read(length)
         auth = self.headers.get("authorization", "")
+        host = self.headers.get("host", "")
+        # One structured line per request: credential<TAB>received Host. The Host
+        # column proves the ExtProc :authority rewrite (fpv2-ti2).
         with open(auth_log, "a", encoding="utf-8") as f:
-            f.write(auth + "\n")
+            f.write(auth + "\t" + host + "\n")
         if auth != expected_auth:
             body = b"missing AI credential"
             self.send_response(401)

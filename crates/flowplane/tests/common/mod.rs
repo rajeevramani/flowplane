@@ -65,6 +65,8 @@ pub async fn start_mock() -> MockServer {
                 .patch(update_cluster)
                 .delete(delete_cluster),
         )
+        // Team grants listing — drives `team grant list` (error parity with the REST surface).
+        .route("/api/v1/teams/{team}/grants", get(list_grants))
         // MCP status reader — returns a small JSON object (fields are illustrative; only the
         // object shape matters, so the CLI can render the envelope kind for `mcp status`).
         .route("/api/v1/teams/{team}/mcp/status", get(mcp_status))
@@ -228,6 +230,37 @@ async fn delete_cluster(Path((_team, name)): Path<(String, String)>) -> Response
     StatusCode::NO_CONTENT.into_response()
 }
 
+/// `GET /api/v1/teams/{team}/grants` — the grants listing surface behind `team grant list`.
+///
+/// Error injection keys off the *team* segment (the listing has no resource name):
+/// `err-403` returns the denial the server emits when the caller lacks `grants:read`
+/// on that team (hint names resource=grants action=read, as deny_to_error does);
+/// other `err-NNN` teams inject that status generically. Any other team → 200 list.
+async fn list_grants(Path(team): Path<String>) -> (StatusCode, Json<Value>) {
+    if team == "err-403" {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "code": "forbidden",
+                "message": "access denied",
+                "hint": "forbidden: team:err-403 resource=grants action=read"
+            })),
+        );
+    }
+    if let Some((status, body)) = injected_error(&team) {
+        return (status, Json(body));
+    }
+    (
+        StatusCode::OK,
+        Json(json!([{
+            "id": "0196fdb1-7000-7000-8000-000000000001",
+            "user_id": "0196fdb1-7000-7000-8000-000000000002",
+            "resource": "clusters",
+            "action": "read"
+        }])),
+    )
+}
+
 /// MCP status reader: a small JSON **object** body (the exact fields are not contractual — only
 /// that it is an object the CLI can wrap in its `{schemaVersion, kind, data}` envelope).
 async fn mcp_status(Path(_team): Path<String>) -> (StatusCode, Json<Value>) {
@@ -243,6 +276,18 @@ async fn delete_expose(Path((_team, name)): Path<(String, String)>) -> (StatusCo
         Json(json!({ "removed": true, "name": name })),
     )
 }
+
+/// The ONE operator bootstrap token every non-dev server boot in this suite may seed.
+///
+/// Shared singleton product state (constitution invariant 18): an uninitialized instance
+/// keeps a single live operator-seeded bootstrap-token hash and FAILS BOOT on any
+/// *different* operator token (the divergent-replica fail-closed check). A per-test unique
+/// token therefore poisons the shared test database for every later operator-seeded boot
+/// until the row's 24 h expiry. One fixed token keeps every seed idempotent — across tests,
+/// test binaries, and reruns. It embeds `OPERATORSECRETMARKER` so log-redaction tests can
+/// grep captured output for leaks.
+pub const SHARED_OPERATOR_BOOTSTRAP_TOKEN: &str =
+    "OPERATORSECRETMARKER-flowplane-shared-test-operator-bootstrap-token-0001";
 
 /// A loopback URL with no listener — connecting to it fails fast with "connection refused",
 /// for exercising the transport-error path. Binds an ephemeral port then drops it so the

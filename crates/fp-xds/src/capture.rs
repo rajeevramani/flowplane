@@ -25,10 +25,11 @@ use envoy_types::pb::envoy::service::ext_proc::v3::{
 use fp_domain::api_lifecycle::ObservationIngest;
 use fp_domain::discovery::DiscoveryObservationProvenance;
 use fp_domain::{
-    ai_error_envelope, openai_usage_from_json, prepare_openai_chat_request,
-    rewrite_openai_chat_request_model, strip_synthetic_openai_usage_sse, AiProviderId, AiRouteSpec,
-    AiTraceEvent, ApiDefinitionId, CaptureSessionId, DiscoverySessionId, DomainError, ListenerId,
-    OpenAiTokenUsage, RouteConfigId, SecretSpec, TeamId, AI_MODEL_HEADER,
+    ai_error_envelope, complete_sse_events_end, openai_usage_from_json,
+    prepare_openai_chat_request, rewrite_openai_chat_request_model,
+    strip_synthetic_openai_usage_sse, AiProviderId, AiRouteSpec, AiTraceEvent, ApiDefinitionId,
+    CaptureSessionId, DiscoverySessionId, DomainError, ListenerId, OpenAiTokenUsage, RouteConfigId,
+    SecretSpec, TeamId, AI_MODEL_HEADER,
 };
 use fp_storage::repos::{ai, ai_trace, api_lifecycle, discovery, identity, secrets};
 use serde_json::{json, Map, Value};
@@ -90,7 +91,8 @@ struct AiExtProcState {
     include_usage_injected: bool,
     response_status: Option<i32>,
     response_content_type: Option<String>,
-    response_sse_remainder: String,
+    response_sse_remainder: Vec<u8>,
+    sse_strip_disabled: bool,
     response_json_body: Vec<u8>,
     last_usage: Option<OpenAiTokenUsage>,
     upstream_model_override: Option<String>,
@@ -1238,13 +1240,16 @@ async fn ai_request_headers_response(
                     "provider_id": provider_id,
                     "backend_position": backend_position,
                     "auth_header": runtime.auth_header.clone(),
+                    "authority": runtime.authority.clone(),
                 }),
             );
             state.upstream_model_override = runtime.model_override;
-            let mut set_headers = vec![mutation_header_value(
-                runtime.auth_header,
-                runtime.auth_value,
-            )];
+            let mut set_headers = vec![
+                mutation_header_value(runtime.auth_header, runtime.auth_value),
+                // Host must match the cluster SNI or strict front-ends (Cloudflare)
+                // answer 421 Misdirected Request (fpv2-ti2).
+                mutation_header_value(":authority".into(), runtime.authority),
+            ];
             if let Some(path) = runtime.path_rewrite {
                 set_headers.push(mutation_header_value(":path".into(), path));
             }
@@ -1428,13 +1433,16 @@ async fn ai_listener_request_headers_response(
                     "provider_id": provider_id,
                     "backend_position": backend_position,
                     "auth_header": runtime.auth_header.clone(),
+                    "authority": runtime.authority.clone(),
                 }),
             );
             state.upstream_model_override = runtime.model_override;
-            let mut set_headers = vec![mutation_header_value(
-                runtime.auth_header,
-                runtime.auth_value,
-            )];
+            let mut set_headers = vec![
+                mutation_header_value(runtime.auth_header, runtime.auth_value),
+                // Host must match the cluster SNI or strict front-ends (Cloudflare)
+                // answer 421 Misdirected Request (fpv2-ti2).
+                mutation_header_value(":authority".into(), runtime.authority),
+            ];
             if let Some(path) = runtime.path_rewrite {
                 set_headers.push(mutation_header_value(":path".into(), path));
             }
@@ -1471,14 +1479,18 @@ async fn ai_listener_request_headers_response(
 struct SelectedBackendRuntime {
     auth_header: String,
     auth_value: String,
+    /// Canonical `host[:port]` from the provider's `base_url` origin — rewritten into
+    /// `:authority` so the upstream Host always matches the cluster's SNI (fpv2-ti2).
+    authority: String,
     path_rewrite: Option<String>,
     model_override: Option<String>,
 }
 
 /// Why credential injection could not produce an auth value. `outcome` is the trace hop
-/// enum (design hop table: `secret_missing` / `decrypt_failed`; `unavailable` for failures
-/// upstream of the secret itself); `auth_header` is the provider's auth header *name* when
-/// the provider row was resolved — never any credential material.
+/// enum (design hop table: `secret_missing` / `decrypt_failed` / `scheme_conflict`;
+/// `unavailable` for failures upstream of the secret itself); `auth_header` is the
+/// provider's auth header *name* when the provider row was resolved — never any
+/// credential material.
 #[derive(Debug)]
 struct CredentialFailure {
     outcome: &'static str,
@@ -1517,6 +1529,13 @@ async fn selected_backend_runtime(
         CredentialFailure::unavailable(Status::not_found("AI provider not found for route"))
     })?;
     let provider = selected.provider;
+    // Same canonical derivation validate() and provider_cluster_spec use; a stored row
+    // that no longer parses fails closed here instead of forwarding a bogus Host.
+    let authority = provider
+        .spec
+        .origin()
+        .map_err(|err| CredentialFailure::unavailable(status_from_domain(err)))?
+        .authority;
     let auth_header = provider.spec.auth_header;
     let encrypted =
         secrets::get_encrypted_secret_by_id(pool, team_id, provider.spec.credential_secret_id)
@@ -1554,9 +1573,29 @@ async fn selected_backend_runtime(
             "AI provider credential is not UTF-8",
         ))
     })?;
+    // Assemble `<auth_scheme> <secret>` when the provider names a scheme; no scheme
+    // keeps the historical verbatim injection. Fail closed when the decoded secret
+    // already starts with the scheme (`Bearer Bearer <key>` is always a
+    // misconfiguration — the silent provider-401 class this feature exists to kill).
+    let value = match provider.spec.auth_scheme.as_deref() {
+        None => value,
+        Some(scheme) => {
+            if secret_starts_with_scheme(&value, scheme) {
+                return Err(CredentialFailure {
+                    outcome: "scheme_conflict",
+                    auth_header: Some(auth_header.clone()),
+                    status: Status::failed_precondition(
+                        "AI provider credential already starts with the configured auth_scheme",
+                    ),
+                });
+            }
+            format!("{scheme} {value}")
+        }
+    };
     Ok(SelectedBackendRuntime {
         auth_header,
         auth_value: value,
+        authority,
         path_rewrite: provider_path_rewrite(provider.spec.path_prefix.as_deref(), request_path),
         model_override: selected.backend.model_override,
     })
@@ -1603,6 +1642,15 @@ fn push_credential_failure_hop_with_origin(
     );
 }
 
+/// True iff the decoded credential already begins with `<scheme> ` (ASCII
+/// case-insensitive) — the exact double-prefix shape the conflict guard rejects.
+/// Near-misses (`Bearers x`, a bare `Bearer` with no trailing space) do not match.
+fn secret_starts_with_scheme(value: &str, scheme: &str) -> bool {
+    value.len() > scheme.len()
+        && value.as_bytes()[scheme.len()] == b' '
+        && value.as_bytes()[..scheme.len()].eq_ignore_ascii_case(scheme.as_bytes())
+}
+
 fn provider_path_rewrite(path_prefix: Option<&str>, request_path: Option<&str>) -> Option<String> {
     let prefix = path_prefix?;
     let request_path = request_path.unwrap_or("/v1/chat/completions");
@@ -1623,6 +1671,14 @@ fn join_prefix_path(prefix: &str, path: &str) -> String {
     }
 }
 
+/// Per-chunk SSE transform, chunk-boundary-safe for STREAMED delivery. A *mutating* stream
+/// (`include_usage_injected` — the listener side that forced `stream_options.include_usage`)
+/// replaces EVERY SSE chunk: the replacement carries exactly the newly completed events
+/// (synthetic usage stripped, retained bytes verbatim) and may be empty while an event's
+/// blank-line delimiter is still in flight — so every byte reaches the client through
+/// exactly one replacement, never through pass-through plus a later re-emit. An *observing*
+/// stream (the upstream side, or a client that asked for usage itself) never mutates; the
+/// remainder is only parse state for usage capture.
 fn ai_response_body_mutation(
     state: &mut AiExtProcState,
     body: Vec<u8>,
@@ -1637,28 +1693,29 @@ fn ai_response_body_mutation(
     if parse_json {
         collect_unary_usage_body(state, &body, end_of_stream);
     }
-    if parse_sse {
-        let body_text = String::from_utf8_lossy(&body);
-        state.response_sse_remainder.push_str(&body_text);
-        if state.response_sse_remainder.len() > MAX_AI_SSE_REMAINDER_BYTES {
-            state.response_sse_remainder.clear();
-            return None;
-        }
-
-        let (complete, remainder) =
-            complete_sse_prefix(&state.response_sse_remainder, end_of_stream);
-        let (stripped, usage) =
-            strip_synthetic_openai_usage_sse(&complete, state.include_usage_injected);
-        if let Some(usage) = usage {
-            remember_ai_usage(state, usage);
-        }
-        state.response_sse_remainder = remainder;
-
-        if state.include_usage_injected && !complete.is_empty() {
-            return Some(stripped.into_bytes());
-        }
+    if !parse_sse || state.sse_strip_disabled {
+        return None;
     }
-    None
+    let mutating = state.include_usage_injected;
+    state.response_sse_remainder.extend_from_slice(&body);
+    if state.response_sse_remainder.len() > MAX_AI_SSE_REMAINDER_BYTES {
+        // Fail open without losing or duplicating client bytes: in a mutating stream the
+        // remainder is exactly the withheld bytes, so emit it unmodified (the synthetic
+        // usage event may leak — token counts only) and stop stripping for the rest of the
+        // stream. In an observing stream the client already has these bytes; only the
+        // usage-parse state is dropped.
+        state.sse_strip_disabled = true;
+        let withheld = std::mem::take(&mut state.response_sse_remainder);
+        return mutating.then_some(withheld);
+    }
+    let split = complete_sse_events_end(&state.response_sse_remainder, end_of_stream);
+    let (forwarded, usage) =
+        strip_synthetic_openai_usage_sse(&state.response_sse_remainder[..split], mutating);
+    if let Some(usage) = usage {
+        remember_ai_usage(state, usage);
+    }
+    state.response_sse_remainder.drain(..split);
+    mutating.then_some(forwarded)
 }
 
 fn response_content_type_matches(state: &AiExtProcState, expected: &str) -> bool {
@@ -1667,17 +1724,6 @@ fn response_content_type_matches(state: &AiExtProcState, expected: &str) -> bool
         .as_deref()
         .map(|content_type| content_type.split(';').any(|part| part.trim() == expected))
         .unwrap_or(true)
-}
-
-fn complete_sse_prefix(buffer: &str, end_of_stream: bool) -> (String, String) {
-    if end_of_stream {
-        return (buffer.to_string(), String::new());
-    }
-    let Some(index) = buffer.rfind("\n\n") else {
-        return (String::new(), buffer.to_string());
-    };
-    let split = index + 2;
-    (buffer[..split].to_string(), buffer[split..].to_string())
 }
 
 fn collect_unary_usage_body(state: &mut AiExtProcState, body: &[u8], end_of_stream: bool) {
@@ -2294,6 +2340,24 @@ mod tests {
     }
 
     #[test]
+    fn secret_starts_with_scheme_matches_exact_prefix_only() {
+        // Conflicts: '<scheme> ' prefix, ASCII case-insensitive.
+        assert!(secret_starts_with_scheme("Bearer sk-123", "Bearer"));
+        assert!(secret_starts_with_scheme("bearer sk-123", "Bearer"));
+        assert!(secret_starts_with_scheme("BEARER sk-123", "bearer"));
+        assert!(secret_starts_with_scheme("Bearer  double-space", "Bearer"));
+        // Near-misses must NOT trip the guard.
+        assert!(!secret_starts_with_scheme("Bearers x", "Bearer"));
+        assert!(!secret_starts_with_scheme("Bearer", "Bearer"));
+        assert!(!secret_starts_with_scheme("Bearer", "bearer"));
+        assert!(!secret_starts_with_scheme("Bear sk-123", "Bearer"));
+        assert!(!secret_starts_with_scheme("sk-Bearer 123", "Bearer"));
+        assert!(!secret_starts_with_scheme("", "Bearer"));
+        // Unicode length mismatch stays safe (byte-length guard, no panic).
+        assert!(!secret_starts_with_scheme("Bé", "Bearer"));
+    }
+
+    #[test]
     fn ai_context_requires_complete_identity_metadata() {
         let mut request = Request::new(());
         request.metadata_mut().insert(
@@ -2493,6 +2557,21 @@ mod tests {
         .execute(&pool)
         .await
         .expect("provider");
+        // Fallback provider on a non-default port: its authority must carry the port
+        // and follow failover attempts (fpv2-ti2).
+        let fallback_provider_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO ai_providers \
+             (id, team_id, org_id, name, kind, base_url, path_prefix, credential_secret_id, auth_header) \
+             VALUES ($1, $2, $3, 'fallback', 'openai-compatible', 'https://alt.example:8443', NULL, $4, 'x-api-key')",
+        )
+        .bind(fallback_provider_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(secret_id)
+        .execute(&pool)
+        .await
+        .expect("fallback provider");
         sqlx::query(
             "INSERT INTO route_configs (id, team_id, org_id, name, spec) \
              VALUES ($1, $2, $3, 'ai-route-routes', '{}'::jsonb)",
@@ -2512,6 +2591,11 @@ mod tests {
                 "model_override": "upstream-model",
                 "weight": 1,
                 "priority": 0
+            }, {
+                "provider_id": fallback_provider_id,
+                "models": ["fallback-model"],
+                "weight": 1,
+                "priority": 1
             }]
         });
         sqlx::query(
@@ -2528,14 +2612,15 @@ mod tests {
         .expect("ai route");
         sqlx::query(
             "INSERT INTO ai_route_backends (ai_route_id, team_id, provider_id, position) \
-             VALUES ($1, $2, $3, 0)",
+             VALUES ($1, $2, $3, 0), ($1, $2, $4, 1)",
         )
         .bind(route_id)
         .bind(team.id.as_uuid())
         .bind(provider_id)
+        .bind(fallback_provider_id)
         .execute(&pool)
         .await
-        .expect("backend");
+        .expect("backends");
 
         let runtime = selected_backend_runtime(
             &pool,
@@ -2549,6 +2634,7 @@ mod tests {
         .expect("runtime");
         assert_eq!(runtime.auth_header, "authorization");
         assert_eq!(runtime.auth_value, secret_value);
+        assert_eq!(runtime.authority, "api.openai.com");
         assert_eq!(
             runtime.path_rewrite.as_deref(),
             Some("/openai/v1/chat/completions?stream=true")
@@ -2567,6 +2653,311 @@ mod tests {
             .is_err(),
             "provider lookup is team scoped"
         );
+
+        // Full upstream-stream success shape (fpv2-ti2 AC 3): authorization + :authority
+        // + :path mutations, model header removed, and the credential_injection hop
+        // records the authority.
+        let request_headers = |attempt: &str| ProcessingRequest {
+            request: Some(processing_request::Request::RequestHeaders(
+                envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                    headers: Some(HeaderMap {
+                        headers: vec![
+                            HeaderValue {
+                                key: ":path".into(),
+                                value: "/v1/chat/completions".into(),
+                                raw_value: Vec::new(),
+                            },
+                            HeaderValue {
+                                key: "x-envoy-attempt-count".into(),
+                                value: attempt.into(),
+                                raw_value: Vec::new(),
+                            },
+                        ],
+                    }),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        // Full mutation shape: (set_headers pairs, remove_headers) so callers can
+        // assert the model header removal too (design AC 3).
+        let header_mutation =
+            |response: ProcessingResponse| -> (Vec<(String, String)>, Vec<String>) {
+                let processing_response::Response::RequestHeaders(headers) =
+                    response.response.expect("response")
+                else {
+                    panic!("expected request headers response");
+                };
+                let mutation = headers
+                    .response
+                    .expect("common")
+                    .header_mutation
+                    .expect("mutation");
+                let pairs = mutation
+                    .set_headers
+                    .into_iter()
+                    .map(|option| {
+                        let header = option.header.expect("header");
+                        (
+                            header.key,
+                            String::from_utf8(header.raw_value).expect("utf8"),
+                        )
+                    })
+                    .collect();
+                (pairs, mutation.remove_headers)
+            };
+        let header_pairs =
+            |response: ProcessingResponse| -> Vec<(String, String)> { header_mutation(response).0 };
+        let mut injected_state = AiExtProcState {
+            context: Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: None,
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: Some(AiProviderId::from(provider_id)),
+                backend_position: Some(0),
+                failover_chain: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        let (pairs, removed) = header_mutation(
+            ai_request_headers_response(&pool, &mut injected_state, request_headers("1")).await,
+        );
+        assert_eq!(
+            removed,
+            vec![AI_MODEL_HEADER.to_string()],
+            "internal model header removed before the provider sees the request"
+        );
+        assert!(
+            pairs.contains(&("authorization".into(), secret_value.into())),
+            "auth header injected: {pairs:?}"
+        );
+        assert!(
+            pairs.contains(&(":authority".into(), "api.openai.com".into())),
+            ":authority rewritten to provider host: {pairs:?}"
+        );
+        assert!(
+            pairs.contains(&(":path".into(), "/openai/v1/chat/completions".into())),
+            ":path rewritten with provider prefix: {pairs:?}"
+        );
+        let injection_hop = injected_state
+            .hops
+            .iter()
+            .find(|hop| hop.hop == "credential_injection")
+            .expect("credential_injection hop");
+        assert_eq!(injection_hop.detail["authority"], "api.openai.com");
+
+        // Failover: attempt 2 walks the chain to the fallback backend, whose authority
+        // carries its non-default port (fpv2-ti2 AC 3).
+        let mut failover_state = AiExtProcState {
+            context: Some(AiExtProcContext {
+                team_id: team.id,
+                listener_id: None,
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: None,
+                backend_position: None,
+                failover_chain: vec![
+                    (AiProviderId::from(provider_id), 0),
+                    (AiProviderId::from(fallback_provider_id), 1),
+                ],
+            }),
+            ..Default::default()
+        };
+        let pairs = header_pairs(
+            ai_request_headers_response(&pool, &mut failover_state, request_headers("2")).await,
+        );
+        assert!(
+            pairs.contains(&("x-api-key".into(), secret_value.into())),
+            "fallback auth header injected: {pairs:?}"
+        );
+        assert!(
+            pairs.contains(&(":authority".into(), "alt.example:8443".into())),
+            "attempt 2 rewrites :authority to the fallback provider: {pairs:?}"
+        );
+
+        // Listener-stream success shape (fpv2-ti2 AC 3): when exactly one backend is
+        // eligible for the model, the listener stream owns injection and rewrites
+        // :authority the same way.
+        let mut listener_state = AiExtProcState::default();
+        let listener_response = ai_listener_request_headers_response(
+            &pool,
+            &mut listener_state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::RequestHeaders(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpHeaders {
+                        headers: Some(HeaderMap {
+                            headers: vec![
+                                HeaderValue {
+                                    key: ":path".into(),
+                                    value: "/v1/chat/completions".into(),
+                                    raw_value: Vec::new(),
+                                },
+                                HeaderValue {
+                                    key: AI_MODEL_HEADER.into(),
+                                    value: "gpt-5".into(),
+                                    raw_value: Vec::new(),
+                                },
+                            ],
+                        }),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+            AiExtProcContext {
+                team_id: team.id,
+                listener_id: None,
+                route_config_id: RouteConfigId::from(route_config_id),
+                provider_id: None,
+                backend_position: None,
+                failover_chain: Vec::new(),
+            },
+        )
+        .await;
+        let (pairs, removed) = header_mutation(listener_response);
+        assert_eq!(
+            removed,
+            vec![AI_MODEL_HEADER.to_string()],
+            "listener stream removes the internal model header"
+        );
+        assert!(
+            pairs.contains(&("authorization".into(), secret_value.into())),
+            "listener stream injects auth header: {pairs:?}"
+        );
+        assert!(
+            pairs.contains(&(":authority".into(), "api.openai.com".into())),
+            "listener stream rewrites :authority: {pairs:?}"
+        );
+        let listener_injection_hop = listener_state
+            .hops
+            .iter()
+            .find(|hop| hop.hop == "credential_injection")
+            .expect("listener credential_injection hop");
+        assert_eq!(listener_injection_hop.detail["authority"], "api.openai.com");
+
+        // Fail closed: a stored base_url origin() rejects must not forward a bogus Host.
+        sqlx::query(
+            "UPDATE ai_providers SET base_url = 'https://user:pw@bad.example' WHERE id = $1",
+        )
+        .bind(provider_id)
+        .execute(&pool)
+        .await
+        .expect("corrupt base_url");
+        assert!(
+            selected_backend_runtime(
+                &pool,
+                team.id,
+                RouteConfigId::from(route_config_id),
+                AiProviderId::from(provider_id),
+                Some(0),
+                Some("/v1/chat/completions"),
+            )
+            .await
+            .is_err(),
+            "origin-rejected stored row fails closed"
+        );
+        sqlx::query("UPDATE ai_providers SET base_url = 'https://api.openai.com' WHERE id = $1")
+            .bind(provider_id)
+            .execute(&pool)
+            .await
+            .expect("restore base_url");
+
+        // auth_scheme assembly + fail-closed conflict guard (fpv2-crv.2, design AC 1/3).
+        // The fixture secret decodes to "Bearer selected": with auth_scheme "Bearer" in
+        // any case that is the double-prefix misconfiguration and must fail closed as
+        // scheme_conflict carrying the auth header NAME only — never the value.
+        for scheme in ["Bearer", "bearer", "BEARER"] {
+            sqlx::query("UPDATE ai_providers SET auth_scheme = $2 WHERE id = $1")
+                .bind(provider_id)
+                .bind(scheme)
+                .execute(&pool)
+                .await
+                .expect("set auth_scheme");
+            let failure = selected_backend_runtime(
+                &pool,
+                team.id,
+                RouteConfigId::from(route_config_id),
+                AiProviderId::from(provider_id),
+                Some(0),
+                Some("/v1/chat/completions"),
+            )
+            .await
+            .expect_err("scheme conflict fails closed");
+            assert_eq!(failure.outcome, "scheme_conflict", "scheme {scheme}");
+            assert_eq!(failure.auth_header.as_deref(), Some("authorization"));
+        }
+        // A non-conflicting scheme is assembled in front of the decoded secret.
+        sqlx::query("UPDATE ai_providers SET auth_scheme = 'Token' WHERE id = $1")
+            .bind(provider_id)
+            .execute(&pool)
+            .await
+            .expect("set non-conflicting scheme");
+        let assembled = selected_backend_runtime(
+            &pool,
+            team.id,
+            RouteConfigId::from(route_config_id),
+            AiProviderId::from(provider_id),
+            Some(0),
+            Some("/v1/chat/completions"),
+        )
+        .await
+        .expect("assembled runtime");
+        assert_eq!(assembled.auth_value, format!("Token {secret_value}"));
+        // Happy path per design AC 1: bare-key secret + auth_scheme "Bearer" injects
+        // "Bearer <key>".
+        let bare_secret_value = "sk-bare-key-123";
+        let bare_spec = SecretSpec::GenericSecret {
+            secret: base64::engine::general_purpose::STANDARD.encode(bare_secret_value),
+        };
+        let bare_plaintext = serde_json::to_vec(&bare_spec).expect("bare secret json");
+        let bare_ciphertext = cipher
+            .encrypt(Nonce::from_slice(&nonce), bare_plaintext.as_ref())
+            .expect("encrypt bare");
+        let bare_secret_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO secrets \
+             (id, team_id, org_id, name, description, secret_type, configuration_encrypted, nonce, encryption_key_id) \
+             VALUES ($1, $2, $3, 'ai-key-bare', '', 'generic_secret', $4, $5, 'default')",
+        )
+        .bind(bare_secret_id)
+        .bind(team.id.as_uuid())
+        .bind(org.id.as_uuid())
+        .bind(bare_ciphertext)
+        .bind(nonce.to_vec())
+        .execute(&pool)
+        .await
+        .expect("bare secret");
+        sqlx::query(
+            "UPDATE ai_providers SET auth_scheme = 'Bearer', credential_secret_id = $2 \
+             WHERE id = $1",
+        )
+        .bind(provider_id)
+        .bind(bare_secret_id)
+        .execute(&pool)
+        .await
+        .expect("point provider at bare secret");
+        let bearer_runtime = selected_backend_runtime(
+            &pool,
+            team.id,
+            RouteConfigId::from(route_config_id),
+            AiProviderId::from(provider_id),
+            Some(0),
+            Some("/v1/chat/completions"),
+        )
+        .await
+        .expect("bearer runtime");
+        assert_eq!(
+            bearer_runtime.auth_value,
+            format!("Bearer {bare_secret_value}")
+        );
+        // Restore the no-scheme fixture state for the remainder of the test.
+        sqlx::query(
+            "UPDATE ai_providers SET auth_scheme = NULL, credential_secret_id = $2 WHERE id = $1",
+        )
+        .bind(provider_id)
+        .bind(secret_id)
+        .execute(&pool)
+        .await
+        .expect("restore provider");
 
         let state = AiExtProcState {
             context: Some(AiExtProcContext {
@@ -3128,9 +3519,63 @@ mod tests {
     }
 
     #[test]
-    fn ai_ext_proc_caps_unfinished_sse_remainder() {
+    fn ai_ext_proc_overflow_fails_open_without_losing_withheld_bytes() {
+        // A mutating stream that overflows the remainder cap must emit every withheld byte
+        // unmodified (never drop or duplicate client data) and stop stripping from then on.
         let mut state = AiExtProcState {
             include_usage_injected: true,
+            response_content_type: Some("text/event-stream".into()),
+            ..Default::default()
+        };
+        let oversized = vec![b'a'; MAX_AI_SSE_REMAINDER_BYTES + 1];
+        let response = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: oversized.clone(),
+                        end_of_stream: false,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+
+        let emitted = response_body_mutation(response).expect("overflow must flush withheld bytes");
+        assert_eq!(emitted, oversized);
+        assert!(state.response_sse_remainder.is_empty());
+        assert!(state.sse_strip_disabled);
+
+        // Subsequent chunks pass through untouched (no mutation, no buffering).
+        let later = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: b"data: later\n\n".to_vec(),
+                        end_of_stream: false,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+        let processing_response::Response::ResponseBody(body) = later.response.expect("response")
+        else {
+            panic!("expected response body response");
+        };
+        assert!(body.response.expect("common").body_mutation.is_none());
+        assert!(state.response_sse_remainder.is_empty());
+    }
+
+    #[test]
+    fn ai_ext_proc_observing_overflow_never_emits_already_forwarded_bytes() {
+        // An observing stream (include_usage_injected=false) never mutates: on overflow the
+        // parse state is dropped but nothing may be emitted (the client already has the
+        // bytes; emitting would duplicate them).
+        let mut state = AiExtProcState {
+            response_content_type: Some("text/event-stream".into()),
             ..Default::default()
         };
         let response = ai_response(
@@ -3154,6 +3599,146 @@ mod tests {
         };
         assert!(body.response.expect("common").body_mutation.is_none());
         assert!(state.response_sse_remainder.is_empty());
+        assert!(state.sse_strip_disabled);
+    }
+
+    #[test]
+    fn ai_ext_proc_withholds_incomplete_fragment_with_empty_replacement() {
+        // Emit-exactly-once under STREAMED: a chunk that ends mid-event must be replaced
+        // with EMPTY bytes (withheld), not passed through — pass-through plus the later
+        // re-emit of the buffered remainder would duplicate it downstream.
+        let mut state = AiExtProcState {
+            include_usage_injected: true,
+            response_content_type: Some("text/event-stream".into()),
+            ..Default::default()
+        };
+        let first = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: b"data: {\"choices\":[{\"delta\":{\"content\":\"par".to_vec(),
+                        end_of_stream: false,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+        let emitted = response_body_mutation(first).expect("mutating stream replaces every chunk");
+        assert!(emitted.is_empty(), "incomplete fragment must be withheld");
+
+        let second = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: b"tial\"}}]}\n\n".to_vec(),
+                        end_of_stream: false,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+        let emitted = response_body_mutation(second).expect("completed event must flush");
+        assert_eq!(
+            emitted,
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".to_vec()
+        );
+        assert!(state.response_sse_remainder.is_empty());
+    }
+
+    #[test]
+    fn ai_ext_proc_observing_stream_never_mutates_sse() {
+        // The upstream-side stream (no include_usage_injected) observes usage but must not
+        // produce body mutations — mutation is the listener stream's job alone.
+        let mut state = AiExtProcState {
+            response_content_type: Some("text/event-stream".into()),
+            ..Default::default()
+        };
+        let response = ai_response(
+            &mut state,
+            ProcessingRequest {
+                request: Some(processing_request::Request::ResponseBody(
+                    envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                        body: concat!(
+                            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n"
+                        )
+                        .as_bytes()
+                        .to_vec(),
+                        end_of_stream: false,
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+        );
+
+        let processing_response::Response::ResponseBody(body) =
+            response.response.expect("response")
+        else {
+            panic!("expected response body response");
+        };
+        assert!(body.response.expect("common").body_mutation.is_none());
+        assert_eq!(state.last_usage.expect("usage observed").total_tokens, 3);
+    }
+
+    #[test]
+    fn ai_ext_proc_sse_stream_survives_every_chunk_split_byte_identically() {
+        // Capture-level chunk-boundary fuzz (design AC 10): for LF, CRLF, and mixed
+        // framings — with multi-byte UTF-8 content — split the provider stream at every
+        // byte boundary, feed both chunks through ai_response, and assert the client-visible
+        // reassembly (all emitted replacements, in order) equals the whole-stream strip and
+        // usage is captured exactly once.
+        let framings: [(&str, &str); 3] = [
+            ("\n\n", "\n\n"),
+            ("\r\n\r\n", "\r\n\r\n"),
+            ("\n\n", "\r\n\r\n"),
+        ];
+        for (f1, f2) in framings {
+            let stream = format!(
+                "data: {{\"choices\":[{{\"delta\":{{\"content\":\"héllo✓\"}}}}]}}{f1}\
+                 data: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}}}{f2}\
+                 data: [DONE]{f1}"
+            );
+            let bytes = stream.as_bytes();
+            let (expected, _) = fp_domain::strip_synthetic_openai_usage_sse(bytes, true);
+            for split in 0..=bytes.len() {
+                let mut state = AiExtProcState {
+                    include_usage_injected: true,
+                    response_content_type: Some("text/event-stream".into()),
+                    ..Default::default()
+                };
+                let mut client: Vec<u8> = Vec::new();
+                for (chunk, eos) in [(&bytes[..split], false), (&bytes[split..], true)] {
+                    let response = ai_response(
+                        &mut state,
+                        ProcessingRequest {
+                            request: Some(processing_request::Request::ResponseBody(
+                                envoy_types::pb::envoy::service::ext_proc::v3::HttpBody {
+                                    body: chunk.to_vec(),
+                                    end_of_stream: eos,
+                                    ..Default::default()
+                                },
+                            )),
+                            ..Default::default()
+                        },
+                    );
+                    let emitted = response_body_mutation(response)
+                        .expect("mutating stream replaces every chunk");
+                    client.extend_from_slice(&emitted);
+                }
+                assert_eq!(client, expected, "split {split} framing ({f1:?},{f2:?})");
+                assert_eq!(
+                    state.last_usage.expect("usage captured").total_tokens,
+                    5,
+                    "split {split}"
+                );
+                assert!(state.response_sse_remainder.is_empty(), "split {split}");
+            }
+        }
     }
 
     #[test]
@@ -4301,7 +4886,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ai_credential_failure_stream_persists_secret_missing_and_decrypt_failed_rows() {
+    async fn ai_credential_failure_stream_persists_failure_outcome_rows() {
         let _guard = crate::snapshot::ENV_LOCK.lock().await;
         let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
             eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
@@ -4354,23 +4939,61 @@ mod tests {
         .execute(&pool)
         .await
         .expect("garbage secret");
+        // A decryptable secret whose decoded value already carries the scheme the
+        // provider names -> scheme_conflict (fpv2-crv.2, design AC 3).
+        let conflict_secret_id = Uuid::now_v7();
+        {
+            use aes_gcm::aead::Aead;
+            use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+            let conflict_spec = SecretSpec::GenericSecret {
+                secret: base64::engine::general_purpose::STANDARD
+                    .encode(format!("Bearer {secret_value_marker}")),
+            };
+            let plaintext = serde_json::to_vec(&conflict_spec).expect("conflict secret json");
+            let nonce = [3_u8; 12];
+            let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher");
+            let ciphertext = cipher
+                .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
+                .expect("encrypt conflict secret");
+            sqlx::query(
+                "INSERT INTO secrets \
+                 (id, team_id, org_id, name, description, secret_type, configuration_encrypted, nonce, encryption_key_id) \
+                 VALUES ($1, $2, $3, 'conflict-key', '', 'generic_secret', $4, $5, 'default')",
+            )
+            .bind(conflict_secret_id)
+            .bind(team.id.as_uuid())
+            .bind(org.id.as_uuid())
+            .bind(ciphertext)
+            .bind(nonce.to_vec())
+            .execute(&pool)
+            .await
+            .expect("conflict secret");
+        }
 
         let missing_provider_id = Uuid::now_v7();
         let garbage_provider_id = Uuid::now_v7();
-        for (provider_id, secret_id, name) in [
-            (missing_provider_id, expired_secret_id, "p-missing"),
-            (garbage_provider_id, garbage_secret_id, "p-garbage"),
+        let conflict_provider_id = Uuid::now_v7();
+        for (provider_id, secret_id, name, auth_scheme) in [
+            (missing_provider_id, expired_secret_id, "p-missing", None),
+            (garbage_provider_id, garbage_secret_id, "p-garbage", None),
+            (
+                conflict_provider_id,
+                conflict_secret_id,
+                "p-conflict",
+                Some("Bearer"),
+            ),
         ] {
             sqlx::query(
                 "INSERT INTO ai_providers \
-                 (id, team_id, org_id, name, kind, base_url, path_prefix, credential_secret_id, auth_header) \
-                 VALUES ($1, $2, $3, $4, 'openai', 'https://api.openai.com', NULL, $5, 'authorization')",
+                 (id, team_id, org_id, name, kind, base_url, path_prefix, credential_secret_id, auth_header, auth_scheme) \
+                 VALUES ($1, $2, $3, $4, 'openai', 'https://api.openai.com', NULL, $5, 'authorization', $6)",
             )
             .bind(provider_id)
             .bind(team.id.as_uuid())
             .bind(org.id.as_uuid())
             .bind(name)
             .bind(secret_id)
+            .bind(auth_scheme)
             .execute(&pool)
             .await
             .expect("provider");
@@ -4392,7 +5015,8 @@ mod tests {
             "path": "/v1/chat/completions",
             "backends": [
                 {"provider_id": missing_provider_id, "models": [], "weight": 1, "priority": 0},
-                {"provider_id": garbage_provider_id, "models": [], "weight": 1, "priority": 0}
+                {"provider_id": garbage_provider_id, "models": [], "weight": 1, "priority": 0},
+                {"provider_id": conflict_provider_id, "models": [], "weight": 1, "priority": 0}
             ]
         });
         sqlx::query(
@@ -4407,7 +5031,11 @@ mod tests {
         .execute(&pool)
         .await
         .expect("ai route");
-        for (provider_id, position) in [(missing_provider_id, 0), (garbage_provider_id, 1)] {
+        for (provider_id, position) in [
+            (missing_provider_id, 0),
+            (garbage_provider_id, 1),
+            (conflict_provider_id, 2),
+        ] {
             sqlx::query(
                 "INSERT INTO ai_route_backends (ai_route_id, team_id, provider_id, position) \
                  VALUES ($1, $2, $3, $4)",
@@ -4424,6 +5052,7 @@ mod tests {
         for (provider_id, position, expected_outcome) in [
             (missing_provider_id, 0, "secret_missing"),
             (garbage_provider_id, 1, "decrypt_failed"),
+            (conflict_provider_id, 2, "scheme_conflict"),
         ] {
             let request_id = Uuid::now_v7().to_string();
             let headers = ProcessingRequest {
