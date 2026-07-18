@@ -8,6 +8,7 @@
 //! nothing in this module writes it to a response or a log.
 
 mod data;
+mod resources;
 
 use anyhow::{Context, Result};
 use axum::body::Body;
@@ -31,7 +32,11 @@ const DASHBOARD_CSS: &str = include_str!("assets/dashboard.css");
 /// tests iterate it to prove each route class 404s without the nonce.
 pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/",
+    "/resources",
     "/partials/overview",
+    "/partials/resources/clusters",
+    "/partials/resources/route-configs",
+    "/partials/resources/listeners",
     "/assets/htmx.min.js",
     "/assets/dashboard.css",
 ];
@@ -145,7 +150,11 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
             &full,
             match *path {
                 "/" => get(overview),
+                "/resources" => get(resources_page),
                 "/partials/overview" => get(overview_partial),
+                "/partials/resources/clusters" => get(resources_clusters_partial),
+                "/partials/resources/route-configs" => get(resources_route_configs_partial),
+                "/partials/resources/listeners" => get(resources_listeners_partial),
                 "/assets/htmx.min.js" => get(htmx_js),
                 "/assets/dashboard.css" => get(dashboard_css),
                 other => unreachable!("unrouted dashboard path {other}"),
@@ -286,6 +295,100 @@ async fn overview_partial(
             }
         }
     }
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources.html")]
+struct ResourcesShell<'a> {
+    nonce: &'a str,
+    team: &'a str,
+}
+
+/// The Resources page shell (fpv2-cxw.1). Renders NO data itself: each panel is an
+/// htmx-lazy `<details>` panel that fetches its partial on first open (toggle), so an unopened panel
+/// issues no upstream requests.
+async fn resources_page(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let shell = ResourcesShell {
+        nonce: &state.nonce,
+        team: &state.team,
+    };
+    match askama::Template::render(&shell) {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_clusters.html")]
+struct ClustersPanel {
+    panel: data::Panel<resources::Table<resources::ClusterRow>>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_route_configs.html")]
+struct RouteConfigsPanel {
+    panel: data::Panel<resources::Table<resources::RouteConfigRow>>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_listeners.html")]
+struct ListenersPanel {
+    panel: data::Panel<resources::Table<resources::ListenerRow>>,
+}
+
+/// Render one resources partial: 401 → the shared re-login banner with htmx's 286
+/// stop status (same seam as the overview partial), retargeted at the whole
+/// `#resources` main so the expired-session state is dashboard-global — every panel
+/// is replaced, not just the one that happened to fetch; anything else → the panel
+/// state.
+fn render_resources_panel<T: askama::Template>(result: Result<T, data::AuthExpired>) -> Response {
+    match result {
+        Ok(panel) => match askama::Template::render(&panel) {
+            Ok(html) => Html(html).into_response(),
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        },
+        Err(data::AuthExpired) => {
+            let status = StatusCode::from_u16(286).unwrap_or(StatusCode::OK);
+            match askama::Template::render(&AuthExpiredBanner) {
+                Ok(html) => (
+                    status,
+                    [("HX-Retarget", "#resources"), ("HX-Reswap", "innerHTML")],
+                    Html(html),
+                )
+                    .into_response(),
+                Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            }
+        }
+    }
+}
+
+async fn resources_clusters_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = resources::fetch_clusters(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| ClustersPanel { panel });
+    render_resources_panel(result)
+}
+
+async fn resources_route_configs_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = resources::fetch_route_configs(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| RouteConfigsPanel { panel });
+    render_resources_panel(result)
+}
+
+async fn resources_listeners_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = resources::fetch_listeners(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| ListenersPanel { panel });
+    render_resources_panel(result)
 }
 
 async fn htmx_js() -> impl IntoResponse {

@@ -1,0 +1,47 @@
+{% if let Some(t) = panel.data() %}
+<section class="panel" id="panel-res-clusters">
+  <h2>Clusters <span class="hint">{{ t.rows.len() }} of {{ t.total }}</span></h2>
+  {% if let Some(p) = t.partial %}
+  {% if p.budget() %}
+  <p class="banner">Partial — first {{ p.shown }} of {{ p.total }} (budget reached). Remaining pages were not fetched.</p>
+  {% else %}
+  <p class="banner">Partial data: the {{ p.collection }} collection is incomplete — an upstream fetch failed mid-sweep.</p>
+  {% endif %}
+  {% endif %}
+  <table class="dataplanes">
+    <thead>
+      <tr><th>Cluster</th><th>Endpoints</th><th>Aggregate</th><th>TLS</th><th>LB policy</th><th>Revision</th><th>Updated</th></tr>
+    </thead>
+    <tbody>
+      {% for row in t.rows %}
+      <tr>
+        <td>{{ row.name }}</td>
+        {% if row.unparsed %}
+        <td colspan="6" class="placeholder">unparseable spec (version skew?)</td>
+        {% else %}
+        <td>{{ row.endpoints }}</td>
+        <td>{{ row.aggregate }}</td>
+        <td>{% if row.tls %}yes{% else %}no{% endif %}</td>
+        <td>{{ row.lb_policy }}</td>
+        <td>{{ row.revision }}</td>
+        <td>{{ row.updated }}</td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+      {% if t.rows.is_empty() %}
+      <tr><td colspan="7" class="placeholder">No clusters.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+{% else if panel.unauthorized() %}
+<section class="panel unauthorized" id="panel-res-clusters">
+  <h2>Clusters</h2>
+  <p>Not authorized to view clusters.</p>
+</section>
+{% else %}
+<section class="panel unavailable" id="panel-res-clusters">
+  <h2>Clusters</h2>
+  <p>Clusters are currently unavailable.</p>
+</section>
+{% endif %}
