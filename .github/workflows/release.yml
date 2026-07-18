@@ -113,6 +113,8 @@ jobs:
           set -euo pipefail
           export FLOWPLANE_EVAL_IMAGE=flowplane:eval-smoke
           docker compose -f compose.eval.yml up -d --no-build
+
+          # Gateway path: the demo body routed through Envoy.
           ok=
           for _ in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:10000/ | grep -q "hello from the flowplane eval demo upstream"; then
@@ -120,9 +122,73 @@ jobs:
             fi
             sleep 2
           done
-          docker compose -f compose.eval.yml logs --no-color > compose-smoke.log 2>&1 || true
-          docker compose -f compose.eval.yml down -v
           [ -n "$ok" ] || { echo "::error::eval image smoke did not return the demo body"; exit 1; }
+
+          # Dashboard (fpv2-m4u.2). Healthy == /shared/dashboard-url written, which the
+          # dashboard does only after binding AND its first successful control-plane fetch.
+          # The inner inspect is failure-guarded so a transient miss retries under set -e.
+          ok=
+          for _ in $(seq 1 60); do
+            state=$(docker inspect -f '{{.State.Health.Status}}' \
+              "$(docker compose -f compose.eval.yml ps -q flowplane-dashboard)" \
+              2>/dev/null || echo starting)
+            if [ "$state" = "healthy" ]; then ok=1; break; fi
+            sleep 2
+          done
+          [ -n "$ok" ] || { echo "::error::dashboard container never became healthy"; exit 1; }
+
+          # Host binding must be loopback-only.
+          binding=$(docker compose -f compose.eval.yml port flowplane-dashboard 8081)
+          case "$binding" in
+            127.0.0.1:*) ;;
+            *) echo "::error::dashboard host binding is not loopback-only: $binding"; exit 1;;
+          esac
+
+          # Discovery contract: the url-file holds the loopback URL with the per-launch nonce.
+          url=$(docker compose -f compose.eval.yml exec -T flowplane-dashboard \
+            cat /shared/dashboard-url | tr -d '\r\n')
+          case "$url" in
+            http://127.0.0.1:8081/*) ;;
+            *) echo "::error::unexpected dashboard url: $url"; exit 1;;
+          esac
+
+          # Overview page serves, and the overview partial lists the eval dataplane row
+          # with team totals rendered (design ui-f3, amended criterion 1: liveness /
+          # request-total advancement needs the fp-agent diagnostics channel, which the
+          # plaintext dev bundle cannot authenticate — the row + totals are the assertion).
+          curl -fsS "$url" | grep -q "Flowplane" \
+            || { echo "::error::dashboard overview page did not render"; exit 1; }
+          partial=$(curl -fsS "${url}partials/overview")
+          echo "$partial" | grep -q "dp-eval" \
+            || { echo "::error::overview partial does not list the dp-eval dataplane"; exit 1; }
+          echo "$partial" | grep -Eq "[1-9][0-9]* total" \
+            || { echo "::error::overview partial does not show a nonzero dataplane total"; exit 1; }
+
+          # The nonce is mandatory: without it the dashboard answers 404, from the host...
+          no_nonce=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8081/")
+          [ "$no_nonce" = "404" ] \
+            || { echo "::error::nonce-less request from the host was not rejected (got $no_nonce)"; exit 1; }
+          # ...and from a neighbor container on the compose network (design criterion 3).
+          # The eval images carry no HTTP client, so attach a one-shot curl container to
+          # the same network and assert the nonce-less request is rejected with 404.
+          net=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' \
+            "$(docker compose -f compose.eval.yml ps -q flowplane-dashboard)")
+          neighbor=$(docker run --rm --network "$net" \
+            curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b \
+            -s -o /dev/null -w '%{http_code}' "http://flowplane-dashboard:8081/")
+          [ "$neighbor" = "404" ] \
+            || { echo "::error::nonce-less request from a neighbor container was not rejected (got $neighbor)"; exit 1; }
+
+      - name: Evaluator smoke logs + teardown (always)
+        if: always()
+        run: |
+          docker compose -f compose.eval.yml logs --no-color > compose-smoke.log 2>&1 || true
+          # Teardown must genuinely succeed — a failed down -v leaving containers/volumes
+          # behind fails the job (design acceptance criterion 5).
+          docker compose -f compose.eval.yml down -v
+          remaining=$(docker compose -f compose.eval.yml ps -q | wc -l)
+          [ "$remaining" -eq 0 ] \
+            || { echo "::error::teardown left $remaining container(s) running"; exit 1; }
 
       - name: Build hardened image (load) for the sanity gate
         run: |

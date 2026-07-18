@@ -124,8 +124,11 @@ enum Command {
         #[command(flatten)]
         command: cli::UnexposeCommand,
     },
-    /// Open a read-only local dashboard for the resolved team (loopback only).
-    Dashboard,
+    /// Open a read-only local dashboard for the resolved team (loopback by default).
+    Dashboard {
+        #[command(flatten)]
+        command: cli::DashboardOptions,
+    },
     /// Team stats.
     Stats {
         #[command(subcommand)]
@@ -237,7 +240,7 @@ fn run() -> anyhow::Result<()> {
         Command::Dataplane { command } => runtime.block_on(cli::run_dataplane(cli.client, command)),
         Command::Expose { command } => runtime.block_on(cli::run_expose(cli.client, command)),
         Command::Unexpose { command } => runtime.block_on(cli::run_unexpose(cli.client, command)),
-        Command::Dashboard => runtime.block_on(cli::run_dashboard(cli.client)),
+        Command::Dashboard { command } => runtime.block_on(cli::run_dashboard(cli.client, command)),
         Command::Stats { command } => runtime.block_on(cli::run_stats(cli.client, command)),
         Command::Ops { command } => runtime.block_on(cli::run_ops(cli.client, command)),
         Command::Apply { command } => runtime.block_on(cli::run_apply(cli.client, command)),

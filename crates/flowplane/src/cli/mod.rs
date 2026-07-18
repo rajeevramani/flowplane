@@ -30,6 +30,7 @@ use config::{
     config_path, credentials_path, effective, read_config, write_config, write_private_file,
     NamedContext, OutputFormat,
 };
+pub use dashboard::DashboardOptions;
 use output::{format_row, render};
 
 #[cfg(test)]
@@ -2008,8 +2009,8 @@ async fn run_cert(client: RestClient, command: CertCommand) -> Result<()> {
 }
 
 /// `flowplane dashboard` (fpv2-03m): loopback read-only presentation server.
-pub async fn run_dashboard(global: GlobalOptions) -> Result<()> {
-    dashboard::run(global).await
+pub async fn run_dashboard(global: GlobalOptions, options: DashboardOptions) -> Result<()> {
+    dashboard::run(global, options).await
 }
 
 pub async fn run_stats(global: GlobalOptions, command: StatsCommand) -> Result<()> {

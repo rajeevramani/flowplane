@@ -120,6 +120,48 @@ services:
     volumes:
       - shared:/shared
 
+  # Read-only dashboard for the eval stack (ui-f3 / fpv2-m4u.2). Same eval image; waits for
+  # the dev token like init, then serves the container-profile dashboard. Discovery: the URL
+  # (with its per-launch nonce) is written to /shared/dashboard-url —
+  #   docker compose -f compose.eval.yml exec flowplane-dashboard cat /shared/dashboard-url
+  # (or `docker compose -f compose.eval.yml logs flowplane-dashboard`).
+  flowplane-dashboard:
+    image: ${FLOWPLANE_EVAL_IMAGE:-flowplane:eval-local}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "waiting for dev token..."
+        for i in $$(seq 1 60); do [ -s /shared/dev-token ] && break; sleep 1; done
+        [ -s /shared/dev-token ] || { echo "dev token never appeared"; exit 1; }
+        export FLOWPLANE_SERVER=http://flowplane-eval:8080
+        export FLOWPLANE_TOKEN="$$(cat /shared/dev-token)"
+        export FLOWPLANE_ORG=dev-org
+        export FLOWPLANE_TEAM=default
+        exec flowplane dashboard --listen 0.0.0.0:8081 --no-open --url-file /shared/dashboard-url
+    ports:
+      # Host loopback only. The host-published port MUST equal the container's bound port
+      # (8081:8081): the dashboard's Host/Origin validation accepts only
+      # 127.0.0.1/localhost with the BOUND port, so a mismatched mapping would reject
+      # every browser request.
+      - "127.0.0.1:8081:8081"
+    # The dashboard deletes any stale /shared/dashboard-url before binding and writes it
+    # (atomically) only after binding AND its first successful control-plane fetch, and an
+    # unwritable path is fatal — so the file's existence is a genuine per-launch readiness
+    # signal (the slim image has no curl/wget; see D-024).
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /shared/dashboard-url"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    depends_on:
+      flowplane-eval:
+        condition: service_healthy
+      shared-init:
+        condition: service_completed_successfully
+    volumes:
+      - shared:/shared
+
   envoy:
     image: envoyproxy/envoy:v1.37-latest
     # Run the envoy binary directly, bypassing the image's docker-entrypoint.sh: under rootless

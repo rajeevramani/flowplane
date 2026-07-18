@@ -2,7 +2,7 @@
 
 > Audience: newcomers, api-teams · Status: stable
 
-This tutorial takes you from a clean machine to a working Flowplane evaluation using only published artifacts. You will start the evaluation bundle, route a request through Envoy, use the `flowplane` CLI inside the published image, import a small OpenAPI document, publish it, and verify that API tools became visible.
+This tutorial takes you from a clean machine to a working Flowplane evaluation using only published artifacts. You will start the evaluation bundle, route a request through Envoy, open the read-only dashboard, use the `flowplane` CLI inside the published image, import a small OpenAPI document, publish it, and verify that API tools became visible.
 
 You need Docker Compose or Podman Compose and `curl`. The examples use `docker compose`; if you use Podman Compose, replace that command with your local Podman Compose equivalent. You do not need Rust, a source checkout, `./target/debug/flowplane`, `internal/`, or `spec/`.
 
@@ -10,10 +10,10 @@ The evaluation bundle runs dev mode: an in-process identity issuer, seeded `dev-
 
 ## 1. Start the published evaluator bundle
 
-Use a published release. This example uses `3.0.0`, whose eval compose file and multi-arch eval image are published:
+Use a published release. This example uses `3.1.0`, whose eval compose file and multi-arch eval image are published (the dashboard step below needs `3.1.0` or newer):
 
 ```bash
-VER=3.0.0
+VER=3.1.0
 
 curl -fsSLO https://raw.githubusercontent.com/rajeevramani/flowplane/v${VER}/compose.eval.yml
 
@@ -35,7 +35,23 @@ hello from the flowplane eval demo upstream
 
 That request reached the demo upstream through Envoy on `127.0.0.1:10000`; the control plane did not proxy the request.
 
-## 2. Confirm CLI authentication
+## 2. Open the dashboard
+
+The bundle also serves a read-only dashboard for the seeded team. Its URL contains a per-launch security nonce, and the `shared` volume is a named volume the host cannot read directly, so read the URL through the container:
+
+```bash
+docker compose -f compose.eval.yml exec flowplane-dashboard cat /shared/dashboard-url
+```
+
+Open the printed URL (`http://127.0.0.1:8081/<nonce>/`) in your browser. The Overview page lists the eval dataplane `dp-eval` and the team totals for the seeded `default` team. If the file does not exist yet, the dashboard is still waiting for the control plane — watch its progress with:
+
+```bash
+docker compose -f compose.eval.yml logs flowplane-dashboard
+```
+
+The dashboard is published on host loopback only (`127.0.0.1:8081`), and every route requires the nonce path — a request without it is rejected. Each restart of the dashboard container generates a fresh nonce, so re-read the file after a restart. In this evaluation bundle the dataplane row shows `never` for its heartbeat and static request totals: live heartbeat and request-total telemetry come from the `fp-agent` diagnostics channel, which the plaintext dev bundle does not run (see [Register a dataplane and connect its agent over mTLS](../how-to/register-dataplane-mtls.md) for the production path).
+
+## 3. Confirm CLI authentication
 
 The eval image includes the `flowplane` CLI. The control-plane container writes a dev token to `/shared/dev-token`; use it only for this local evaluation stack:
 
@@ -59,7 +75,7 @@ docker compose -f compose.eval.yml exec flowplane-eval \
 
 You should see the resources created by the evaluator bundle. They are the durable gateway resources that produce Envoy config: a cluster, a route config, a listener, and a dataplane record. To inspect or create those resources directly, use the [gateway resource request body examples](../reference/rest-api.md#gateway-resource-request-bodies).
 
-## 3. Import a small OpenAPI document
+## 4. Import a small OpenAPI document
 
 Create the sample document inside the eval container and import it as an API definition:
 
@@ -104,7 +120,7 @@ EOF
 
 Importing creates the API definition, an imported spec version, and generated tool rows. Those generated artifacts are inert until you publish the spec version. In this fresh evaluation stack, the first import creates spec version `1`; `flowplane api status catalog --team default` shows the version state after publish.
 
-## 4. Publish the spec and verify tools
+## 5. Publish the spec and verify tools
 
 Publish imported spec version `1`:
 
@@ -129,12 +145,13 @@ docker compose -f compose.eval.yml exec flowplane-eval \
 
 The published OpenAPI operation is now represented as a generated API tool for the `default` team. Tool execution requires a listener route binding; importing without one is still useful for evaluating the API lifecycle and tool generation gate. To bind an API to a listener route at import time, see [Import and publish an OpenAPI spec](../how-to/import-and-publish-openapi-spec.md).
 
-## 5. Decide what you learned
+## 6. Decide what you learned
 
 At this point you have proven:
 
 - a published Flowplane eval artifact can start without a source checkout;
 - a request can route through Envoy;
+- the read-only dashboard shows the team's dataplane and totals at a nonce-protected loopback URL;
 - the CLI can authenticate and inspect gateway resources;
 - an OpenAPI document can become an API definition;
 - generated API tools remain inert until the spec is published;
