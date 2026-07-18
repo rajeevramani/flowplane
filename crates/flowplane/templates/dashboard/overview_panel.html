@@ -1,0 +1,66 @@
+{% if let Some(s) = data.stats.data() %}
+<section class="panel" id="panel-totals">
+  <h2>Team totals <span class="hint">cumulative stored counters</span></h2>
+  <dl class="stats">
+    <div><dt>Dataplanes</dt><dd>{{ s.total_dataplanes }} total · {{ s.live_dataplanes }} live · {{ s.stale_dataplanes }} stale</dd></div>
+    <div><dt>Requests</dt><dd>{{ s.total_requests }}</dd></div>
+    <div><dt>Errors</dt><dd>{{ s.total_errors }}</dd></div>
+    <div><dt>Warming failures</dt><dd>{{ s.warming_failures }}</dd></div>
+  </dl>
+</section>
+{% else if data.stats.unauthorized() %}
+<section class="panel unauthorized" id="panel-totals">
+  <h2>Team totals</h2>
+  <p>Not authorized to view team stats.</p>
+</section>
+{% else %}
+<section class="panel unavailable" id="panel-totals">
+  <h2>Team totals</h2>
+  <p>Stats are currently unavailable.</p>
+</section>
+{% endif %}
+
+{% if let Some(g) = data.gateway.data() %}
+<section class="panel" id="panel-gateway">
+  <h2>Gateway <span class="health health-{{ g.health }}">{{ g.health }}</span></h2>
+  <p class="nacks">Recent NACKs (15m, team-wide): {{ g.recent_nack_count }}</p>
+  {% if let Some(t) = data.truncated %}
+  <p class="banner">Showing first {{ t.shown }} of {{ t.total }} dataplanes — dataplane
+    health inputs are limited to the listed dataplanes; NACK status is team-wide.</p>
+  {% endif %}
+  <table class="dataplanes">
+    <thead>
+      <tr>
+        <th>Dataplane</th><th>Liveness</th><th>Heartbeat</th><th>Config</th>
+        <th>Requests</th><th>Errors</th><th>Warming failures</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for dp in g.dataplanes %}
+      <tr>
+        <td>{{ dp.name }}</td>
+        <td>{% if dp.live %}<span class="live">live</span>{% else %}<span class="stale">stale</span>{% endif %}</td>
+        <td>{% if let Some(age) = dp.heartbeat_age %}{{ age }}{% else %}never{% endif %}</td>
+        <td>{% if dp.config_verified_ever %}ever verified{% else %}never verified{% endif %}</td>
+        <td>{{ dp.total_requests }}</td>
+        <td>{{ dp.total_errors }}</td>
+        <td>{{ dp.warming_failures }}</td>
+      </tr>
+      {% endfor %}
+      {% if g.dataplanes.is_empty() %}
+      <tr><td colspan="7" class="placeholder">No dataplanes registered.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+{% else if data.gateway.unauthorized() %}
+<section class="panel unauthorized" id="panel-gateway">
+  <h2>Gateway</h2>
+  <p>Not authorized to view xDS status.</p>
+</section>
+{% else %}
+<section class="panel unavailable" id="panel-gateway">
+  <h2>Gateway</h2>
+  <p>xDS status is currently unavailable.</p>
+</section>
+{% endif %}

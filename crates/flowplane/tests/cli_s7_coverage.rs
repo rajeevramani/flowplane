@@ -55,6 +55,7 @@ const SNAPSHOT_COVERED: &[&str] = &[
 /// Each carries a one-line reason for the exemption.
 const EXEMPT: &[&str] = &[
     "serve",                   // long-running daemon, never returns an envelope
+    "dashboard",               // long-running local presentation server (fpv2-03m), no envelope
     "completion",              // emits a shell completion script, not the envelope
     "db migrate",              // database migration runner
     "auth login",              // interactive OIDC browser/device flow
