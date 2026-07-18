@@ -20,11 +20,37 @@ use serde_json::Value;
 use super::super::client::{ReadError, RestClient};
 use super::data::{humanize_age, AuthExpired, Panel};
 
-/// Upstream collections slice S1 may list. Every sweep path is
+/// Upstream collections the resources explorer may list. Every sweep path is
 /// `/api/v1/teams/{team}/<segment>` plus paging query — this table is the dashboard's
 /// upstream allowlist for the resources explorer, and no entry may ever name a secret
-/// VALUE route (the CP has none; the design pins the assertion).
-pub(super) const S1_COLLECTIONS: &[&str] = &["clusters", "route-configs", "listeners"];
+/// VALUE route (the CP has none; the design pins the assertion). Per-domain rate-limit
+/// policy sweeps use [`policies_sub_path`], the only non-flat path shape.
+pub(super) const COLLECTIONS: &[&str] = &[
+    "clusters",
+    "route-configs",
+    "listeners",
+    "rate-limit-domains",
+];
+
+/// Percent-encode one path segment (RFC 3986 unreserved kept verbatim). Rate-limit
+/// domain names are free text (1–253 chars, control chars excluded) and may contain
+/// `/`, `?`, `#`, `%` — they must never alter which upstream path is requested.
+pub(super) fn encode_segment(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// The one allowlisted non-flat sweep target: a domain's policies list.
+pub(super) fn policies_sub_path(domain: &str) -> String {
+    format!("rate-limit-domains/{}/policies", encode_segment(domain))
+}
 
 /// The API's list-page cap (`fp-api` `ListQuery`, cap 500) — a cap, not a guarantee.
 pub(super) const PAGE_LIMIT: i64 = 500;
@@ -84,7 +110,7 @@ pub(super) async fn sweep(
     byte_budget: usize,
 ) -> Result<Sweep, SweepFailure> {
     debug_assert!(
-        S1_COLLECTIONS.contains(&segment),
+        COLLECTIONS.contains(&segment) || segment.ends_with("/policies"),
         "sweep segment {segment:?} is not in the resources allowlist"
     );
     let mut items: Vec<Value> = Vec::new();
@@ -768,9 +794,15 @@ mod tests {
 
     #[test]
     fn upstream_allowlist_has_no_secret_or_value_route() {
-        for segment in S1_COLLECTIONS {
+        for segment in COLLECTIONS {
             assert!(
-                ["clusters", "route-configs", "listeners"].contains(segment),
+                [
+                    "clusters",
+                    "route-configs",
+                    "listeners",
+                    "rate-limit-domains"
+                ]
+                .contains(segment),
                 "unexpected collection {segment:?}"
             );
             assert!(
@@ -778,6 +810,25 @@ mod tests {
                 "no secret/value route may enter the resources allowlist: {segment:?}"
             );
         }
+        // The only non-flat sweep shape stays inside rate-limit-domains and encodes
+        // the tenant-chosen segment so it cannot rewrite the requested path.
+        let sub = policies_sub_path("a/../secrets?x=1#f");
+        assert!(sub.starts_with("rate-limit-domains/"));
+        assert!(sub.ends_with("/policies"));
+        assert!(
+            !sub.contains("secrets?"),
+            "hostile domain must be encoded: {sub}"
+        );
+        assert!(!sub.contains('#') && !sub.contains('?'));
+        assert_eq!(sub.matches('/').count(), 2, "exactly one encoded segment");
+    }
+
+    #[test]
+    fn encode_segment_round_trips_hostile_bytes() {
+        assert_eq!(encode_segment("checkout"), "checkout");
+        assert_eq!(encode_segment("a/b"), "a%2Fb");
+        assert_eq!(encode_segment("a|b c%"), "a%7Cb%20c%25");
+        assert_eq!(encode_segment("dom?x=1#f"), "dom%3Fx%3D1%23f");
     }
 
     fn now() -> DateTime<Utc> {

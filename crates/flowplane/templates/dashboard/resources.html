@@ -52,6 +52,14 @@
       <summary>Listeners</summary>
       <div id="res-listeners-body"><p class="placeholder">Loading…</p></div>
     </details>
+    <details id="res-rate-limits"
+             hx-get="/{{ nonce }}/partials/resources/rate-limits"
+             hx-trigger="toggle once"
+             hx-target="#res-rate-limits-body"
+             hx-swap="innerHTML">
+      <summary>Rate limits</summary>
+      <div id="res-rate-limits-body"><p class="placeholder">Loading…</p></div>
+    </details>
   </main>
 </body>
 </html>

@@ -9,6 +9,7 @@
 
 mod data;
 mod joins;
+mod ratelimits;
 mod resources;
 
 use anyhow::{Context, Result};
@@ -42,6 +43,8 @@ pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/partials/resources/clusters",
     "/partials/resources/route-configs",
     "/partials/resources/listeners",
+    "/partials/resources/rate-limits",
+    "/partials/resources/rate-limit-policies",
     "/assets/htmx.min.js",
     "/assets/dashboard.css",
     "/assets/resources.js",
@@ -162,6 +165,10 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
                 "/partials/resources/clusters" => get(resources_clusters_partial),
                 "/partials/resources/route-configs" => get(resources_route_configs_partial),
                 "/partials/resources/listeners" => get(resources_listeners_partial),
+                "/partials/resources/rate-limits" => get(resources_rate_limits_partial),
+                "/partials/resources/rate-limit-policies" => {
+                    get(resources_rate_limit_policies_partial)
+                }
                 "/assets/htmx.min.js" => get(htmx_js),
                 "/assets/dashboard.css" => get(dashboard_css),
                 "/assets/resources.js" => get(resources_js),
@@ -414,6 +421,85 @@ async fn resources_listeners_partial(
     render_resources_panel(result)
 }
 
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_rate_limits.html")]
+struct RateLimitsPanelTemplate<'a> {
+    nonce: &'a str,
+    panel: data::Panel<ratelimits::RateLimitsData>,
+}
+
+async fn resources_rate_limits_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let nonce = state.nonce.clone();
+    let result = ratelimits::fetch_rate_limits(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| RateLimitsPanelTemplate {
+            nonce: &nonce,
+            panel,
+        });
+    render_resources_panel(result)
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_rate_limit_policies.html")]
+struct PoliciesPanelTemplate {
+    panel: data::Panel<resources::Table<ratelimits::PolicyRow>>,
+}
+
+/// Extract and percent-decode the `domain` value from a raw query string. Decoding
+/// here (not axum's Query) keeps the route registrable without the parameter — the
+/// nonce-route contract keeps every registered route serving 200.
+fn domain_from_query(query: Option<&str>) -> Option<String> {
+    let query = query?;
+    let raw = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("domain="))?;
+    // Percent-decode; '+' is NOT space here (the URL was built by encode_segment).
+    let bytes = raw.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 3 <= bytes.len() {
+            let hex = bytes.get(i + 1..i + 3)?;
+            let hi = char::from(hex[0]).to_digit(16)?;
+            let lo = char::from(hex[1]).to_digit(16)?;
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Lazy per-domain policies list. The domain arrives as a query value; mirror the
+/// CP's domain-name bounds before using it, then the fetch layer percent-encodes it
+/// into the upstream path.
+async fn resources_rate_limit_policies_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+    request: Request<Body>,
+) -> Response {
+    // A missing/invalid domain renders a 200 panel-state message (the nonce-route
+    // contract keeps every registered route serving 200; htmx swaps the message in).
+    let invalid =
+        || Html("<p class=\"unavailable\">missing or invalid domain parameter</p>").into_response();
+    let Some(domain) = domain_from_query(request.uri().query()) else {
+        return invalid();
+    };
+    // The canonical domain-name contract (1–253 CHARS, not bytes, no control chars) —
+    // the same validator the CP enforces, so a legal Unicode domain near the limit is
+    // never rejected here while its row rendered fine in the sweep.
+    if fp_domain::rate_limit::validate_rate_limit_domain_name(&domain).is_err() {
+        return invalid();
+    }
+    let result = ratelimits::fetch_policies(&state.client, &state.team, &domain)
+        .await
+        .map(|panel| PoliciesPanelTemplate { panel });
+    render_resources_panel(result)
+}
+
 async fn htmx_js() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "application/javascript")], HTMX_JS)
 }
@@ -661,6 +747,41 @@ mod tests {
                 "must reject {hostile:?}"
             );
         }
+    }
+
+    #[test]
+    fn domain_query_decoding_round_trips_the_encoder() {
+        for raw in [
+            "checkout",
+            "a|b",
+            "a/b c%",
+            "dom?x=1#f",
+            "multi|part|domain",
+        ] {
+            let encoded = resources::encode_segment(raw);
+            let query = format!("domain={encoded}");
+            assert_eq!(
+                domain_from_query(Some(&query)).as_deref(),
+                Some(raw),
+                "decode(encode({raw:?})) must round-trip"
+            );
+        }
+        assert_eq!(domain_from_query(None), None);
+        assert_eq!(domain_from_query(Some("other=1")), None);
+        assert_eq!(
+            domain_from_query(Some("domain=%zz")),
+            None,
+            "malformed percent escapes are rejected"
+        );
+        // A 253-CHAR (but >253-byte) Unicode domain is legal per the CP contract and
+        // must survive the round-trip; the handler validates chars, not bytes.
+        let unicode = "é".repeat(253);
+        assert!(fp_domain::rate_limit::validate_rate_limit_domain_name(&unicode).is_ok());
+        let encoded = resources::encode_segment(&unicode);
+        assert_eq!(
+            domain_from_query(Some(&format!("domain={encoded}"))).as_deref(),
+            Some(unicode.as_str())
+        );
     }
 
     #[test]
