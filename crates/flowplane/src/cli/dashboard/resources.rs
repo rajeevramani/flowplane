@@ -366,6 +366,129 @@ pub(super) async fn fetch_listeners(
     to_panel(result, "listeners", |item| listener_row(item, now))
 }
 
+// =============================================================================================
+// Topology (fpv2-cxw.2): three sweeps folded into one derived panel.
+// =============================================================================================
+
+/// The topology panel's states. A derived panel needs all three collections, so a 403
+/// or first-page failure on ANY collection resolves the whole panel to that state,
+/// naming the collection.
+pub(super) enum TopologyPanel {
+    Topology {
+        topo: super::joins::Topology,
+        notices: Vec<PartialNotice>,
+    },
+    /// Node budget crossed: the tables render instead, with an explicit notice.
+    DegradedTables {
+        nodes: usize,
+        clusters: Table<ClusterRow>,
+        route_configs: Table<RouteConfigRow>,
+        listeners: Table<ListenerRow>,
+        notices: Vec<PartialNotice>,
+    },
+    Unauthorized {
+        collection: &'static str,
+    },
+    Unavailable {
+        collection: &'static str,
+    },
+}
+
+pub(super) async fn fetch_topology(
+    client: &RestClient,
+    team: &str,
+    now: DateTime<Utc>,
+) -> Result<TopologyPanel, AuthExpired> {
+    enum Failed {
+        Auth,
+        Panel(Box<TopologyPanel>),
+    }
+    let one = |result: Result<Sweep, SweepFailure>, collection: &'static str| match result {
+        Ok(s) => Ok(s),
+        Err(SweepFailure::AuthExpired) => Err(Failed::Auth),
+        Err(SweepFailure::Unauthorized) => {
+            Err(Failed::Panel(Box::new(TopologyPanel::Unauthorized {
+                collection,
+            })))
+        }
+        Err(SweepFailure::Unavailable) => {
+            Err(Failed::Panel(Box::new(TopologyPanel::Unavailable {
+                collection,
+            })))
+        }
+    };
+    let run = async {
+        let listeners = one(
+            sweep(client, team, "listeners", SWEEP_BYTE_BUDGET).await,
+            "listeners",
+        )?;
+        let route_configs = one(
+            sweep(client, team, "route-configs", SWEEP_BYTE_BUDGET).await,
+            "route-configs",
+        )?;
+        let clusters = one(
+            sweep(client, team, "clusters", SWEEP_BYTE_BUDGET).await,
+            "clusters",
+        )?;
+        Ok((listeners, route_configs, clusters))
+    };
+    let (listeners, route_configs, clusters) = match run.await {
+        Ok(sweeps) => sweeps,
+        Err(Failed::Auth) => return Err(AuthExpired),
+        Err(Failed::Panel(panel)) => return Ok(*panel),
+    };
+
+    let notices: Vec<PartialNotice> = [
+        notice(&listeners, "listeners"),
+        notice(&route_configs, "route configs"),
+        notice(&clusters, "clusters"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    let topo =
+        super::joins::build_topology(&listeners.items, &route_configs.items, &clusters.items);
+    if topo.degraded {
+        let nodes = topo.nodes;
+        let clusters_table = Table {
+            total: clusters.total,
+            partial: notice(&clusters, "clusters"),
+            rows: clusters
+                .items
+                .into_iter()
+                .map(|item| cluster_row(item, now))
+                .collect(),
+        };
+        let route_configs_table = Table {
+            total: route_configs.total,
+            partial: notice(&route_configs, "route configs"),
+            rows: route_configs
+                .items
+                .into_iter()
+                .map(|item| route_config_row(item, now))
+                .collect(),
+        };
+        let listeners_table = Table {
+            total: listeners.total,
+            partial: notice(&listeners, "listeners"),
+            rows: listeners
+                .items
+                .into_iter()
+                .map(|item| listener_row(item, now))
+                .collect(),
+        };
+        return Ok(TopologyPanel::DegradedTables {
+            nodes,
+            clusters: clusters_table,
+            route_configs: route_configs_table,
+            listeners: listeners_table,
+            notices,
+        });
+    }
+    Ok(TopologyPanel::Topology { topo, notices })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]

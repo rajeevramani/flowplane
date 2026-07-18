@@ -8,6 +8,7 @@
 //! nothing in this module writes it to a response or a log.
 
 mod data;
+mod joins;
 mod resources;
 
 use anyhow::{Context, Result};
@@ -26,6 +27,9 @@ use super::config::GlobalOptions;
 /// Served same-origin so the CSP stays `default-src 'self'` and the page works offline.
 const HTMX_JS: &[u8] = include_bytes!("assets/htmx.min.js");
 const DASHBOARD_CSS: &str = include_str!("assets/dashboard.css");
+/// Same-origin hover-highlight helper for the topology view (CSP `default-src 'self'`
+/// forbids inline script, so this ships as a served asset).
+const RESOURCES_JS: &str = include_str!("assets/resources.js");
 
 /// Every route the dashboard serves, WITHOUT the nonce prefix. The router is built from
 /// this table and from nothing else, so a route that skips the nonce prefix cannot exist;
@@ -34,11 +38,13 @@ pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/",
     "/resources",
     "/partials/overview",
+    "/partials/resources/topology",
     "/partials/resources/clusters",
     "/partials/resources/route-configs",
     "/partials/resources/listeners",
     "/assets/htmx.min.js",
     "/assets/dashboard.css",
+    "/assets/resources.js",
 ];
 
 pub(crate) struct DashState {
@@ -152,11 +158,13 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
                 "/" => get(overview),
                 "/resources" => get(resources_page),
                 "/partials/overview" => get(overview_partial),
+                "/partials/resources/topology" => get(resources_topology_partial),
                 "/partials/resources/clusters" => get(resources_clusters_partial),
                 "/partials/resources/route-configs" => get(resources_route_configs_partial),
                 "/partials/resources/listeners" => get(resources_listeners_partial),
                 "/assets/htmx.min.js" => get(htmx_js),
                 "/assets/dashboard.css" => get(dashboard_css),
+                "/assets/resources.js" => get(resources_js),
                 other => unreachable!("unrouted dashboard path {other}"),
             },
         );
@@ -364,6 +372,21 @@ fn render_resources_panel<T: askama::Template>(result: Result<T, data::AuthExpir
     }
 }
 
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_topology.html")]
+struct TopologyPanelTemplate {
+    panel: resources::TopologyPanel,
+}
+
+async fn resources_topology_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = resources::fetch_topology(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| TopologyPanelTemplate { panel });
+    render_resources_panel(result)
+}
+
 async fn resources_clusters_partial(
     axum::extract::State(state): axum::extract::State<Arc<DashState>>,
 ) -> Response {
@@ -397,6 +420,13 @@ async fn htmx_js() -> impl IntoResponse {
 
 async fn dashboard_css() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/css")], DASHBOARD_CSS)
+}
+
+async fn resources_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "application/javascript")],
+        RESOURCES_JS,
+    )
 }
 
 #[cfg(test)]

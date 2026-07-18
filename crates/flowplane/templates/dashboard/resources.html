@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="/{{ nonce }}/assets/dashboard.css">
   <script src="/{{ nonce }}/assets/htmx.min.js" defer></script>
+  <script src="/{{ nonce }}/assets/resources.js" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -19,6 +20,14 @@
   <main id="resources">
     <!-- First-open lazy loading: each panel fetches its partial only on the FIRST
          native `toggle` (details opened); an unopened panel issues no requests. -->
+    <details id="res-topology"
+             hx-get="/{{ nonce }}/partials/resources/topology"
+             hx-trigger="toggle once"
+             hx-target="#res-topology-body"
+             hx-swap="innerHTML">
+      <summary>Topology</summary>
+      <div id="res-topology-body"><p class="placeholder">Loading…</p></div>
+    </details>
     <details id="res-clusters"
              hx-get="/{{ nonce }}/partials/resources/clusters"
              hx-trigger="toggle once"
