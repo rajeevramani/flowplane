@@ -370,6 +370,20 @@ Remove resources created by `expose`. Flattened args (no subcommands):
 | `<NAME>` (positional) | Name of the previously exposed resource set. |
 | `--team <TEAM>` | Team scope. |
 
+### `dashboard`
+Open a read-only local dashboard for the resolved team (loopback only). No subcommands and no flags of its own — context (server, org, team, token) resolves exactly like every other command, and a missing team fails with the standard `team is required` error before anything starts.
+
+`flowplane dashboard [--team <TEAM>]`
+
+Behavior:
+
+- Starts a local web server bound to `127.0.0.1` on an ephemeral port and opens your browser at `http://127.0.0.1:<port>/<nonce>/` (the URL is always printed, so you can open it manually on a headless machine; a missing opener is not an error).
+- The Overview page shows live team data from `GET /stats/overview` and `GET /xds/status`, refreshing every 10 seconds. The page is strictly read-only: the local server serves GET routes only and proxies nothing else.
+- The server exits when the command exits (Ctrl-C). Nothing is daemonized and nothing is written to disk.
+- Set `FLOWPLANE_DASHBOARD_NO_BROWSER=1` to skip the browser launch (useful headless or in scripts).
+
+There is deliberately **no flag to bind a non-loopback address** — the dashboard is local-only in this release. See [View your team's gateway dashboard](../how-to/view-team-dashboard.md) for the security model and troubleshooting.
+
 ### `stats`
 Team stats.
 
