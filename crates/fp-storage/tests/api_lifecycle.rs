@@ -1431,3 +1431,109 @@ async fn spec_version_content_round_trips_and_hash_matches_canonical_encoding() 
             .is_none()
     );
 }
+
+// -- ui-f4 S4: paginated bindings/tools + MCP-exclusion parity --
+
+#[tokio::test]
+async fn paged_tool_and_binding_lists_include_disabled_while_mcp_query_excludes_them() {
+    let Some(w) = world().await else { return };
+    let route = insert_route_config(&w.pool, w.team_a, &unique("rc")).await;
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api =
+        api_lifecycle::create_api_definition(&mut tx, w.team_a, &unique("api"), &api_spec("A"))
+            .await
+            .expect("api");
+    let spec = api_lifecycle::create_spec_version(&mut tx, w.team_a, api.id, &openapi("v1"))
+        .await
+        .expect("spec");
+    for name in ["tool-a", "tool-b", "tool-c"] {
+        api_lifecycle::create_api_tool(
+            &mut tx,
+            w.team_a,
+            api.id,
+            spec.id,
+            &format!("{}-{name}", api.name),
+            &ApiToolSpec {
+                operation_id: name.into(),
+                method: HttpMethod::Get,
+                path: format!("/{name}"),
+                input_schema: serde_json::json!({}),
+                output_schema: serde_json::json!({}),
+                enabled: true,
+            },
+        )
+        .await
+        .expect("tool");
+    }
+    api_lifecycle::create_route_binding(
+        &mut tx,
+        w.team_a,
+        api.id,
+        &unique("binding"),
+        &ApiRouteBindingSpec {
+            route_config_id: route,
+            listener_id: None,
+            virtual_host: None,
+            route: None,
+        },
+    )
+    .await
+    .expect("binding");
+    tx.commit().await.expect("commit");
+
+    // Publish the version and disable one tool: the paged list keeps it, MCP's query drops it.
+    let mut tx = w.pool.begin().await.expect("publish tx");
+    api_lifecycle::set_published_spec_version(&mut tx, w.team_a.id, api.id, spec.id)
+        .await
+        .expect("publish");
+    tx.commit().await.expect("commit publish");
+    let disabled_name = format!("{}-tool-b", api.name);
+    api_lifecycle::update_api_tool_enabled(&w.pool, w.team_a.id, &disabled_name, false)
+        .await
+        .expect("disable");
+
+    let (page, total) = api_lifecycle::list_api_tools_paged(&w.pool, w.team_a.id, api.id, 2, 0)
+        .await
+        .expect("tools page");
+    assert_eq!(total, 3);
+    assert_eq!(page.len(), 2, "limit respected");
+    let (all, _) = api_lifecycle::list_api_tools_paged(&w.pool, w.team_a.id, api.id, 50, 0)
+        .await
+        .expect("tools all");
+    assert!(
+        all.iter().any(|t| t.name == disabled_name && !t.enabled),
+        "disabled tool present exactly as PATCH left it"
+    );
+    let mcp = api_lifecycle::list_enabled_published_api_tools(&w.pool, w.team_a.id)
+        .await
+        .expect("mcp view");
+    assert!(
+        mcp.iter().all(|t| t.name != disabled_name),
+        "MCP serving query excludes the disabled tool"
+    );
+    assert!(
+        mcp.iter().any(|t| t.name == format!("{}-tool-a", api.name)),
+        "enabled published tools still served"
+    );
+
+    let (bindings, bindings_total) =
+        api_lifecycle::list_route_bindings_paged(&w.pool, w.team_a.id, api.id, 50, 0)
+            .await
+            .expect("bindings page");
+    assert_eq!(bindings_total, 1);
+    assert_eq!(bindings[0].route_config_id, route);
+
+    // Cross-team: both paged lists empty for team_b.
+    let (cross_tools, cross_tools_total) =
+        api_lifecycle::list_api_tools_paged(&w.pool, w.team_b.id, api.id, 50, 0)
+            .await
+            .expect("cross tools");
+    assert!(cross_tools.is_empty());
+    assert_eq!(cross_tools_total, 0);
+    let (cross_bindings, cross_bindings_total) =
+        api_lifecycle::list_route_bindings_paged(&w.pool, w.team_b.id, api.id, 50, 0)
+            .await
+            .expect("cross bindings");
+    assert!(cross_bindings.is_empty());
+    assert_eq!(cross_bindings_total, 0);
+}

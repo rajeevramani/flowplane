@@ -1125,6 +1125,57 @@ pub async fn list_route_bindings_for_api(
     Ok(rows.iter().map(binding_from_row).collect())
 }
 
+/// Paginated route-binding rows for one API (ordered by name) plus the total count.
+pub async fn list_route_bindings_paged(
+    pool: &PgPool,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+    limit: i64,
+    offset: i64,
+) -> DomainResult<(Vec<ApiRouteBinding>, i64)> {
+    let rows = sqlx::query(&format!(
+        "SELECT {BINDING_COLUMNS} FROM api_route_bindings \
+         WHERE team_id = $1 AND api_definition_id = $2 ORDER BY name LIMIT $3 OFFSET $4"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .bind(limit.clamp(1, 500))
+    .bind(offset.max(0))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list api route bindings page: {e}")))?;
+    let total = count_route_bindings(pool, team_id, api_id).await?;
+    Ok((rows.iter().map(binding_from_row).collect(), total))
+}
+
+/// Paginated api-tool rows for one API (ordered by name, disabled included) plus the total.
+pub async fn list_api_tools_paged(
+    pool: &PgPool,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+    limit: i64,
+    offset: i64,
+) -> DomainResult<(Vec<ApiTool>, i64)> {
+    let rows = sqlx::query(&format!(
+        "SELECT {TOOL_COLUMNS} FROM api_tools \
+         WHERE team_id = $1 AND api_definition_id = $2 ORDER BY name LIMIT $3 OFFSET $4"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .bind(limit.clamp(1, 500))
+    .bind(offset.max(0))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list api tools page: {e}")))?;
+    let total = count_api_tools(pool, team_id, api_id).await?;
+    Ok((
+        rows.iter()
+            .map(tool_from_row)
+            .collect::<DomainResult<Vec<_>>>()?,
+        total,
+    ))
+}
+
 pub async fn list_api_tools(
     pool: &PgPool,
     team_id: TeamId,

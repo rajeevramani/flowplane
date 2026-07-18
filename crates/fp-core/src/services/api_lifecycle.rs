@@ -357,6 +357,41 @@ pub async fn get_spec_version_content(
         .ok_or_else(|| DomainError::not_found("spec version", &version.to_string()))
 }
 
+/// Paginated route bindings for one API (typed IDs; consumers join names themselves).
+pub async fn list_route_bindings(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    api_name: &str,
+    limit: i64,
+    offset: i64,
+    request_id: RequestId,
+) -> DomainResult<(Vec<fp_domain::api_lifecycle::ApiRouteBinding>, i64)> {
+    authorize(pool, ctx, Action::Read, team, request_id).await?;
+    let api = api_lifecycle::get_api_definition(pool, team.id, api_name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("api", api_name))?;
+    api_lifecycle::list_route_bindings_paged(pool, team.id, api.id, limit, offset).await
+}
+
+/// Paginated api tools for one API — including disabled rows (the dashboard/CLI view;
+/// MCP serving keeps its own enabled+published query).
+pub async fn list_api_tools(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    api_name: &str,
+    limit: i64,
+    offset: i64,
+    request_id: RequestId,
+) -> DomainResult<(Vec<ApiTool>, i64)> {
+    authorize(pool, ctx, Action::Read, team, request_id).await?;
+    let api = api_lifecycle::get_api_definition(pool, team.id, api_name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("api", api_name))?;
+    api_lifecycle::list_api_tools_paged(pool, team.id, api.id, limit, offset).await
+}
+
 pub async fn api_status(
     pool: &PgPool,
     ctx: &PrincipalCtx,

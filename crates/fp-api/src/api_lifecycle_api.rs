@@ -91,6 +91,38 @@ impl From<svc::SpecVersionListItem> for SpecVersionListItemView {
     }
 }
 
+/// One route binding: typed IDs into gateway resources (consumers join names via the
+/// resource endpoints — F2's dashboard data already carries them).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RouteBindingView {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub api_definition_id: uuid::Uuid,
+    pub route_config_id: uuid::Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listener_id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub virtual_host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<fp_domain::api_lifecycle::ApiRouteBinding> for RouteBindingView {
+    fn from(value: fp_domain::api_lifecycle::ApiRouteBinding) -> Self {
+        Self {
+            id: value.id.as_uuid(),
+            name: value.name,
+            api_definition_id: value.api_definition_id.as_uuid(),
+            route_config_id: value.route_config_id.as_uuid(),
+            listener_id: value.listener_id.map(|id| id.as_uuid()),
+            virtual_host: value.virtual_host,
+            route: value.route,
+            created_at: value.created_at,
+        }
+    }
+}
+
 /// One review event, rendered verbatim from the append-only history.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SpecReviewEventView {
@@ -506,6 +538,91 @@ pub async fn get_spec_version_content(
         return Ok((axum::http::StatusCode::NOT_MODIFIED, base_headers).into_response());
     }
     Ok((base_headers, Json(spec.spec)).into_response())
+}
+
+#[utoipa::path(get, path = "/api/v1/teams/{team}/api-definitions/{name}/route-bindings",
+    tag = "ApiDefinitions",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "API name"),
+        ListQuery,
+    ),
+    responses(
+        (status = 200, body = Page<RouteBindingView>),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    ))]
+pub async fn list_route_bindings(
+    State(state): State<AppState>,
+    Path((team, name)): Path<(String, String)>,
+    Query(query): Query<ListQuery>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<Page<RouteBindingView>>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::list_route_bindings(
+            &state.pool,
+            &ctx,
+            team,
+            &name,
+            query.limit,
+            query.offset,
+            rid,
+        )
+        .await
+    };
+    let (items, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok(Json(Page {
+        items: items.into_iter().map(RouteBindingView::from).collect(),
+        total,
+        limit: query.limit.clamp(1, 500),
+        offset: query.offset.max(0),
+    }))
+}
+
+#[utoipa::path(get, path = "/api/v1/teams/{team}/api-definitions/{name}/tools",
+    tag = "ApiDefinitions",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "API name"),
+        ListQuery,
+    ),
+    responses(
+        (status = 200, body = Page<ApiToolView>,
+            description = "Generated tools for this API including disabled rows; MCP tools/list continues to serve only enabled tools of the published version."),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    ))]
+pub async fn list_api_tools(
+    State(state): State<AppState>,
+    Path((team, name)): Path<(String, String)>,
+    Query(query): Query<ListQuery>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<Page<ApiToolView>>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::list_api_tools(
+            &state.pool,
+            &ctx,
+            team,
+            &name,
+            query.limit,
+            query.offset,
+            rid,
+        )
+        .await
+    };
+    let (items, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok(Json(Page {
+        items: items.into_iter().map(ApiToolView::from).collect(),
+        total,
+        limit: query.limit.clamp(1, 500),
+        offset: query.offset.max(0),
+    }))
 }
 
 #[utoipa::path(patch, path = "/api/v1/teams/{team}/mcp/tools/{name}",

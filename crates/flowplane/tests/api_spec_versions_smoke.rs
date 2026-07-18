@@ -243,5 +243,39 @@ async fn spec_versions_list_smoke_over_real_cp() {
         .expect("revalidate");
     assert_eq!(not_modified.status(), 304);
 
+    // ui-f4 S4 smoke: tools list over HTTP includes the generated tool with schemas.
+    let tools: Value = http
+        .get(format!(
+            "{base_url}/api/v1/teams/{}/api-definitions/{api_name}/tools",
+            team.name
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("tools")
+        .error_for_status()
+        .expect("200")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(tools["total"], 1);
+    assert_eq!(tools["items"][0]["operation_id"], "listItems");
+    assert_eq!(tools["items"][0]["enabled"], true);
+    let bindings: Value = http
+        .get(format!(
+            "{base_url}/api/v1/teams/{}/api-definitions/{api_name}/route-bindings",
+            team.name
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("bindings")
+        .error_for_status()
+        .expect("200")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(bindings["total"], 0, "API created without a route binding");
+
     server.abort();
 }

@@ -595,7 +595,7 @@ mod tests {
         // from `--help`. The union guard forces every FUTURE leaf to be classified one way or the
         // other. Pure in-process (no temp dir / network) so it is inherently parallel-safe.
 
-        // 49 SPINE leaves (space-joined paths) — each must expose a parseable example.
+        // 51 SPINE leaves (space-joined paths) — each must expose a parseable example.
         const SPINE: &[&str] = &[
             "auth login",
             "config set-context",
@@ -617,6 +617,8 @@ mod tests {
             "api spec list",
             "api spec events",
             "api spec show",
+            "api bindings",
+            "api tools",
             "mcp enable",
             "mcp disable",
             "ai providers create",

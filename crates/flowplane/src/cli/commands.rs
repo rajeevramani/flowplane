@@ -626,6 +626,36 @@ pub enum ApiCommand {
         #[command(subcommand)]
         command: ApiSpecCommand,
     },
+    /// List an API's route bindings (typed IDs into route configs/listeners).
+    #[command(after_help = "Example:\n  flowplane api bindings catalog --team payments")]
+    Bindings {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Name of the API whose route bindings to list.
+        api: String,
+        /// Max items (default 50, cap 500).
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        /// Items to skip.
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
+    },
+    /// List an API's generated tools, including disabled ones.
+    #[command(after_help = "Example:\n  flowplane api tools catalog --team payments")]
+    Tools {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Name of the API whose tools to list.
+        api: String,
+        /// Max items (default 50, cap 500).
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        /// Items to skip.
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
+    },
     /// Create an API definition (optionally importing an OpenAPI document).
     #[command(
         after_help = "Example:\n  flowplane api create catalog --team payments --from-openapi openapi.json"
