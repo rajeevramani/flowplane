@@ -501,6 +501,40 @@ fn missing_team_refuses_to_start() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The configured team value is interpolated into the two allowlisted upstream paths as one
+// segment; a hostile value must be rejected BEFORE the server binds, so it can never widen
+// the fixed upstream allowlist (design-review finding, fpv2-03m.3 reconcile).
+// ---------------------------------------------------------------------------------------------
+#[test]
+fn hostile_team_value_is_rejected_before_bind() {
+    for hostile in ["../admin", "a/b", "a?x=1", "a#frag", "a%2Fb"] {
+        let home = common::unique_tempdir();
+        let mut cmd = common::flowplane_cmd(&home);
+        cmd.env("FLOWPLANE_SERVER", "http://127.0.0.1:9")
+            .env("FLOWPLANE_TOKEN", SECRET_TOKEN)
+            .env("FLOWPLANE_TEAM", hostile)
+            .env("FLOWPLANE_DASHBOARD_NO_BROWSER", "1")
+            .arg("dashboard");
+        let out = wait_for_exit(cmd, "dashboard with hostile team");
+        assert!(
+            !out.status.success(),
+            "hostile team {hostile:?} must exit non-zero, got: {:?}",
+            out.status
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("invalid team name"),
+            "stderr must name the invalid team for {hostile:?}, got: {stderr:?}"
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !stdout.contains("Dashboard running"),
+            "no server may be announced for hostile team {hostile:?}, stdout: {stdout:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Criterion 7: there is NO flag to bind off-loopback. `--listen 0.0.0.0:80` must be a clap
 // usage error (unknown argument): non-zero exit, and no server announcement on stdout.
 // ---------------------------------------------------------------------------------------------

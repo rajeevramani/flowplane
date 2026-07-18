@@ -47,3 +47,24 @@ body {
 }
 .panel h2 { margin: 0 0 0.5rem; font-size: 0.95rem; color: var(--muted); }
 .placeholder { color: var(--muted); }
+.hint { font-weight: normal; font-size: 0.75rem; color: var(--muted); }
+.stats div { display: flex; justify-content: space-between; gap: 1rem; padding: 0.2rem 0; }
+.stats dt { color: var(--muted); }
+.stats dd { margin: 0; font-variant-numeric: tabular-nums; }
+.health { padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.8rem; }
+.health-healthy { background: #16a34a22; color: #16a34a; }
+.health-degraded { background: #d9770622; color: #d97706; }
+.live { color: #16a34a; }
+.stale { color: #d97706; }
+.banner {
+  background: #d9770618;
+  border: 1px solid #d9770655;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+}
+.dataplanes { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.dataplanes th, .dataplanes td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--line); }
+.dataplanes th { color: var(--muted); font-weight: 500; }
+.unauthorized p, .unavailable p, .error p { color: var(--muted); }
+.nacks { color: var(--muted); font-size: 0.85rem; }

@@ -12,19 +12,11 @@
     <h1>Flowplane</h1>
     <span class="team">team: {{ team }}</span>
   </header>
-  <main id="overview">
-    <section class="panel" id="panel-gateway">
-      <h2>Gateway</h2>
-      <p class="placeholder">Connecting…</p>
-    </section>
-    <section class="panel" id="panel-traffic">
-      <h2>Traffic</h2>
-      <p class="placeholder">Connecting…</p>
-    </section>
-    <section class="panel" id="panel-dataplanes">
-      <h2>Dataplanes</h2>
-      <p class="placeholder">Connecting…</p>
-    </section>
+  <main id="overview"
+        hx-get="/{{ nonce }}/partials/overview"
+        hx-trigger="load, every 10s"
+        hx-swap="innerHTML">
+    <p class="placeholder">Connecting…</p>
   </main>
 </body>
 </html>

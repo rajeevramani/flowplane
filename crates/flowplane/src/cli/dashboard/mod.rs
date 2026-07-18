@@ -7,6 +7,8 @@
 //! CSP-self / no-referrer / frame-deny headers. The bearer token stays in process memory;
 //! nothing in this module writes it to a response or a log.
 
+mod data;
+
 use anyhow::{Context, Result};
 use axum::body::Body;
 use axum::http::{header, HeaderValue, Request, StatusCode};
@@ -27,19 +29,38 @@ const DASHBOARD_CSS: &str = include_str!("assets/dashboard.css");
 /// Every route the dashboard serves, WITHOUT the nonce prefix. The router is built from
 /// this table and from nothing else, so a route that skips the nonce prefix cannot exist;
 /// tests iterate it to prove each route class 404s without the nonce.
-pub(crate) const ROUTE_PATHS: &[&str] = &["/", "/assets/htmx.min.js", "/assets/dashboard.css"];
+pub(crate) const ROUTE_PATHS: &[&str] = &[
+    "/",
+    "/partials/overview",
+    "/assets/htmx.min.js",
+    "/assets/dashboard.css",
+];
 
 pub(crate) struct DashState {
     /// Hex-encoded per-launch 128-bit CSPRNG nonce; the only valid path prefix.
     nonce: String,
     /// Port actually bound, for Host/Origin validation.
     port: u16,
-    /// Authenticated REST client (bearer + org header); used by the data path (fpv2-03m.3).
-    #[allow(dead_code)] // consumed by the Overview data slice (fpv2-03m.3)
+    /// Authenticated REST client (bearer + org header); the data path's only exit.
     client: RestClient,
     /// Resolved team the dashboard renders.
-    #[allow(dead_code)] // consumed by the Overview data slice (fpv2-03m.3)
     team: String,
+}
+
+/// The configured team is interpolated into the two allowlisted upstream paths as ONE
+/// path segment. Constrain it to URL-safe name/UUID characters so a hostile config
+/// value (`/`, `?`, `#`, `%`, dot-segments) cannot change which paths are requested —
+/// the fixed two-GET allowlist is a design invariant. CP team names are lowercase
+/// alphanumerics with single hyphens; team UUIDs are hex + hyphens; both fit.
+fn validate_team_segment(team: &str) -> Result<()> {
+    let valid = !team.is_empty()
+        && team.len() <= 100
+        && team.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    if valid {
+        Ok(())
+    } else {
+        anyhow::bail!("invalid team name for dashboard: must be 1-100 letters, digits, or hyphens")
+    }
 }
 
 /// 128-bit nonce from the OS CSPRNG, hex-encoded (32 chars).
@@ -53,6 +74,7 @@ pub(crate) async fn run(global: GlobalOptions) -> Result<()> {
     let client = RestClient::new(global)?;
     // Fail exactly like every CLI command when no team is resolvable — before binding.
     let team = client.team(None)?;
+    validate_team_segment(&team)?;
     let nonce = generate_nonce()?;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -123,6 +145,7 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
             &full,
             match *path {
                 "/" => get(overview),
+                "/partials/overview" => get(overview_partial),
                 "/assets/htmx.min.js" => get(htmx_js),
                 "/assets/dashboard.css" => get(dashboard_css),
                 other => unreachable!("unrouted dashboard path {other}"),
@@ -228,6 +251,40 @@ async fn overview(axum::extract::State(state): axum::extract::State<Arc<DashStat
     match askama::Template::render(&shell) {
         Ok(html) => Html(html).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/overview_panel.html")]
+struct OverviewPanel {
+    data: data::OverviewData,
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/auth_expired.html")]
+struct AuthExpiredBanner;
+
+/// The htmx-polled partial (design AC 1/5): both allowlisted reads, per-panel states.
+/// Upstream 401 → the re-login banner with HTTP 286, which tells htmx to STOP polling.
+async fn overview_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    match data::fetch(&state.client, &state.team, chrono::Utc::now()).await {
+        Ok(overview) => {
+            let panel = OverviewPanel { data: overview };
+            match askama::Template::render(&panel) {
+                Ok(html) => Html(html).into_response(),
+                Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            }
+        }
+        Err(data::AuthExpired) => {
+            // 286 is htmx's "stop polling" status; the swap still happens.
+            let status = StatusCode::from_u16(286).unwrap_or(StatusCode::OK);
+            match askama::Template::render(&AuthExpiredBanner) {
+                Ok(html) => (status, Html(html)).into_response(),
+                Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            }
+        }
     }
 }
 
@@ -448,6 +505,29 @@ mod tests {
         assert!(!host_allowed("evil.example:9000", 9000));
         assert!(!host_allowed("127.0.0.1.evil.example:9000", 9000));
         assert!(!host_allowed("", 9000));
+    }
+
+    #[test]
+    fn team_segment_charset_blocks_path_escape() {
+        assert!(validate_team_segment("payments").is_ok());
+        assert!(validate_team_segment("team-a2").is_ok());
+        assert!(validate_team_segment("0198f2f3-1111-7000-8000-000000000000").is_ok());
+        for hostile in [
+            "",
+            "a/b",
+            "..",
+            "a?x=1",
+            "a#frag",
+            "a%2Fb",
+            "a b",
+            "../admin",
+            &"x".repeat(101),
+        ] {
+            assert!(
+                validate_team_segment(hostile).is_err(),
+                "must reject {hostile:?}"
+            );
+        }
     }
 
     #[test]
