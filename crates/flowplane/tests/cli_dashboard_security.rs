@@ -535,34 +535,34 @@ fn hostile_team_value_is_rejected_before_bind() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Criterion 7: there is NO flag to bind off-loopback. `--listen 0.0.0.0:80` must be a clap
-// usage error (unknown argument): non-zero exit, and no server announcement on stdout.
+// Criterion 7 (superseded by ui-f3, fpv2-m4u.1): F1 shipped no off-loopback bind flag at
+// all; the approved F3 design transfers `--listen` ownership to the container profile.
+// The DEFAULT posture is what this suite still owns: with no flags the bind stays
+// loopback-ephemeral. The off-loopback replacement guarantees (mandatory nonce, loopback
+// URL derivation, stderr warning) live in cli_dashboard_container_profile.rs.
 // ---------------------------------------------------------------------------------------------
 #[test]
-fn no_off_loopback_listen_flag_exists() {
+fn default_profile_never_binds_off_loopback() {
+    // A garbage --listen value must still be a usage error (typed SocketAddr parse),
+    // and must never announce a server.
     let home = common::unique_tempdir();
     let mut cmd = common::flowplane_cmd(&home);
     cmd.env("FLOWPLANE_SERVER", "http://127.0.0.1:9")
         .env("FLOWPLANE_TOKEN", SECRET_TOKEN)
         .env("FLOWPLANE_TEAM", "payments")
         .env("FLOWPLANE_DASHBOARD_NO_BROWSER", "1")
-        .args(["dashboard", "--listen", "0.0.0.0:80"]);
+        .args(["dashboard", "--listen", "not-an-address"]);
 
-    let out = wait_for_exit(cmd, "dashboard --listen 0.0.0.0:80");
+    let out = wait_for_exit(cmd, "dashboard --listen not-an-address");
     assert!(
         !out.status.success(),
-        "an off-loopback bind flag must not exist: `--listen` must be rejected, got: {:?}",
+        "a malformed --listen value must be rejected, got: {:?}",
         out.status
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("--listen") || stderr.to_lowercase().contains("unexpected argument"),
-        "stderr must be a clap usage error naming the unknown `--listen` argument, got: {stderr:?}"
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         !stdout.contains("Dashboard running"),
-        "the server must never start when given `--listen`, stdout: {stdout:?}"
+        "the server must never start on a malformed --listen, stdout: {stdout:?}"
     );
 }
 

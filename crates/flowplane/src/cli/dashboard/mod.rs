@@ -22,10 +22,31 @@ use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::client::RestClient;
 use super::config::GlobalOptions;
+
+/// Container-profile flags (fpv2-m4u.1, design: releases/3.1.0 ui-f3). The native
+/// profile (no flags) is unchanged: loopback ephemeral bind, browser auto-open, no file.
+#[derive(Debug, Default, clap::Args)]
+pub struct DashboardOptions {
+    /// Bind address (default 127.0.0.1 on an ephemeral port). Off-loopback binds print a
+    /// prominent warning; the per-launch URL nonce stays mandatory on every route.
+    #[arg(long, value_name = "ADDR:PORT")]
+    pub listen: Option<SocketAddr>,
+    /// Do not open a browser (headless/container use).
+    #[arg(long)]
+    pub no_open: bool,
+    /// Write the dashboard URL to this file once the server is ready (bound + first
+    /// successful upstream fetch). The file is the container readiness contract: any
+    /// pre-existing file is deleted before binding, the write is atomic, and an
+    /// unwritable path is fatal.
+    #[arg(long, value_name = "PATH")]
+    pub url_file: Option<PathBuf>,
+}
 
 /// Pinned, vendored htmx (2.0.4, sha256 e209dda5c8235479f3166defc7750e1dbcd5a5c1808b7792fc2e6733768fb447).
 /// Served same-origin so the CSP stays `default-src 'self'` and the page works offline.
@@ -90,16 +111,34 @@ pub(crate) fn generate_nonce() -> Result<String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-pub(crate) async fn run(global: GlobalOptions) -> Result<()> {
+pub(crate) async fn run(global: GlobalOptions, options: DashboardOptions) -> Result<()> {
     let client = RestClient::new(global)?;
     // Fail exactly like every CLI command when no team is resolvable — before binding.
     let team = client.team(None)?;
     validate_team_segment(&team)?;
     let nonce = generate_nonce()?;
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    // url-file lifecycle, BEFORE binding (design: a stale nonce from a prior launch must
+    // never satisfy discovery or the container healthcheck): delete any pre-existing
+    // file and prove the path writable. With --url-file the file IS the readiness
+    // contract, so an unusable path is fatal — never warn-and-continue.
+    if let Some(path) = &options.url_file {
+        prepare_url_file(path)?;
+    }
+
+    let bind_addr = options
+        .listen
+        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
+    if !bind_addr.ip().is_loopback() {
+        eprintln!(
+            "WARNING: --listen {bind_addr} binds off-loopback: the dashboard is reachable \
+             by other hosts/containers on that network. Every route still requires the \
+             per-launch URL nonce, and Host/Origin must be loopback with the bound port."
+        );
+    }
+    let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
-        .context("bind dashboard to a loopback ephemeral port")?;
+        .with_context(|| format!("bind dashboard to {bind_addr}"))?;
     let addr = listener.local_addr().context("read bound address")?;
     let state = Arc::new(DashState {
         nonce,
@@ -109,20 +148,112 @@ pub(crate) async fn run(global: GlobalOptions) -> Result<()> {
     });
     let app = build_router(state.clone());
 
-    let url = format!("http://127.0.0.1:{}/{}/", addr.port(), state.nonce);
+    // The URL is NEVER derived from the bind address (design-review pass 1): an
+    // off-loopback bind still yields a loopback URL, because the Host/Origin allowlist
+    // accepts only 127.0.0.1/localhost with the bound port, and container publishes map
+    // the same port number on the host.
+    let url = dashboard_url(addr.port(), &state.nonce);
     // Always print the URL (headless hosts and tests rely on it), then try the platform
     // opener; a missing/failing opener is non-fatal by design.
     println!("Dashboard running at {url} (Ctrl-C to stop)");
     use std::io::Write as _;
     let _ = std::io::stdout().flush();
-    if std::env::var_os("FLOWPLANE_DASHBOARD_NO_BROWSER").is_none() {
+    if !options.no_open && std::env::var_os("FLOWPLANE_DASHBOARD_NO_BROWSER").is_none() {
         open_browser(&url);
+    }
+
+    if let Some(path) = options.url_file.clone() {
+        tokio::spawn(readiness_writer(state.clone(), path, url));
     }
 
     axum::serve(listener, app)
         .await
         .context("serve dashboard")?;
     Ok(())
+}
+
+/// Loopback URL for the bound port — the single derivation point (never the bind address).
+fn dashboard_url(port: u16, nonce: &str) -> String {
+    format!("http://127.0.0.1:{port}/{nonce}/")
+}
+
+/// Pre-bind url-file lifecycle: remove any stale file, then prove — with sibling probe
+/// files — the exact capabilities the later atomic publish needs (create, rename, remove
+/// in the target directory). Every failure, including cleanup, is fatal by contract: a
+/// directory that cannot rename or remove would break the publish after binding.
+fn prepare_url_file(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| format!("delete stale --url-file {}", path.display()));
+        }
+    }
+    let probe = sibling_path(path, "probe");
+    let probe_renamed = sibling_path(path, "probe2");
+    std::fs::write(&probe, b"probe")
+        .with_context(|| format!("--url-file path {} is not writable", path.display()))?;
+    std::fs::rename(&probe, &probe_renamed).with_context(|| {
+        format!(
+            "--url-file path {} is not writable (rename failed)",
+            path.display()
+        )
+    })?;
+    std::fs::remove_file(&probe_renamed).with_context(|| {
+        format!(
+            "--url-file path {} is not writable (cleanup failed)",
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+/// Atomic publish: write a temp sibling, then rename over the target (same directory, so
+/// the rename cannot cross filesystems). Readers never observe a partial file.
+fn write_url_file_atomic(path: &Path, url: &str) -> Result<()> {
+    let tmp = sibling_path(path, "tmp");
+    std::fs::write(&tmp, format!("{url}\n").as_bytes())
+        .with_context(|| format!("write temp url-file {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("rename url-file into place at {}", path.display()))?;
+    Ok(())
+}
+
+/// `<path>.<tag>-<pid>` beside the target, so probe/temp files stay on the same
+/// filesystem and cannot collide across concurrent dashboards.
+fn sibling_path(path: &Path, tag: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".{tag}-{}", std::process::id()));
+    PathBuf::from(name)
+}
+
+/// Container readiness: retry the allowlisted stats read until the upstream answers once,
+/// then atomically publish the URL file. The file appearing is the healthcheck signal, so
+/// a write failure here exits the process (no healthy-but-fileless state can exist, and
+/// the inverse — fileless-but-running — must not persist silently either).
+async fn readiness_writer(state: Arc<DashState>, path: PathBuf, url: String) {
+    let probe = format!("/api/v1/teams/{}/stats/overview", state.team);
+    let mut attempts: u32 = 0;
+    loop {
+        match state.client.get_json(&probe).await {
+            Ok(_) => break,
+            Err(err) => {
+                if attempts.is_multiple_of(30) {
+                    eprintln!("dashboard upstream not ready yet ({err}); retrying");
+                }
+                attempts = attempts.saturating_add(1);
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
+    }
+    if let Err(err) = write_url_file_atomic(&path, &url) {
+        eprintln!(
+            "FATAL: could not write --url-file {}: {err:#}",
+            path.display()
+        );
+        std::process::exit(1);
+    }
+    eprintln!("dashboard URL written to {}", path.display());
 }
 
 /// Best-effort browser launch via the platform opener; failure only prints a note.
@@ -570,6 +701,159 @@ async fn resources_js() -> impl IntoResponse {
 }
 
 #[cfg(test)]
+mod container_profile_tests {
+    //! fpv2-m4u.1 unit layer: flag parsing, URL derivation, url-file lifecycle helpers.
+    #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use clap::Parser;
+
+    /// Minimal parser wrapper so DashboardOptions parses exactly as a flattened
+    /// subcommand does in main.rs.
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        opts: DashboardOptions,
+    }
+
+    /// Unique per-test dir under the OS temp dir (std-only, same pattern as the
+    /// integration harness `common::unique_tempdir`); removed on drop.
+    struct TestDir(PathBuf);
+    impl TestDir {
+        fn new(tag: &str) -> Self {
+            static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "flowplane-dash-ut-{tag}-{}-{seq}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            Self(dir)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn flags_default_to_native_profile() {
+        let cli = TestCli::try_parse_from(["dashboard"]).expect("parse");
+        assert!(cli.opts.listen.is_none());
+        assert!(!cli.opts.no_open);
+        assert!(cli.opts.url_file.is_none());
+    }
+
+    #[test]
+    fn flags_parse_container_profile() {
+        let cli = TestCli::try_parse_from([
+            "dashboard",
+            "--listen",
+            "0.0.0.0:8081",
+            "--no-open",
+            "--url-file",
+            "/shared/dashboard-url",
+        ])
+        .expect("parse");
+        let listen = cli.opts.listen.expect("listen");
+        assert_eq!(listen, "0.0.0.0:8081".parse::<SocketAddr>().unwrap());
+        assert!(!listen.ip().is_loopback());
+        assert!(cli.opts.no_open);
+        assert_eq!(
+            cli.opts.url_file.as_deref(),
+            Some(Path::new("/shared/dashboard-url"))
+        );
+    }
+
+    #[test]
+    fn listen_rejects_garbage_address() {
+        assert!(TestCli::try_parse_from(["dashboard", "--listen", "not-an-addr"]).is_err());
+    }
+
+    #[test]
+    fn url_never_derived_from_bind_address() {
+        // The derivation function takes only port + nonce — an off-loopback bind cannot
+        // leak into the URL because the bind address is not an input at all.
+        assert_eq!(
+            dashboard_url(8081, "abc123"),
+            "http://127.0.0.1:8081/abc123/"
+        );
+        assert_eq!(
+            dashboard_url(65535, "deadbeef"),
+            "http://127.0.0.1:65535/deadbeef/"
+        );
+    }
+
+    #[test]
+    fn prepare_url_file_deletes_stale_file() {
+        let dir = TestDir::new("t");
+        let path = dir.path().join("dashboard-url");
+        std::fs::write(&path, "http://127.0.0.1:1/stale-nonce/\n").expect("seed stale");
+        prepare_url_file(&path).expect("prepare");
+        assert!(
+            !path.exists(),
+            "stale url-file must be deleted before binding"
+        );
+    }
+
+    #[test]
+    fn prepare_url_file_ok_when_absent() {
+        let dir = TestDir::new("t");
+        let path = dir.path().join("dashboard-url");
+        prepare_url_file(&path).expect("prepare on absent file");
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn prepare_url_file_fatal_on_unwritable_path() {
+        // Parent "directory" is a regular file → the path can never be written.
+        let dir = TestDir::new("t");
+        let not_a_dir = dir.path().join("blocker");
+        std::fs::write(&not_a_dir, b"file").expect("seed");
+        let path = not_a_dir.join("dashboard-url");
+        let err = prepare_url_file(&path).expect_err("must be fatal");
+        assert!(
+            format!("{err:#}").contains("not writable")
+                || format!("{err:#}").contains("delete stale"),
+            "error must name the url-file problem: {err:#}"
+        );
+    }
+
+    #[test]
+    fn write_url_file_atomic_leaves_only_the_target() {
+        let dir = TestDir::new("t");
+        let path = dir.path().join("dashboard-url");
+        write_url_file_atomic(&path, "http://127.0.0.1:8081/abc/").expect("write");
+        let content = std::fs::read_to_string(&path).expect("read back");
+        assert_eq!(content, "http://127.0.0.1:8081/abc/\n");
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .map(|e| e.expect("entry").file_name())
+            .filter(|n| n != "dashboard-url")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no temp files may remain: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn sibling_path_stays_in_same_directory() {
+        let p = sibling_path(Path::new("/shared/dashboard-url"), "tmp");
+        assert_eq!(p.parent(), Some(Path::new("/shared")));
+        assert!(p
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("dashboard-url.tmp-"));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
@@ -839,12 +1123,15 @@ mod tests {
     }
 
     #[test]
-    fn no_listen_flag_exists() {
+    fn listen_flag_owned_by_container_profile() {
         use clap::Parser as _;
-        // The design forbids any off-loopback bind in F1: `--listen` must not parse.
+        // F1 shipped no `--listen` at all; the approved F3 design (ui-f3-eval-funnel,
+        // fpv2-m4u.1) transfers ownership: the flag now parses, the default profile
+        // stays loopback-ephemeral, and the URL is never derived from the bind address
+        // (covered in container_profile_tests).
         assert!(
             crate::Cli::try_parse_from(["flowplane", "dashboard", "--listen", "0.0.0.0:80"])
-                .is_err()
+                .is_ok()
         );
         assert!(crate::Cli::try_parse_from(["flowplane", "dashboard"]).is_ok());
     }
