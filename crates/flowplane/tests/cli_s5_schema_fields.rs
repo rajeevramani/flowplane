@@ -135,8 +135,8 @@ fn schema_is_valid_cli_schema_envelope_no_network() {
     }
     assert_eq!(
         subs.len(),
-        25,
-        "catalog must list EXACTLY 25 top-level commands, got {}: {names:?}",
+        26,
+        "catalog must list EXACTLY 26 top-level commands, got {}: {names:?}",
         subs.len()
     );
 

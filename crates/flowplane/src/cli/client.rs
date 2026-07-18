@@ -38,6 +38,34 @@ impl RestClient {
         self
     }
 
+    /// Test-only constructor bypassing context resolution (no config/credential files).
+    #[cfg(test)]
+    pub(crate) fn for_tests(config: EffectiveConfig) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            config,
+            global: GlobalOptions {
+                context: None,
+                server: None,
+                team: None,
+                org: None,
+                token: None,
+                output: None,
+                json: false,
+                no_color: false,
+                quiet: false,
+                verbose: false,
+                dry_run: false,
+                yes: false,
+                revision: None,
+                fields: Vec::new(),
+                timeout: None,
+                out: None,
+            },
+            report_errors: true,
+        }
+    }
+
     pub(crate) async fn request(
         &self,
         method: reqwest::Method,
@@ -417,41 +445,19 @@ mod read_seam_tests {
     use axum::Router;
 
     fn client_for(server: String) -> RestClient {
-        RestClient {
-            http: reqwest::Client::new(),
-            config: EffectiveConfig {
-                server,
-                org: Some("test-org".into()),
-                team: Some("test-team".into()),
-                token: Some("test-bearer-token".into()),
-                token_source: None,
-                dev_fallback_available: false,
-                timeout: 5,
-                oidc_issuer: None,
-                oidc_client_id: None,
-                oidc_scope: None,
-                callback_url: None,
-            },
-            global: GlobalOptions {
-                context: None,
-                server: None,
-                team: None,
-                org: None,
-                token: None,
-                output: None,
-                json: false,
-                no_color: false,
-                quiet: false,
-                verbose: false,
-                dry_run: false,
-                yes: false,
-                revision: None,
-                fields: Vec::new(),
-                timeout: None,
-                out: None,
-            },
-            report_errors: true,
-        }
+        RestClient::for_tests(EffectiveConfig {
+            server,
+            org: Some("test-org".into()),
+            team: Some("test-team".into()),
+            token: Some("test-bearer-token".into()),
+            token_source: None,
+            dev_fallback_available: false,
+            timeout: 5,
+            oidc_issuer: None,
+            oidc_client_id: None,
+            oidc_scope: None,
+            callback_url: None,
+        })
     }
 
     /// Loopback stub on an ephemeral port (parallel-safe: port 0, no shared state).

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Flowplane — {{ team }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/{{ nonce }}/assets/dashboard.css">
+  <script src="/{{ nonce }}/assets/htmx.min.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Flowplane</h1>
+    <span class="team">team: {{ team }}</span>
+  </header>
+  <main id="overview">
+    <section class="panel" id="panel-gateway">
+      <h2>Gateway</h2>
+      <p class="placeholder">Connecting…</p>
+    </section>
+    <section class="panel" id="panel-traffic">
+      <h2>Traffic</h2>
+      <p class="placeholder">Connecting…</p>
+    </section>
+    <section class="panel" id="panel-dataplanes">
+      <h2>Dataplanes</h2>
+      <p class="placeholder">Connecting…</p>
+    </section>
+  </main>
+</body>
+</html>

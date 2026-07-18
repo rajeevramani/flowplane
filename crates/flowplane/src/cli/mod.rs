@@ -2,6 +2,7 @@ mod client;
 mod commands;
 mod config;
 pub(crate) mod confirm;
+mod dashboard;
 pub(crate) mod output;
 pub(crate) mod schema;
 
@@ -2004,6 +2005,11 @@ async fn run_cert(client: RestClient, command: CertCommand) -> Result<()> {
         }
     };
     Ok(())
+}
+
+/// `flowplane dashboard` (fpv2-03m): loopback read-only presentation server.
+pub async fn run_dashboard(global: GlobalOptions) -> Result<()> {
+    dashboard::run(global).await
 }
 
 pub async fn run_stats(global: GlobalOptions, command: StatsCommand) -> Result<()> {
