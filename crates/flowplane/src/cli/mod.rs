@@ -1398,6 +1398,24 @@ pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
                 .await?
         }
         ApiCommand::Spec { command } => match command {
+            commands::ApiSpecCommand::List {
+                team,
+                api,
+                limit,
+                offset,
+            } => {
+                let team = client.team(team)?;
+                client
+                    .request(
+                        reqwest::Method::GET,
+                        &format!(
+                            "/api/v1/teams/{team}/api-definitions/{}/specs?limit={limit}&offset={offset}",
+                            query_component(&api)
+                        ),
+                        None,
+                    )
+                    .await?
+            }
             commands::ApiSpecCommand::Reject {
                 team,
                 api,
@@ -2637,6 +2655,7 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/api-definitions",
         "/api/v1/teams/{team}/api-definitions/{name}",
         "/api/v1/teams/{team}/api-definitions/{name}/status",
+        "/api/v1/teams/{team}/api-definitions/{name}/specs",
         "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/reject",
         "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/publish",
         "/api/v1/teams/{team}/mcp/status",

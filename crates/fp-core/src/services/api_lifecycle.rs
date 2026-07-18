@@ -4,7 +4,7 @@ use crate::authz::{check_resource_access, Decision, PrincipalCtx};
 use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::api_lifecycle::{
     ApiDefinition, ApiDefinitionSpec, ApiRouteBindingSpec, ApiTool, ApiToolSpec, HttpMethod,
-    SpecFormat, SpecReviewDecision, SpecSourceKind, SpecVersion, SpecVersionInput,
+    SpecFormat, SpecReviewDecision, SpecSourceKind, SpecVersion, SpecVersionInput, SpecVersionMeta,
 };
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
@@ -247,6 +247,48 @@ pub async fn list_apis(
 ) -> DomainResult<(Vec<ApiDefinition>, i64)> {
     authorize(pool, ctx, Action::Read, team, request_id).await?;
     api_lifecycle::list_api_definitions(pool, team.id, limit, offset).await
+}
+
+#[derive(Debug, Clone)]
+pub struct SpecVersionListItem {
+    pub meta: SpecVersionMeta,
+    /// Latest review decision, or `None` for a version with no review events yet.
+    pub latest_decision: Option<SpecReviewDecision>,
+}
+
+/// Paginated spec-version metadata for one API (newest first), each row carrying its
+/// latest review decision resolved in a single batched query.
+pub async fn list_spec_versions(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    api_name: &str,
+    limit: i64,
+    offset: i64,
+    request_id: RequestId,
+) -> DomainResult<(Vec<SpecVersionListItem>, i64)> {
+    authorize(pool, ctx, Action::Read, team, request_id).await?;
+    let api = api_lifecycle::get_api_definition(pool, team.id, api_name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("api", api_name))?;
+    let (metas, total) =
+        api_lifecycle::list_spec_versions_meta(pool, team.id, api.id, limit, offset).await?;
+    let ids: Vec<_> = metas.iter().map(|m| m.id).collect();
+    let decisions = api_lifecycle::latest_spec_review_decisions(pool, team.id, &ids).await?;
+    let items = metas
+        .into_iter()
+        .map(|meta| {
+            let latest_decision = decisions
+                .iter()
+                .find(|(id, _)| *id == meta.id)
+                .map(|(_, d)| *d);
+            SpecVersionListItem {
+                meta,
+                latest_decision,
+            }
+        })
+        .collect();
+    Ok((items, total))
 }
 
 pub async fn api_status(

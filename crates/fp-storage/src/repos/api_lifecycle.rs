@@ -7,7 +7,8 @@ use fp_domain::api_lifecycle::{
     validate_api_name, ApiDefinition, ApiDefinitionSpec, ApiRouteBinding, ApiRouteBindingSpec,
     ApiTool, ApiToolSpec, CaptureSession, CaptureSessionSpec, CaptureSessionStatus, HttpMethod,
     ObservationIngest, RawObservation, RetentionPolicy, RetentionPolicySpec, SpecFormat,
-    SpecReviewDecision, SpecSourceKind, SpecVersion, SpecVersionInput, SpecVersionReviewEvent,
+    SpecReviewDecision, SpecSourceKind, SpecVersion, SpecVersionInput, SpecVersionMeta,
+    SpecVersionReviewEvent,
 };
 use fp_domain::authz::TeamRef;
 use fp_domain::{
@@ -27,6 +28,9 @@ const API_COLUMNS: &str =
 const BINDING_COLUMNS: &str = "id, team_id, api_definition_id, route_config_id, listener_id, \
     name, virtual_host, route, created_at";
 const SPEC_COLUMNS: &str = "id, team_id, api_definition_id, version, source_kind, format, spec, \
+    spec_hash, created_at";
+// Metadata-only projection: never selects the spec JSONB (up to 512 KiB per row).
+const SPEC_META_COLUMNS: &str = "id, team_id, api_definition_id, version, source_kind, format, \
     spec_hash, created_at";
 const TOOL_COLUMNS: &str = "id, team_id, api_definition_id, spec_version_id, name, operation_id, \
     method, path, input_schema, output_schema, enabled, created_at, updated_at";
@@ -151,6 +155,19 @@ fn binding_from_row(row: &PgRow) -> ApiRouteBinding {
         route: row.get("route"),
         created_at: row.get("created_at"),
     }
+}
+
+fn spec_meta_from_row(row: &PgRow) -> DomainResult<SpecVersionMeta> {
+    Ok(SpecVersionMeta {
+        id: SpecVersionId::from(row.get::<Uuid, _>("id")),
+        team_id: TeamId::from(row.get::<Uuid, _>("team_id")),
+        api_definition_id: ApiDefinitionId::from(row.get::<Uuid, _>("api_definition_id")),
+        version: row.get("version"),
+        source_kind: SpecSourceKind::parse(&row.get::<String, _>("source_kind"))?,
+        format: SpecFormat::parse(&row.get::<String, _>("format"))?,
+        spec_hash: row.get("spec_hash"),
+        created_at: row.get("created_at"),
+    })
 }
 
 fn spec_from_row(row: &PgRow) -> DomainResult<SpecVersion> {
@@ -786,6 +803,75 @@ pub async fn append_spec_review_event(
     .await
     .map_err(|e| DomainError::internal(format!("append spec review event: {e}")))?;
     review_event_from_row(&row)
+}
+
+/// Paginated spec-version metadata for one API, newest version first. Metadata-only: the
+/// `spec` JSONB column is never selected (see [`SpecVersionMeta`]).
+pub async fn list_spec_versions_meta(
+    pool: &PgPool,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+    limit: i64,
+    offset: i64,
+) -> DomainResult<(Vec<SpecVersionMeta>, i64)> {
+    let rows = sqlx::query(&format!(
+        "SELECT {SPEC_META_COLUMNS} FROM spec_versions \
+         WHERE team_id = $1 AND api_definition_id = $2 \
+         ORDER BY version DESC LIMIT $3 OFFSET $4"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .bind(limit.clamp(1, 500))
+    .bind(offset.max(0))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list spec versions: {e}")))?;
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM spec_versions WHERE team_id = $1 AND api_definition_id = $2",
+    )
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count spec versions: {e}")))?;
+    Ok((
+        rows.iter()
+            .map(spec_meta_from_row)
+            .collect::<DomainResult<Vec<_>>>()?,
+        total,
+    ))
+}
+
+/// Latest review decision for each of the given spec versions in one query (no per-row
+/// N+1). The `created_at DESC, id DESC` tie-break matches `latest_spec_review_decision`.
+pub async fn latest_spec_review_decisions(
+    pool: &PgPool,
+    team_id: TeamId,
+    spec_version_ids: &[SpecVersionId],
+) -> DomainResult<Vec<(SpecVersionId, SpecReviewDecision)>> {
+    if spec_version_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<Uuid> = spec_version_ids.iter().map(|id| id.as_uuid()).collect();
+    let rows = sqlx::query(
+        "SELECT DISTINCT ON (spec_version_id) spec_version_id, decision \
+         FROM spec_version_review_events \
+         WHERE team_id = $1 AND spec_version_id = ANY($2) \
+         ORDER BY spec_version_id, created_at DESC, id DESC",
+    )
+    .bind(team_id.as_uuid())
+    .bind(&ids)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("latest spec review decisions: {e}")))?;
+    rows.iter()
+        .map(|row| {
+            Ok((
+                SpecVersionId::from(row.get::<Uuid, _>("spec_version_id")),
+                SpecReviewDecision::parse(&row.get::<String, _>("decision"))?,
+            ))
+        })
+        .collect()
 }
 
 pub async fn latest_spec_review_decision(

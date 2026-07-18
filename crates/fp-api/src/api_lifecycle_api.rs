@@ -61,6 +61,36 @@ pub struct SpecVersionSummary {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// One row of the spec-version list: metadata plus the version's latest review decision.
+/// Content is never inlined here — fetch it via the version's `/content` endpoint.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SpecVersionListItemView {
+    pub id: uuid::Uuid,
+    pub version: i64,
+    pub source_kind: String,
+    pub format: String,
+    pub spec_hash: String,
+    /// Latest review decision (`submitted`, `reviewed`, `rejected`, `published`,
+    /// `unpublished`), or absent for a version with no review events yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_decision: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<svc::SpecVersionListItem> for SpecVersionListItemView {
+    fn from(value: svc::SpecVersionListItem) -> Self {
+        Self {
+            id: value.meta.id.as_uuid(),
+            version: value.meta.version,
+            source_kind: value.meta.source_kind.as_str().into(),
+            format: value.meta.format.as_str().into(),
+            spec_hash: value.meta.spec_hash,
+            latest_decision: value.latest_decision.map(|d| d.as_str().into()),
+            created_at: value.meta.created_at,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PublishSpecView {
     pub spec: SpecVersionSummary,
@@ -303,6 +333,51 @@ pub async fn api_status(
     run.await
         .map(|v| Json(ApiStatusView::from(v)))
         .map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(get, path = "/api/v1/teams/{team}/api-definitions/{name}/specs",
+    tag = "ApiDefinitions",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "API name"),
+        ListQuery,
+    ),
+    responses(
+        (status = 200, body = Page<SpecVersionListItemView>),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    ))]
+pub async fn list_spec_versions(
+    State(state): State<AppState>,
+    Path((team, name)): Path<(String, String)>,
+    Query(query): Query<ListQuery>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<Page<SpecVersionListItemView>>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::list_spec_versions(
+            &state.pool,
+            &ctx,
+            team,
+            &name,
+            query.limit,
+            query.offset,
+            rid,
+        )
+        .await
+    };
+    let (items, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok(Json(Page {
+        items: items
+            .into_iter()
+            .map(SpecVersionListItemView::from)
+            .collect(),
+        total,
+        limit: query.limit.clamp(1, 500),
+        offset: query.offset.max(0),
+    }))
 }
 
 #[utoipa::path(patch, path = "/api/v1/teams/{team}/mcp/tools/{name}",

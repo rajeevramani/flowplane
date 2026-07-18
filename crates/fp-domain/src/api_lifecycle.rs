@@ -168,6 +168,20 @@ pub struct SpecVersion {
     pub created_at: DateTime<Utc>,
 }
 
+/// Spec-version row without the `spec` JSONB body. List endpoints return this shape so a
+/// page of versions never inlines up to 512 KiB of content per row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpecVersionMeta {
+    pub id: SpecVersionId,
+    pub team_id: TeamId,
+    pub api_definition_id: ApiDefinitionId,
+    pub version: i64,
+    pub source_kind: SpecSourceKind,
+    pub format: SpecFormat,
+    pub spec_hash: String,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpecReviewDecision {

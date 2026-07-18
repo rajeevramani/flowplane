@@ -670,6 +670,21 @@ pub enum ApiCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ApiSpecCommand {
+    /// List an API's spec versions (newest first) with their latest review decision.
+    #[command(after_help = "Example:\n  flowplane api spec list catalog --team payments")]
+    List {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Name of the API whose spec versions to list.
+        api: String,
+        /// Max items (default 50, cap 500).
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        /// Items to skip.
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
+    },
     /// Reject a pending spec version.
     #[command(after_help = "Example:\n  flowplane api spec reject catalog 3 --reason superseded")]
     Reject {

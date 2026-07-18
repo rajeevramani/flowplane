@@ -136,6 +136,7 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             api_lifecycle_api::delete_api
         ))
         .routes(routes!(api_lifecycle_api::api_status))
+        .routes(routes!(api_lifecycle_api::list_spec_versions))
         .routes(routes!(crate::mcp_api::status))
         .routes(routes!(crate::mcp_api::connections))
         .routes(routes!(api_lifecycle_api::update_mcp_tool))

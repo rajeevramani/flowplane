@@ -1163,3 +1163,168 @@ async fn raw_observation_body_can_merge_after_target_completion() {
     assert_eq!(refreshed.sample_count, 1);
     assert_eq!(refreshed.byte_count, 9);
 }
+
+// -- ui-f4 S1: paginated spec-version metadata + batched latest review decisions --
+
+async fn commit_spec_version(
+    pool: &PgPool,
+    team: TeamRef,
+    api_id: fp_domain::ApiDefinitionId,
+    title: &str,
+) -> fp_domain::api_lifecycle::SpecVersion {
+    let mut tx = pool.begin().await.expect("spec tx");
+    let spec = api_lifecycle::create_spec_version(&mut tx, team, api_id, &openapi(title))
+        .await
+        .expect("spec version");
+    tx.commit().await.expect("commit spec");
+    spec
+}
+
+async fn commit_review_event(
+    pool: &PgPool,
+    team: TeamRef,
+    api_id: fp_domain::ApiDefinitionId,
+    spec_version_id: fp_domain::SpecVersionId,
+    decision: fp_domain::api_lifecycle::SpecReviewDecision,
+) {
+    let mut tx = pool.begin().await.expect("event tx");
+    api_lifecycle::append_spec_review_event(
+        &mut tx,
+        team,
+        api_lifecycle::SpecReviewEventInsert {
+            api_id,
+            spec_version_id,
+            decision,
+            actor_type: "user",
+            actor_id: None,
+            reason: "",
+            metadata: serde_json::json!({}),
+        },
+    )
+    .await
+    .expect("append event");
+    tx.commit().await.expect("commit event");
+}
+
+#[tokio::test]
+async fn spec_version_meta_list_pages_newest_first_with_batched_latest_decisions() {
+    use fp_domain::api_lifecycle::SpecReviewDecision as D;
+    let Some(w) = world().await else { return };
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api =
+        api_lifecycle::create_api_definition(&mut tx, w.team_a, &unique("api"), &api_spec("A"))
+            .await
+            .expect("api");
+    tx.commit().await.expect("commit api");
+
+    let v1 = commit_spec_version(&w.pool, w.team_a, api.id, "v1").await;
+    let v2 = commit_spec_version(&w.pool, w.team_a, api.id, "v2").await;
+    let v3 = commit_spec_version(&w.pool, w.team_a, api.id, "v3").await;
+    // v1 has no events; v2 ends published; v3 ends rejected.
+    commit_review_event(&w.pool, w.team_a, api.id, v2.id, D::Submitted).await;
+    commit_review_event(&w.pool, w.team_a, api.id, v2.id, D::Published).await;
+    commit_review_event(&w.pool, w.team_a, api.id, v3.id, D::Submitted).await;
+    commit_review_event(&w.pool, w.team_a, api.id, v3.id, D::Rejected).await;
+
+    let (page, total) = api_lifecycle::list_spec_versions_meta(&w.pool, w.team_a.id, api.id, 2, 0)
+        .await
+        .expect("page 1");
+    assert_eq!(total, 3);
+    assert_eq!(
+        page.iter().map(|m| m.version).collect::<Vec<_>>(),
+        vec![v3.version, v2.version]
+    );
+    assert_eq!(page[0].id, v3.id);
+    assert_eq!(page[0].spec_hash, v3.spec_hash);
+    assert_eq!(page[0].source_kind, SpecSourceKind::Imported);
+
+    let ids: Vec<_> = page.iter().map(|m| m.id).collect();
+    let decisions = api_lifecycle::latest_spec_review_decisions(&w.pool, w.team_a.id, &ids)
+        .await
+        .expect("decisions");
+    let of = |id| decisions.iter().find(|(d, _)| *d == id).map(|(_, d)| *d);
+    assert_eq!(of(v3.id), Some(D::Rejected));
+    assert_eq!(of(v2.id), Some(D::Published));
+
+    let (page2, total2) =
+        api_lifecycle::list_spec_versions_meta(&w.pool, w.team_a.id, api.id, 2, 2)
+            .await
+            .expect("page 2");
+    assert_eq!(total2, 3);
+    assert_eq!(page2.len(), 1);
+    assert_eq!(page2[0].version, v1.version);
+    let decisions2 =
+        api_lifecycle::latest_spec_review_decisions(&w.pool, w.team_a.id, &[page2[0].id])
+            .await
+            .expect("decisions 2");
+    assert!(decisions2.is_empty(), "v1 has no review events");
+}
+
+#[tokio::test]
+async fn latest_spec_review_decisions_scope_by_team_and_break_ties_deterministically() {
+    use fp_domain::api_lifecycle::SpecReviewDecision as D;
+    let Some(w) = world().await else { return };
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api =
+        api_lifecycle::create_api_definition(&mut tx, w.team_a, &unique("api"), &api_spec("A"))
+            .await
+            .expect("api");
+    tx.commit().await.expect("commit api");
+    let v1 = commit_spec_version(&w.pool, w.team_a, api.id, "v1").await;
+
+    // Empty input short-circuits without touching the DB.
+    let none = api_lifecycle::latest_spec_review_decisions(&w.pool, w.team_a.id, &[])
+        .await
+        .expect("empty");
+    assert!(none.is_empty());
+
+    // Two events with IDENTICAL created_at: the id tie-break must decide, matching the
+    // single-version query's `created_at DESC, id DESC`.
+    let ts = Utc::now();
+    // Random per-run ids (fixed ids collide across suite runs on the shared DB); both Rust
+    // Uuid and PostgreSQL uuid compare byte-wise, so sorting picks the same winner.
+    let (low, high) = {
+        let (a, b) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        (a.min(b), a.max(b))
+    };
+    for (id, decision) in [(low, "published"), (high, "rejected")] {
+        sqlx::query(
+            "INSERT INTO spec_version_review_events \
+             (id, team_id, org_id, api_definition_id, spec_version_id, decision, actor_type, \
+              actor_id, reason, metadata, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'user', NULL, '', '{}'::jsonb, $7)",
+        )
+        .bind(id)
+        .bind(w.team_a.id.as_uuid())
+        .bind(w.team_a.org_id.as_uuid())
+        .bind(api.id.as_uuid())
+        .bind(v1.id.as_uuid())
+        .bind(decision)
+        .bind(ts)
+        .execute(&w.pool)
+        .await
+        .expect("seed event");
+    }
+    let batch = api_lifecycle::latest_spec_review_decisions(&w.pool, w.team_a.id, &[v1.id])
+        .await
+        .expect("batch");
+    assert_eq!(batch, vec![(v1.id, D::Rejected)], "highest id wins the tie");
+    let mut tx = w.pool.begin().await.expect("tx single");
+    let single = api_lifecycle::latest_spec_review_decision(&mut tx, w.team_a.id, v1.id)
+        .await
+        .expect("single");
+    tx.rollback().await.expect("rollback");
+    assert_eq!(single, Some(D::Rejected), "batch and single queries agree");
+
+    // Cross-team: team_b sees nothing for team_a's versions.
+    let cross = api_lifecycle::latest_spec_review_decisions(&w.pool, w.team_b.id, &[v1.id])
+        .await
+        .expect("cross");
+    assert!(cross.is_empty());
+    let (cross_list, cross_total) =
+        api_lifecycle::list_spec_versions_meta(&w.pool, w.team_b.id, api.id, 50, 0)
+            .await
+            .expect("cross list");
+    assert!(cross_list.is_empty());
+    assert_eq!(cross_total, 0);
+}
