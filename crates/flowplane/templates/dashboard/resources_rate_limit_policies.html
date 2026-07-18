@@ -1,0 +1,35 @@
+{% if let Some(t) = panel.data() %}
+<div class="rl-policy-list">
+  {% if let Some(p) = t.partial %}
+  {% if p.budget() %}
+  <p class="banner">Partial — first {{ p.shown }} of {{ p.total }} {{ p.collection }} (budget reached).</p>
+  {% else %}
+  <p class="banner">Partial data: the {{ p.collection }} collection is incomplete.</p>
+  {% endif %}
+  {% endif %}
+  <table class="dataplanes">
+    <thead><tr><th>Policy</th><th>Limit</th><th>Descriptors</th><th>Revision</th></tr></thead>
+    <tbody>
+      {% for row in t.rows %}
+      <tr>
+        <td>{{ row.name }}</td>
+        {% if row.unparsed %}
+        <td colspan="3" class="placeholder">unparseable spec (version skew?)</td>
+        {% else %}
+        <td>{{ row.requests_per_unit }}/{{ row.unit }}</td>
+        <td>{{ row.descriptors }}</td>
+        <td>{{ row.revision }}</td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+      {% if t.rows.is_empty() %}
+      <tr><td colspan="4" class="placeholder">No policies in this domain.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% else if panel.unauthorized() %}
+<p class="unauthorized">Not authorized to view this domain's policies.</p>
+{% else %}
+<p class="unavailable">Policies are currently unavailable.</p>
+{% endif %}

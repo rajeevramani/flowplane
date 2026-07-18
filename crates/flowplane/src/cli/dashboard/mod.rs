@@ -8,6 +8,12 @@
 //! nothing in this module writes it to a response or a log.
 
 mod data;
+mod filters_inventory;
+mod joins;
+mod orphans;
+mod ratelimits;
+mod resources;
+mod secrets_panel;
 
 use anyhow::{Context, Result};
 use axum::body::Body;
@@ -25,15 +31,29 @@ use super::config::GlobalOptions;
 /// Served same-origin so the CSP stays `default-src 'self'` and the page works offline.
 const HTMX_JS: &[u8] = include_bytes!("assets/htmx.min.js");
 const DASHBOARD_CSS: &str = include_str!("assets/dashboard.css");
+/// Same-origin hover-highlight helper for the topology view (CSP `default-src 'self'`
+/// forbids inline script, so this ships as a served asset).
+const RESOURCES_JS: &str = include_str!("assets/resources.js");
 
 /// Every route the dashboard serves, WITHOUT the nonce prefix. The router is built from
 /// this table and from nothing else, so a route that skips the nonce prefix cannot exist;
 /// tests iterate it to prove each route class 404s without the nonce.
 pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/",
+    "/resources",
     "/partials/overview",
+    "/partials/resources/topology",
+    "/partials/resources/clusters",
+    "/partials/resources/route-configs",
+    "/partials/resources/listeners",
+    "/partials/resources/rate-limits",
+    "/partials/resources/rate-limit-policies",
+    "/partials/resources/filters",
+    "/partials/resources/secrets",
+    "/partials/resources/orphans",
     "/assets/htmx.min.js",
     "/assets/dashboard.css",
+    "/assets/resources.js",
 ];
 
 pub(crate) struct DashState {
@@ -145,9 +165,22 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
             &full,
             match *path {
                 "/" => get(overview),
+                "/resources" => get(resources_page),
                 "/partials/overview" => get(overview_partial),
+                "/partials/resources/topology" => get(resources_topology_partial),
+                "/partials/resources/clusters" => get(resources_clusters_partial),
+                "/partials/resources/route-configs" => get(resources_route_configs_partial),
+                "/partials/resources/listeners" => get(resources_listeners_partial),
+                "/partials/resources/rate-limits" => get(resources_rate_limits_partial),
+                "/partials/resources/rate-limit-policies" => {
+                    get(resources_rate_limit_policies_partial)
+                }
+                "/partials/resources/filters" => get(resources_filters_partial),
+                "/partials/resources/secrets" => get(resources_secrets_partial),
+                "/partials/resources/orphans" => get(resources_orphans_partial),
                 "/assets/htmx.min.js" => get(htmx_js),
                 "/assets/dashboard.css" => get(dashboard_css),
+                "/assets/resources.js" => get(resources_js),
                 other => unreachable!("unrouted dashboard path {other}"),
             },
         );
@@ -288,12 +321,252 @@ async fn overview_partial(
     }
 }
 
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources.html")]
+struct ResourcesShell<'a> {
+    nonce: &'a str,
+    team: &'a str,
+}
+
+/// The Resources page shell (fpv2-cxw.1). Renders NO data itself: each panel is an
+/// htmx-lazy `<details>` panel that fetches its partial on first open (toggle), so an unopened panel
+/// issues no upstream requests.
+async fn resources_page(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let shell = ResourcesShell {
+        nonce: &state.nonce,
+        team: &state.team,
+    };
+    match askama::Template::render(&shell) {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_clusters.html")]
+struct ClustersPanel {
+    panel: data::Panel<resources::Table<resources::ClusterRow>>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_route_configs.html")]
+struct RouteConfigsPanel {
+    panel: data::Panel<resources::Table<resources::RouteConfigRow>>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_listeners.html")]
+struct ListenersPanel {
+    panel: data::Panel<resources::Table<resources::ListenerRow>>,
+}
+
+/// Render one resources partial: 401 → the shared re-login banner with htmx's 286
+/// stop status (same seam as the overview partial), retargeted at the whole
+/// `#resources` main so the expired-session state is dashboard-global — every panel
+/// is replaced, not just the one that happened to fetch; anything else → the panel
+/// state.
+fn render_resources_panel<T: askama::Template>(result: Result<T, data::AuthExpired>) -> Response {
+    match result {
+        Ok(panel) => match askama::Template::render(&panel) {
+            Ok(html) => Html(html).into_response(),
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        },
+        Err(data::AuthExpired) => {
+            let status = StatusCode::from_u16(286).unwrap_or(StatusCode::OK);
+            match askama::Template::render(&AuthExpiredBanner) {
+                Ok(html) => (
+                    status,
+                    [("HX-Retarget", "#resources"), ("HX-Reswap", "innerHTML")],
+                    Html(html),
+                )
+                    .into_response(),
+                Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            }
+        }
+    }
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_topology.html")]
+struct TopologyPanelTemplate {
+    panel: resources::TopologyPanel,
+}
+
+async fn resources_topology_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = resources::fetch_topology(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| TopologyPanelTemplate { panel });
+    render_resources_panel(result)
+}
+
+async fn resources_clusters_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = resources::fetch_clusters(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| ClustersPanel { panel });
+    render_resources_panel(result)
+}
+
+async fn resources_route_configs_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = resources::fetch_route_configs(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| RouteConfigsPanel { panel });
+    render_resources_panel(result)
+}
+
+async fn resources_listeners_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = resources::fetch_listeners(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| ListenersPanel { panel });
+    render_resources_panel(result)
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_rate_limits.html")]
+struct RateLimitsPanelTemplate<'a> {
+    nonce: &'a str,
+    panel: data::Panel<ratelimits::RateLimitsData>,
+}
+
+async fn resources_rate_limits_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let nonce = state.nonce.clone();
+    let result = ratelimits::fetch_rate_limits(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| RateLimitsPanelTemplate {
+            nonce: &nonce,
+            panel,
+        });
+    render_resources_panel(result)
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_rate_limit_policies.html")]
+struct PoliciesPanelTemplate {
+    panel: data::Panel<resources::Table<ratelimits::PolicyRow>>,
+}
+
+/// Extract and percent-decode the `domain` value from a raw query string. Decoding
+/// here (not axum's Query) keeps the route registrable without the parameter — the
+/// nonce-route contract keeps every registered route serving 200.
+fn domain_from_query(query: Option<&str>) -> Option<String> {
+    let query = query?;
+    let raw = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("domain="))?;
+    // Percent-decode; '+' is NOT space here (the URL was built by encode_segment).
+    let bytes = raw.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 3 <= bytes.len() {
+            let hex = bytes.get(i + 1..i + 3)?;
+            let hi = char::from(hex[0]).to_digit(16)?;
+            let lo = char::from(hex[1]).to_digit(16)?;
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Lazy per-domain policies list. The domain arrives as a query value; mirror the
+/// CP's domain-name bounds before using it, then the fetch layer percent-encodes it
+/// into the upstream path.
+async fn resources_rate_limit_policies_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+    request: Request<Body>,
+) -> Response {
+    // A missing/invalid domain renders a 200 panel-state message (the nonce-route
+    // contract keeps every registered route serving 200; htmx swaps the message in).
+    let invalid =
+        || Html("<p class=\"unavailable\">missing or invalid domain parameter</p>").into_response();
+    let Some(domain) = domain_from_query(request.uri().query()) else {
+        return invalid();
+    };
+    // The canonical domain-name contract (1–253 CHARS, not bytes, no control chars) —
+    // the same validator the CP enforces, so a legal Unicode domain near the limit is
+    // never rejected here while its row rendered fine in the sweep.
+    if fp_domain::rate_limit::validate_rate_limit_domain_name(&domain).is_err() {
+        return invalid();
+    }
+    let result = ratelimits::fetch_policies(&state.client, &state.team, &domain)
+        .await
+        .map(|panel| PoliciesPanelTemplate { panel });
+    render_resources_panel(result)
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_filters.html")]
+struct FiltersPanelTemplate {
+    panel: filters_inventory::FiltersPanel,
+}
+
+async fn resources_filters_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = filters_inventory::fetch_filters(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| FiltersPanelTemplate { panel });
+    render_resources_panel(result)
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_secrets.html")]
+struct SecretsPanelTemplate {
+    panel: data::Panel<secrets_panel::SecretsData>,
+}
+
+async fn resources_secrets_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = secrets_panel::fetch_secrets(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| SecretsPanelTemplate { panel });
+    render_resources_panel(result)
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_orphans.html")]
+struct OrphansPanelTemplate {
+    panel: orphans::OrphansPanel,
+}
+
+async fn resources_orphans_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = orphans::fetch_orphans(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| OrphansPanelTemplate { panel });
+    render_resources_panel(result)
+}
+
 async fn htmx_js() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "application/javascript")], HTMX_JS)
 }
 
 async fn dashboard_css() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/css")], DASHBOARD_CSS)
+}
+
+async fn resources_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "application/javascript")],
+        RESOURCES_JS,
+    )
 }
 
 #[cfg(test)]
@@ -528,6 +801,41 @@ mod tests {
                 "must reject {hostile:?}"
             );
         }
+    }
+
+    #[test]
+    fn domain_query_decoding_round_trips_the_encoder() {
+        for raw in [
+            "checkout",
+            "a|b",
+            "a/b c%",
+            "dom?x=1#f",
+            "multi|part|domain",
+        ] {
+            let encoded = resources::encode_segment(raw);
+            let query = format!("domain={encoded}");
+            assert_eq!(
+                domain_from_query(Some(&query)).as_deref(),
+                Some(raw),
+                "decode(encode({raw:?})) must round-trip"
+            );
+        }
+        assert_eq!(domain_from_query(None), None);
+        assert_eq!(domain_from_query(Some("other=1")), None);
+        assert_eq!(
+            domain_from_query(Some("domain=%zz")),
+            None,
+            "malformed percent escapes are rejected"
+        );
+        // A 253-CHAR (but >253-byte) Unicode domain is legal per the CP contract and
+        // must survive the round-trip; the handler validates chars, not bytes.
+        let unicode = "é".repeat(253);
+        assert!(fp_domain::rate_limit::validate_rate_limit_domain_name(&unicode).is_ok());
+        let encoded = resources::encode_segment(&unicode);
+        assert_eq!(
+            domain_from_query(Some(&format!("domain={encoded}"))).as_deref(),
+            Some(unicode.as_str())
+        );
     }
 
     #[test]

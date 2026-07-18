@@ -192,7 +192,7 @@ fn to_panel<T: serde::de::DeserializeOwned>(
 }
 
 /// "12s ago" / "3m ago" / "2h ago" / "4d ago"; clock skew clamps to "0s ago".
-fn humanize_age(now: DateTime<Utc>, ts: DateTime<Utc>) -> String {
+pub(super) fn humanize_age(now: DateTime<Utc>, ts: DateTime<Utc>) -> String {
     let secs = (now - ts).num_seconds().max(0);
     if secs < 60 {
         format!("{secs}s ago")

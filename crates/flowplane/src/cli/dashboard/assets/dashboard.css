@@ -68,3 +68,15 @@ body {
 .dataplanes th { color: var(--muted); font-weight: 500; }
 .unauthorized p, .unavailable p, .error p { color: var(--muted); }
 .nacks { color: var(--muted); font-size: 0.85rem; }
+
+/* Resources topology (fpv2-cxw.2) */
+.nav a, .nav .active { margin-right: 0.75rem; }
+.topology .chain { border-left: 3px solid #ccd; margin: 0.75rem 0; padding-left: 0.75rem; }
+.topology .node { margin: 0.25rem 0; }
+.topology .vhost { margin: 0.25rem 0 0.25rem 1rem; }
+.topology ul.routes { margin: 0.15rem 0 0.4rem 1.25rem; padding: 0; list-style: none; }
+.topology .chip { display: inline-block; border: 1px solid #aac; border-radius: 4px; padding: 0 0.4rem; margin: 0.1rem 0.2rem; }
+.topology .chip.unresolved, .topology .node.unresolved { border-color: #c66; color: #a33; }
+.topology .chip .weight { font-weight: bold; }
+.topology .chip.hl { background: #ffef9e; outline: 2px solid #e6b800; }
+.snapshot { font-style: italic; }

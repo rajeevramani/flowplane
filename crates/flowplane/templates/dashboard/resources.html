@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Flowplane — {{ team }} — resources</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/{{ nonce }}/assets/dashboard.css">
+  <script src="/{{ nonce }}/assets/htmx.min.js" defer></script>
+  <script src="/{{ nonce }}/assets/resources.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Flowplane</h1>
+    <nav class="nav">
+      <a href="/{{ nonce }}/">Overview</a>
+      <span class="active">Resources</span>
+    </nav>
+    <span class="team">team: {{ team }}</span>
+  </header>
+  <main id="resources">
+    <!-- First-open lazy loading: each panel fetches its partial only on the FIRST
+         native `toggle` (details opened); an unopened panel issues no requests. -->
+    <details id="res-topology"
+             hx-get="/{{ nonce }}/partials/resources/topology"
+             hx-trigger="toggle once"
+             hx-target="#res-topology-body"
+             hx-swap="innerHTML">
+      <summary>Topology</summary>
+      <div id="res-topology-body"><p class="placeholder">Loading…</p></div>
+    </details>
+    <details id="res-clusters"
+             hx-get="/{{ nonce }}/partials/resources/clusters"
+             hx-trigger="toggle once"
+             hx-target="#res-clusters-body"
+             hx-swap="innerHTML">
+      <summary>Clusters</summary>
+      <div id="res-clusters-body"><p class="placeholder">Loading…</p></div>
+    </details>
+    <details id="res-route-configs"
+             hx-get="/{{ nonce }}/partials/resources/route-configs"
+             hx-trigger="toggle once"
+             hx-target="#res-route-configs-body"
+             hx-swap="innerHTML">
+      <summary>Route configs</summary>
+      <div id="res-route-configs-body"><p class="placeholder">Loading…</p></div>
+    </details>
+    <details id="res-listeners"
+             hx-get="/{{ nonce }}/partials/resources/listeners"
+             hx-trigger="toggle once"
+             hx-target="#res-listeners-body"
+             hx-swap="innerHTML">
+      <summary>Listeners</summary>
+      <div id="res-listeners-body"><p class="placeholder">Loading…</p></div>
+    </details>
+    <details id="res-filters"
+             hx-get="/{{ nonce }}/partials/resources/filters"
+             hx-trigger="toggle once"
+             hx-target="#res-filters-body"
+             hx-swap="innerHTML">
+      <summary>HTTP filters</summary>
+      <div id="res-filters-body"><p class="placeholder">Loading…</p></div>
+    </details>
+    <details id="res-rate-limits"
+             hx-get="/{{ nonce }}/partials/resources/rate-limits"
+             hx-trigger="toggle once"
+             hx-target="#res-rate-limits-body"
+             hx-swap="innerHTML">
+      <summary>Rate limits</summary>
+      <div id="res-rate-limits-body"><p class="placeholder">Loading…</p></div>
+    </details>
+    <details id="res-secrets"
+             hx-get="/{{ nonce }}/partials/resources/secrets"
+             hx-trigger="toggle once"
+             hx-target="#res-secrets-body"
+             hx-swap="innerHTML">
+      <summary>Secrets</summary>
+      <div id="res-secrets-body"><p class="placeholder">Loading…</p></div>
+    </details>
+    <details id="res-orphans"
+             hx-get="/{{ nonce }}/partials/resources/orphans"
+             hx-trigger="toggle once"
+             hx-target="#res-orphans-body"
+             hx-swap="innerHTML">
+      <summary>Orphans</summary>
+      <div id="res-orphans-body"><p class="placeholder">Loading…</p></div>
+    </details>
+  </main>
+</body>
+</html>

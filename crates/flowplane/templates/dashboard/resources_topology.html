@@ -1,0 +1,111 @@
+{% match panel %}
+{% when resources::TopologyPanel::Topology with { topo, notices } %}
+<section class="panel" id="panel-res-topology">
+  <h2>Topology <span class="hint">{{ topo.chains.len() }} listener chain(s), {{ topo.nodes }} nodes</span></h2>
+  <p class="hint snapshot">Best-effort, non-transactional snapshot — sweeps can interleave with concurrent writes.</p>
+  {% for n in notices %}
+  {% if n.budget() %}
+  <p class="banner">Partial — first {{ n.shown }} of {{ n.total }} {{ n.collection }} (budget reached). Topology may miss references.</p>
+  {% else %}
+  <p class="banner">Partial data: the {{ n.collection }} collection is incomplete — an upstream fetch failed mid-sweep.</p>
+  {% endif %}
+  {% endfor %}
+  <div class="topology">
+    {% for chain in topo.chains %}
+    <div class="chain">
+      <div class="node listener"><strong>{{ chain.name }}</strong> <span class="hint">{{ chain.bind }}</span>{% if chain.unparsed %} <span class="hint">unparseable spec (version skew?)</span>{% endif %}</div>
+      {% if !chain.unparsed %}
+      {% match chain.route_config %}
+      {% when joins::RouteConfigEdge::Resolved with (rc) %}
+      <div class="node route-config">route config <strong>{{ rc.name }}</strong>
+        {% for vh in rc.vhosts %}
+        <div class="vhost">
+          <span class="vhost-name">{{ vh.name }}</span>
+          <span class="hint">{{ vh.domains.join(", ") }}</span>
+          <ul class="routes">
+            {% for route in vh.routes %}
+            <li>
+              <span class="route-name">{{ route.name }}</span>
+              {% if route.action == "redirect" %}<span class="hint">redirect</span>{% endif %}
+              {% if route.action == "direct" %}<span class="hint">direct response</span>{% endif %}
+              {% for t in route.targets %}
+              {% match t.chip %}
+              {% when Some with (chip) %}
+              <span class="chip" data-cluster="{{ t.name }}">
+                {{ t.name }}{% if let Some(w) = t.weight %} <span class="weight">{{ w }}</span>{% endif %}
+                <span class="hint">{{ chip.endpoints }} ep · {% if chip.tls %}tls{% else %}plain{% endif %} · {{ chip.lb_policy }}</span>
+              </span>
+              {% when None %}
+              <span class="chip unresolved" data-cluster="{{ t.name }}">{{ t.name }}{% if let Some(w) = t.weight %} <span class="weight">{{ w }}</span>{% endif %} <span class="hint">unresolved reference</span></span>
+              {% endmatch %}
+              {% endfor %}
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endfor %}
+      </div>
+      {% when joins::RouteConfigEdge::Unresolved with (name) %}
+      <div class="node route-config unresolved">route config <strong>{{ name }}</strong> <span class="hint">unresolved reference</span></div>
+      {% when joins::RouteConfigEdge::Unbound %}
+      <div class="node route-config unbound"><span class="hint">no route config bound</span></div>
+      {% endmatch %}
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% if topo.chains.is_empty() %}
+    <p class="placeholder">No listeners.</p>
+    {% endif %}
+  </div>
+</section>
+{% when resources::TopologyPanel::DegradedTables with { nodes, clusters, route_configs, listeners, notices } %}
+<section class="panel" id="panel-res-topology">
+  <h2>Topology</h2>
+  <p class="banner">Topology exceeds the render budget ({{ nodes }} nodes &gt; limit) — showing tables instead.</p>
+  <p class="hint snapshot">Best-effort, non-transactional snapshot — sweeps can interleave with concurrent writes.</p>
+  {% for n in notices %}
+  {% if n.budget() %}
+  <p class="banner">Partial — first {{ n.shown }} of {{ n.total }} {{ n.collection }} (budget reached).</p>
+  {% else %}
+  <p class="banner">Partial data: the {{ n.collection }} collection is incomplete.</p>
+  {% endif %}
+  {% endfor %}
+  <h3>Listeners <span class="hint">{{ listeners.rows.len() }} of {{ listeners.total }}</span></h3>
+  <table class="dataplanes">
+    <thead><tr><th>Listener</th><th>Bind</th><th>Route config</th></tr></thead>
+    <tbody>
+      {% for row in listeners.rows %}
+      <tr><td>{{ row.name }}</td><td>{{ row.bind }}</td><td>{% if let Some(rc) = row.route_config %}{{ rc }}{% else %}unbound{% endif %}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <h3>Route configs <span class="hint">{{ route_configs.rows.len() }} of {{ route_configs.total }}</span></h3>
+  <table class="dataplanes">
+    <thead><tr><th>Route config</th><th>Virtual hosts</th><th>Routes</th></tr></thead>
+    <tbody>
+      {% for row in route_configs.rows %}
+      <tr><td>{{ row.name }}</td><td>{{ row.vhosts }}</td><td>{{ row.routes }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <h3>Clusters <span class="hint">{{ clusters.rows.len() }} of {{ clusters.total }}</span></h3>
+  <table class="dataplanes">
+    <thead><tr><th>Cluster</th><th>Endpoints</th><th>TLS</th><th>LB policy</th></tr></thead>
+    <tbody>
+      {% for row in clusters.rows %}
+      <tr><td>{{ row.name }}</td><td>{{ row.endpoints }}</td><td>{% if row.tls %}yes{% else %}no{% endif %}</td><td>{{ row.lb_policy }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% when resources::TopologyPanel::Unauthorized with { collection } %}
+<section class="panel unauthorized" id="panel-res-topology">
+  <h2>Topology</h2>
+  <p>Not authorized to view {{ collection }} — topology needs all three gateway collections.</p>
+</section>
+{% when resources::TopologyPanel::Unavailable with { collection } %}
+<section class="panel unavailable" id="panel-res-topology">
+  <h2>Topology</h2>
+  <p>The {{ collection }} collection is currently unavailable — topology cannot render.</p>
+</section>
+{% endmatch %}

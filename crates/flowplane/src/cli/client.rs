@@ -388,6 +388,16 @@ impl RestClient {
     /// hints, and never emits an error envelope — presentation is the caller's job.
     #[allow(dead_code)] // first consumer is the dashboard data path (fpv2-03m.3)
     pub(crate) async fn get_json(&self, path: &str) -> std::result::Result<Value, ReadError> {
+        self.get_json_sized(path).await.map(|(value, _)| value)
+    }
+
+    /// [`get_json`] plus the raw response-body byte count, so callers enforcing a fetch
+    /// budget (the dashboard sweep, fpv2-cxw.1) measure ACTUAL bytes received, not a
+    /// re-encoded approximation.
+    pub(crate) async fn get_json_sized(
+        &self,
+        path: &str,
+    ) -> std::result::Result<(Value, usize), ReadError> {
         let url = self.url(path);
         let req = self.add_auth_headers(self.http.request(reqwest::Method::GET, url), None);
         let response = req.send().await.map_err(ReadError::Transport)?;
@@ -399,9 +409,11 @@ impl RestClient {
             return Err(ReadError::Status { status, body: text });
         }
         if text.trim().is_empty() {
-            return Ok(Value::Null);
+            return Ok((Value::Null, text.len()));
         }
-        serde_json::from_str(&text).map_err(ReadError::Decode)
+        serde_json::from_str(&text)
+            .map(|value| (value, text.len()))
+            .map_err(ReadError::Decode)
     }
 }
 
