@@ -68,6 +68,14 @@
       <summary>Rate limits</summary>
       <div id="res-rate-limits-body"><p class="placeholder">Loading…</p></div>
     </details>
+    <details id="res-secrets"
+             hx-get="/{{ nonce }}/partials/resources/secrets"
+             hx-trigger="toggle once"
+             hx-target="#res-secrets-body"
+             hx-swap="innerHTML">
+      <summary>Secrets</summary>
+      <div id="res-secrets-body"><p class="placeholder">Loading…</p></div>
+    </details>
   </main>
 </body>
 </html>

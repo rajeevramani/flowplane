@@ -12,6 +12,7 @@ mod filters_inventory;
 mod joins;
 mod ratelimits;
 mod resources;
+mod secrets_panel;
 
 use anyhow::{Context, Result};
 use axum::body::Body;
@@ -47,6 +48,7 @@ pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/partials/resources/rate-limits",
     "/partials/resources/rate-limit-policies",
     "/partials/resources/filters",
+    "/partials/resources/secrets",
     "/assets/htmx.min.js",
     "/assets/dashboard.css",
     "/assets/resources.js",
@@ -172,6 +174,7 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
                     get(resources_rate_limit_policies_partial)
                 }
                 "/partials/resources/filters" => get(resources_filters_partial),
+                "/partials/resources/secrets" => get(resources_secrets_partial),
                 "/assets/htmx.min.js" => get(htmx_js),
                 "/assets/dashboard.css" => get(dashboard_css),
                 "/assets/resources.js" => get(resources_js),
@@ -515,6 +518,21 @@ async fn resources_filters_partial(
     let result = filters_inventory::fetch_filters(&state.client, &state.team, chrono::Utc::now())
         .await
         .map(|panel| FiltersPanelTemplate { panel });
+    render_resources_panel(result)
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_secrets.html")]
+struct SecretsPanelTemplate {
+    panel: data::Panel<secrets_panel::SecretsData>,
+}
+
+async fn resources_secrets_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = secrets_panel::fetch_secrets(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| SecretsPanelTemplate { panel });
     render_resources_panel(result)
 }
 

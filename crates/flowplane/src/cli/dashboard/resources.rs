@@ -30,6 +30,11 @@ pub(super) const COLLECTIONS: &[&str] = &[
     "route-configs",
     "listeners",
     "rate-limit-domains",
+    // Metadata-only list endpoint: every response redacts the value
+    // (`value_redacted: true`); the CP has NO secret-value read route at all.
+    "secrets",
+    // Needed for secret used-by resolution (`credential_secret_id`).
+    "ai/providers",
 ];
 
 /// Percent-encode one path segment (RFC 3986 unreserved kept verbatim). Rate-limit
@@ -793,21 +798,26 @@ mod tests {
     }
 
     #[test]
-    fn upstream_allowlist_has_no_secret_or_value_route() {
+    fn upstream_allowlist_has_no_secret_value_route() {
+        // The exact allowlist: team-scoped LIST endpoints only. `secrets` is the
+        // metadata list (values are write-only upstream); design AC 4 pins that no
+        // secret-VALUE route can ever enter this table.
+        assert_eq!(
+            COLLECTIONS,
+            &[
+                "clusters",
+                "route-configs",
+                "listeners",
+                "rate-limit-domains",
+                "secrets",
+                "ai/providers"
+            ],
+            "the upstream allowlist is closed; review any change against design AC 4"
+        );
         for segment in COLLECTIONS {
             assert!(
-                [
-                    "clusters",
-                    "route-configs",
-                    "listeners",
-                    "rate-limit-domains"
-                ]
-                .contains(segment),
-                "unexpected collection {segment:?}"
-            );
-            assert!(
-                !segment.contains("secret") && !segment.contains("value"),
-                "no secret/value route may enter the resources allowlist: {segment:?}"
+                !segment.contains("value"),
+                "no secret-value route may enter the resources allowlist: {segment:?}"
             );
         }
         // The only non-flat sweep shape stays inside rate-limit-domains and encodes
