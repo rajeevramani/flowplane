@@ -842,6 +842,65 @@ pub async fn list_spec_versions_meta(
     ))
 }
 
+/// Metadata-only lookup of one spec version by its per-API version number.
+pub async fn get_spec_version_meta(
+    pool: &PgPool,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+    version: i64,
+) -> DomainResult<Option<SpecVersionMeta>> {
+    let row = sqlx::query(&format!(
+        "SELECT {SPEC_META_COLUMNS} FROM spec_versions \
+         WHERE team_id = $1 AND api_definition_id = $2 AND version = $3"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .bind(version)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get spec version meta: {e}")))?;
+    row.as_ref().map(spec_meta_from_row).transpose()
+}
+
+/// Paginated full review-event history for one spec version, oldest first. The
+/// `created_at ASC, id ASC` tie-break mirrors the latest-decision queries'
+/// `created_at DESC, id DESC` so both orderings agree on which event is newest.
+pub async fn list_spec_review_events(
+    pool: &PgPool,
+    team_id: TeamId,
+    spec_version_id: SpecVersionId,
+    limit: i64,
+    offset: i64,
+) -> DomainResult<(Vec<SpecVersionReviewEvent>, i64)> {
+    let rows = sqlx::query(&format!(
+        "SELECT {REVIEW_EVENT_COLUMNS} FROM spec_version_review_events \
+         WHERE team_id = $1 AND spec_version_id = $2 \
+         ORDER BY created_at ASC, id ASC LIMIT $3 OFFSET $4"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(spec_version_id.as_uuid())
+    .bind(limit.clamp(1, 500))
+    .bind(offset.max(0))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list spec review events: {e}")))?;
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM spec_version_review_events \
+         WHERE team_id = $1 AND spec_version_id = $2",
+    )
+    .bind(team_id.as_uuid())
+    .bind(spec_version_id.as_uuid())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count spec review events: {e}")))?;
+    Ok((
+        rows.iter()
+            .map(review_event_from_row)
+            .collect::<DomainResult<Vec<_>>>()?,
+        total,
+    ))
+}
+
 /// Latest review decision for each of the given spec versions in one query (no per-row
 /// N+1). The `created_at DESC, id DESC` tie-break matches `latest_spec_review_decision`.
 pub async fn latest_spec_review_decisions(

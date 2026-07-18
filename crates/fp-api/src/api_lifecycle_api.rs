@@ -91,6 +91,34 @@ impl From<svc::SpecVersionListItem> for SpecVersionListItemView {
     }
 }
 
+/// One review event, rendered verbatim from the append-only history.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SpecReviewEventView {
+    pub id: uuid::Uuid,
+    /// One of `submitted`, `reviewed`, `rejected`, `published`, `unpublished`.
+    pub decision: String,
+    pub actor_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_id: Option<uuid::Uuid>,
+    pub reason: String,
+    pub metadata: serde_json::Value,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<fp_domain::api_lifecycle::SpecVersionReviewEvent> for SpecReviewEventView {
+    fn from(value: fp_domain::api_lifecycle::SpecVersionReviewEvent) -> Self {
+        Self {
+            id: value.id.as_uuid(),
+            decision: value.decision.as_str().into(),
+            actor_type: value.actor_type,
+            actor_id: value.actor_id,
+            reason: value.reason,
+            metadata: value.metadata,
+            created_at: value.created_at,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PublishSpecView {
     pub spec: SpecVersionSummary,
@@ -374,6 +402,52 @@ pub async fn list_spec_versions(
             .into_iter()
             .map(SpecVersionListItemView::from)
             .collect(),
+        total,
+        limit: query.limit.clamp(1, 500),
+        offset: query.offset.max(0),
+    }))
+}
+
+#[utoipa::path(get, path = "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/events",
+    tag = "ApiDefinitions",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "API name"),
+        ("version" = i64, Path, description = "Spec version"),
+        ListQuery,
+    ),
+    responses(
+        (status = 200, body = Page<SpecReviewEventView>),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    ))]
+pub async fn list_spec_review_events(
+    State(state): State<AppState>,
+    Path((team, name, version)): Path<(String, String, i64)>,
+    Query(query): Query<ListQuery>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<Page<SpecReviewEventView>>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::list_spec_review_events(
+            &state.pool,
+            &ctx,
+            team,
+            svc::SpecEventsQuery {
+                api: name,
+                version,
+                limit: query.limit,
+                offset: query.offset,
+            },
+            rid,
+        )
+        .await
+    };
+    let (items, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok(Json(Page {
+        items: items.into_iter().map(SpecReviewEventView::from).collect(),
         total,
         limit: query.limit.clamp(1, 500),
         offset: query.offset.max(0),

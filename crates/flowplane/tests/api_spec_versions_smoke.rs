@@ -53,6 +53,7 @@ async fn spec_versions_list_smoke_over_real_cp() {
     for action in [
         fp_domain::authz::Action::Read,
         fp_domain::authz::Action::Create,
+        fp_domain::authz::Action::Update,
     ] {
         identity::add_agent_grant_in_tx(
             &mut tx,
@@ -149,6 +150,50 @@ async fn spec_versions_list_smoke_over_real_cp() {
         items[0].get("spec").is_none(),
         "list never inlines spec content"
     );
+
+    // ui-f4 S2 smoke: publish v1 over HTTP (reject is learned-only; this spec is imported),
+    // then the events history shows the published event verbatim.
+    let published = http
+        .post(format!(
+            "{base_url}/api/v1/teams/{}/api-definitions/{api_name}/specs/1/publish",
+            team.name
+        ))
+        .bearer_auth(&token)
+        .json(&json!({"reason": "smoke"}))
+        .send()
+        .await
+        .expect("publish");
+    assert_eq!(published.status(), 200, "publish v1 over HTTP");
+    let events: Value = http
+        .get(format!(
+            "{base_url}/api/v1/teams/{}/api-definitions/{api_name}/specs/1/events",
+            team.name
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("events")
+        .error_for_status()
+        .expect("200")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(events["total"], 1);
+    assert_eq!(events["items"][0]["decision"], "published");
+    assert_eq!(events["items"][0]["reason"], "smoke");
+    let missing: Value = http
+        .get(format!(
+            "{base_url}/api/v1/teams/{}/api-definitions/{api_name}/specs/999/events",
+            team.name
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("missing version")
+        .status()
+        .as_u16()
+        .into();
+    assert_eq!(missing, 404);
 
     server.abort();
 }

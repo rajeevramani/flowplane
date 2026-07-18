@@ -291,6 +291,33 @@ pub async fn list_spec_versions(
     Ok((items, total))
 }
 
+#[derive(Debug, Clone)]
+pub struct SpecEventsQuery {
+    pub api: String,
+    pub version: i64,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+/// Paginated review-event history for one spec version, oldest first — rendered verbatim
+/// by consumers; no synthesized state machine.
+pub async fn list_spec_review_events(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    query: SpecEventsQuery,
+    request_id: RequestId,
+) -> DomainResult<(Vec<fp_domain::api_lifecycle::SpecVersionReviewEvent>, i64)> {
+    authorize(pool, ctx, Action::Read, team, request_id).await?;
+    let api = api_lifecycle::get_api_definition(pool, team.id, &query.api)
+        .await?
+        .ok_or_else(|| DomainError::not_found("api", &query.api))?;
+    let spec = api_lifecycle::get_spec_version_meta(pool, team.id, api.id, query.version)
+        .await?
+        .ok_or_else(|| DomainError::not_found("spec version", &query.version.to_string()))?;
+    api_lifecycle::list_spec_review_events(pool, team.id, spec.id, query.limit, query.offset).await
+}
+
 pub async fn api_status(
     pool: &PgPool,
     ctx: &PrincipalCtx,

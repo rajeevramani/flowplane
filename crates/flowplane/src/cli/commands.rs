@@ -685,6 +685,23 @@ pub enum ApiSpecCommand {
         #[arg(long, default_value_t = 0)]
         offset: i64,
     },
+    /// Show a spec version's ordered review-event history (oldest first).
+    #[command(after_help = "Example:\n  flowplane api spec events catalog 3 --team payments")]
+    Events {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Name of the API whose spec version to inspect.
+        api: String,
+        /// Spec version number.
+        version: i64,
+        /// Max items (default 50, cap 500).
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        /// Items to skip.
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
+    },
     /// Reject a pending spec version.
     #[command(after_help = "Example:\n  flowplane api spec reject catalog 3 --reason superseded")]
     Reject {

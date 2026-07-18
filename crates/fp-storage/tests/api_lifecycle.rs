@@ -1328,3 +1328,64 @@ async fn latest_spec_review_decisions_scope_by_team_and_break_ties_deterministic
     assert!(cross_list.is_empty());
     assert_eq!(cross_total, 0);
 }
+
+// -- ui-f4 S2: ordered review-event history --
+
+#[tokio::test]
+async fn spec_review_event_history_is_oldest_first_paginated_and_team_scoped() {
+    use fp_domain::api_lifecycle::SpecReviewDecision as D;
+    let Some(w) = world().await else { return };
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api =
+        api_lifecycle::create_api_definition(&mut tx, w.team_a, &unique("api"), &api_spec("A"))
+            .await
+            .expect("api");
+    tx.commit().await.expect("commit api");
+    let v1 = commit_spec_version(&w.pool, w.team_a, api.id, "v1").await;
+
+    for decision in [D::Submitted, D::Reviewed, D::Published, D::Unpublished] {
+        commit_review_event(&w.pool, w.team_a, api.id, v1.id, decision).await;
+    }
+
+    let (all, total) = api_lifecycle::list_spec_review_events(&w.pool, w.team_a.id, v1.id, 50, 0)
+        .await
+        .expect("history");
+    assert_eq!(total, 4);
+    assert_eq!(
+        all.iter().map(|e| e.decision).collect::<Vec<_>>(),
+        vec![D::Submitted, D::Reviewed, D::Published, D::Unpublished],
+        "oldest first, verbatim order"
+    );
+    assert!(all.iter().all(|e| e.spec_version_id == v1.id));
+
+    let (page, page_total) =
+        api_lifecycle::list_spec_review_events(&w.pool, w.team_a.id, v1.id, 2, 1)
+            .await
+            .expect("page");
+    assert_eq!(page_total, 4);
+    assert_eq!(
+        page.iter().map(|e| e.decision).collect::<Vec<_>>(),
+        vec![D::Reviewed, D::Published]
+    );
+
+    // Cross-team: team_b sees an empty history for team_a's version.
+    let (cross, cross_total) =
+        api_lifecycle::list_spec_review_events(&w.pool, w.team_b.id, v1.id, 50, 0)
+            .await
+            .expect("cross");
+    assert!(cross.is_empty());
+    assert_eq!(cross_total, 0);
+
+    // Metadata lookup resolves the version and stays scoped.
+    let meta = api_lifecycle::get_spec_version_meta(&w.pool, w.team_a.id, api.id, v1.version)
+        .await
+        .expect("meta")
+        .expect("some");
+    assert_eq!(meta.id, v1.id);
+    assert!(
+        api_lifecycle::get_spec_version_meta(&w.pool, w.team_b.id, api.id, v1.version)
+            .await
+            .expect("cross meta")
+            .is_none()
+    );
+}
