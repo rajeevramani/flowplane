@@ -1,0 +1,32 @@
+{% match panel %}
+{% when orphans::OrphansPanel::Findings with (f) %}
+<section class="panel" id="panel-res-orphans">
+  <h2>Orphans <span class="hint">computed from complete sweeps only</span></h2>
+  {% if f.is_empty() %}
+  <p class="placeholder">No orphans found — every cluster, listener, rate-limit domain, and secret is referenced.</p>
+  {% else %}
+  <table class="dataplanes">
+    <thead><tr><th>Kind</th><th>Resource</th></tr></thead>
+    <tbody>
+      {% for name in f.unreferenced_clusters %}
+      <tr><td><span class="chip unresolved">unreferenced cluster</span></td><td>{{ name }}</td></tr>
+      {% endfor %}
+      {% for name in f.unbound_listeners %}
+      <tr><td><span class="chip unresolved">unbound listener</span></td><td>{{ name }} <span class="hint">no route config bound</span></td></tr>
+      {% endfor %}
+      {% for name in f.unattached_domains %}
+      <tr><td><span class="chip unresolved">unattached rate-limit domain</span></td><td>{{ name }} <span class="hint">no listener attaches this domain</span></td></tr>
+      {% endfor %}
+      {% for name in f.unreferenced_secrets %}
+      <tr><td><span class="chip unresolved">unreferenced secret</span></td><td>{{ name }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% when orphans::OrphansPanel::Suppressed with { reason } %}
+<section class="panel unavailable" id="panel-res-orphans">
+  <h2>Orphans</h2>
+  <p class="banner">Orphan analysis suppressed: {{ reason }}.</p>
+</section>
+{% endmatch %}

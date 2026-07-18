@@ -10,6 +10,7 @@
 mod data;
 mod filters_inventory;
 mod joins;
+mod orphans;
 mod ratelimits;
 mod resources;
 mod secrets_panel;
@@ -49,6 +50,7 @@ pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/partials/resources/rate-limit-policies",
     "/partials/resources/filters",
     "/partials/resources/secrets",
+    "/partials/resources/orphans",
     "/assets/htmx.min.js",
     "/assets/dashboard.css",
     "/assets/resources.js",
@@ -175,6 +177,7 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
                 }
                 "/partials/resources/filters" => get(resources_filters_partial),
                 "/partials/resources/secrets" => get(resources_secrets_partial),
+                "/partials/resources/orphans" => get(resources_orphans_partial),
                 "/assets/htmx.min.js" => get(htmx_js),
                 "/assets/dashboard.css" => get(dashboard_css),
                 "/assets/resources.js" => get(resources_js),
@@ -533,6 +536,21 @@ async fn resources_secrets_partial(
     let result = secrets_panel::fetch_secrets(&state.client, &state.team, chrono::Utc::now())
         .await
         .map(|panel| SecretsPanelTemplate { panel });
+    render_resources_panel(result)
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_orphans.html")]
+struct OrphansPanelTemplate {
+    panel: orphans::OrphansPanel,
+}
+
+async fn resources_orphans_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = orphans::fetch_orphans(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| OrphansPanelTemplate { panel });
     render_resources_panel(result)
 }
 

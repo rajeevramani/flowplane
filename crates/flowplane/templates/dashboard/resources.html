@@ -76,6 +76,14 @@
       <summary>Secrets</summary>
       <div id="res-secrets-body"><p class="placeholder">Loading…</p></div>
     </details>
+    <details id="res-orphans"
+             hx-get="/{{ nonce }}/partials/resources/orphans"
+             hx-trigger="toggle once"
+             hx-target="#res-orphans-body"
+             hx-swap="innerHTML">
+      <summary>Orphans</summary>
+      <div id="res-orphans-body"><p class="placeholder">Loading…</p></div>
+    </details>
   </main>
 </body>
 </html>
