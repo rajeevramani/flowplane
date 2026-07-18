@@ -353,4 +353,240 @@ impl RestClient {
         }
         req
     }
+
+    /// Status-preserving GET (fpv2-03m.1): unlike `request`, a non-success response is
+    /// returned as a typed [`ReadError::Status`] carrying the HTTP status, so callers
+    /// (the dashboard) can branch on 401 vs 403 vs other. Renders nothing, prints no
+    /// hints, and never emits an error envelope — presentation is the caller's job.
+    #[allow(dead_code)] // first consumer is the dashboard data path (fpv2-03m.3)
+    pub(crate) async fn get_json(&self, path: &str) -> std::result::Result<Value, ReadError> {
+        let url = self.url(path);
+        let req = self.add_auth_headers(self.http.request(reqwest::Method::GET, url), None);
+        let response = req.send().await.map_err(ReadError::Transport)?;
+        let status = response.status();
+        // A body-read failure is a transport-class error even when the status line was
+        // 2xx — never a `Status`, which is reserved for real non-success statuses.
+        let text = response.text().await.map_err(ReadError::Transport)?;
+        if !status.is_success() {
+            return Err(ReadError::Status { status, body: text });
+        }
+        if text.trim().is_empty() {
+            return Ok(Value::Null);
+        }
+        serde_json::from_str(&text).map_err(ReadError::Decode)
+    }
+}
+
+/// Error type for the status-preserving read seam. Existing CLI call sites keep the
+/// rendered `anyhow` path (`http_failure`); this exists so a caller can distinguish
+/// upstream statuses without parsing rendered output.
+#[derive(Debug)]
+#[allow(dead_code)] // first consumer is the dashboard data path (fpv2-03m.3)
+pub(crate) enum ReadError {
+    /// The server answered with a non-success HTTP status.
+    Status {
+        status: reqwest::StatusCode,
+        body: String,
+    },
+    /// The exchange failed below HTTP semantics: connect/timeout/TLS, or the response
+    /// body could not be read (regardless of status line).
+    Transport(reqwest::Error),
+    /// A success response whose body was not valid JSON.
+    Decode(serde_json::Error),
+}
+
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReadError::Status { status, .. } => write!(f, "upstream returned {status}"),
+            ReadError::Transport(err) => write!(f, "transport error: {err}"),
+            ReadError::Decode(err) => write!(f, "invalid JSON in response: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for ReadError {}
+
+#[cfg(test)]
+mod read_seam_tests {
+    #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use crate::cli::config::EffectiveConfig;
+    use axum::routing::get;
+    use axum::Router;
+
+    fn client_for(server: String) -> RestClient {
+        RestClient {
+            http: reqwest::Client::new(),
+            config: EffectiveConfig {
+                server,
+                org: Some("test-org".into()),
+                team: Some("test-team".into()),
+                token: Some("test-bearer-token".into()),
+                token_source: None,
+                dev_fallback_available: false,
+                timeout: 5,
+                oidc_issuer: None,
+                oidc_client_id: None,
+                oidc_scope: None,
+                callback_url: None,
+            },
+            global: GlobalOptions {
+                context: None,
+                server: None,
+                team: None,
+                org: None,
+                token: None,
+                output: None,
+                json: false,
+                no_color: false,
+                quiet: false,
+                verbose: false,
+                dry_run: false,
+                yes: false,
+                revision: None,
+                fields: Vec::new(),
+                timeout: None,
+                out: None,
+            },
+            report_errors: true,
+        }
+    }
+
+    /// Loopback stub on an ephemeral port (parallel-safe: port 0, no shared state).
+    async fn spawn_stub(router: Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stub to an ephemeral port");
+        let base = format!("http://{}", listener.local_addr().expect("local addr"));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        base
+    }
+
+    #[tokio::test]
+    async fn success_with_body_parses_json() {
+        let base = spawn_stub(Router::new().route("/ok", get(|| async { r#"{"a":1}"# }))).await;
+        let value = client_for(base).get_json("/ok").await.expect("ok");
+        assert_eq!(value, serde_json::json!({"a": 1}));
+    }
+
+    #[tokio::test]
+    async fn success_with_empty_body_is_null() {
+        let base = spawn_stub(Router::new().route("/empty", get(|| async { "" }))).await;
+        let value = client_for(base).get_json("/empty").await.expect("ok");
+        assert_eq!(value, Value::Null);
+    }
+
+    #[tokio::test]
+    async fn unauthorized_preserves_401_and_body() {
+        let base = spawn_stub(Router::new().route(
+            "/secure",
+            get(|| async {
+                (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    r#"{"error":"unauthorized"}"#,
+                )
+            }),
+        ))
+        .await;
+        match client_for(base).get_json("/secure").await {
+            Err(ReadError::Status { status, body }) => {
+                assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+                assert!(body.contains("unauthorized"), "body preserved: {body}");
+            }
+            other => panic!("expected Status(401), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn forbidden_preserves_403() {
+        let base = spawn_stub(Router::new().route(
+            "/denied",
+            get(|| async {
+                (
+                    axum::http::StatusCode::FORBIDDEN,
+                    r#"{"error":"forbidden"}"#,
+                )
+            }),
+        ))
+        .await;
+        match client_for(base).get_json("/denied").await {
+            Err(ReadError::Status { status, .. }) => {
+                assert_eq!(status, reqwest::StatusCode::FORBIDDEN)
+            }
+            other => panic!("expected Status(403), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn server_error_preserves_500() {
+        let base = spawn_stub(Router::new().route(
+            "/boom",
+            get(|| async { (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "oops") }),
+        ))
+        .await;
+        match client_for(base).get_json("/boom").await {
+            Err(ReadError::Status { status, body }) => {
+                assert_eq!(status, reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+                assert_eq!(body, "oops");
+            }
+            other => panic!("expected Status(500), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn non_json_success_body_is_decode_error() {
+        let base = spawn_stub(Router::new().route("/text", get(|| async { "not json" }))).await;
+        match client_for(base).get_json("/text").await {
+            Err(ReadError::Decode(_)) => {}
+            other => panic!("expected Decode, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unreachable_server_is_transport_error() {
+        // A listener that accepts and immediately drops every connection: the client
+        // deterministically sees a closed connection before any HTTP response, with no
+        // window for another process to claim the port (parallel-safe).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let base = format!("http://{}", listener.local_addr().expect("local addr"));
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                drop(socket);
+            }
+        });
+        match client_for(base).get_json("/any").await {
+            Err(ReadError::Transport(_)) => {}
+            other => panic!("expected Transport, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_json_sends_bearer_and_org_headers() {
+        let base = spawn_stub(Router::new().route(
+            "/echo",
+            get(|headers: axum::http::HeaderMap| async move {
+                let auth = headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                let org = headers
+                    .get("X-Flowplane-Org")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                axum::Json(serde_json::json!({"auth": auth, "org": org}))
+            }),
+        ))
+        .await;
+        let value = client_for(base).get_json("/echo").await.expect("ok");
+        assert_eq!(value["auth"], "Bearer test-bearer-token");
+        assert_eq!(value["org"], "test-org");
+    }
 }
