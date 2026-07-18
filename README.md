@@ -17,13 +17,14 @@ published **evaluation** image and stands up the whole stack — Postgres, the d
 demo upstream, and Envoy — then routes a real request through the gateway. No repo checkout, no
 `cargo build`.
 
-> Set `VER` to a published release. The example below uses `3.0.0`, whose evaluator bundle and
-> `:${VER}-eval` image are published for `linux/amd64` and `linux/arm64`. For newer releases,
-> use the version shown on the GitHub Releases page. The image is **multi-arch**: a plain
-> `docker pull` resolves the native variant — no `--platform` flag, no emulation.
+> Set `VER` to a published release. The example below uses `3.1.0`, whose evaluator bundle and
+> `:${VER}-eval` image are published for `linux/amd64` and `linux/arm64` (the dashboard step
+> needs `3.1.0` or newer). For newer releases, use the version shown on the GitHub Releases
+> page. The image is **multi-arch**: a plain `docker pull` resolves the native variant — no
+> `--platform` flag, no emulation.
 
 ```bash
-VER=3.0.0
+VER=3.1.0
 
 # 1. Fetch the evaluator bundle at the matching release tag (the only file you need)
 curl -fsSLO https://raw.githubusercontent.com/rajeevramani/flowplane/v${VER}/compose.eval.yml
@@ -35,7 +36,11 @@ FLOWPLANE_EVAL_IMAGE=ghcr.io/rajeevramani/flowplane:${VER}-eval \
 # 3. A request flows through Envoy (:10000) to the demo upstream
 curl http://127.0.0.1:10000/        # -> hello from the flowplane eval demo upstream
 
-# 4. (optional) confirm authentication from inside the control-plane container
+# 4. Open the read-only dashboard (the URL carries a per-launch security nonce)
+docker compose -f compose.eval.yml exec flowplane-dashboard cat /shared/dashboard-url
+# -> open the printed http://127.0.0.1:8081/<nonce>/ in your browser
+
+# 5. (optional) confirm authentication from inside the control-plane container
 docker compose -f compose.eval.yml exec flowplane-eval \
   sh -c 'FLOWPLANE_TOKEN=$(cat /shared/dev-token) flowplane auth whoami'
 
