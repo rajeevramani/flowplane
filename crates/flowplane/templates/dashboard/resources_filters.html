@@ -1,0 +1,75 @@
+{% match panel %}
+{% when filters_inventory::FiltersPanel::Inventory with (inv) %}
+<section class="panel" id="panel-res-filters">
+  <h2>HTTP filters <span class="hint">{{ inv.rows.len() }} chain entries · {{ inv.overrides.len() }} overrides</span></h2>
+  {% for n in inv.notices %}
+  {% if n.budget() %}
+  <p class="banner">Partial — first {{ n.shown }} of {{ n.total }} {{ n.collection }} (budget reached). The inventory may be incomplete.</p>
+  {% else %}
+  <p class="banner">Partial data: the {{ n.collection }} collection is incomplete — an upstream fetch failed mid-sweep.</p>
+  {% endif %}
+  {% endfor %}
+  <h3>Listener chains</h3>
+  <table class="dataplanes">
+    <thead><tr><th>Listener</th><th>#</th><th>Kind</th><th>State</th><th>Attributes</th></tr></thead>
+    <tbody>
+      {% for row in inv.rows %}
+      <tr>
+        <td>{{ row.listener }}</td>
+        <td>{{ row.position }}</td>
+        <td>{{ row.kind }}{% if row.synthesized %} <span class="hint">synthesized</span>{% endif %}</td>
+        <td>{% if row.disabled %}disabled{% else %}active{% endif %}</td>
+        <td>
+          {% if row.attrs.is_empty() %}<span class="hint">—</span>{% else %}
+          <dl class="stats">
+            {% for attr in row.attrs %}
+            <div><dt>{{ attr.0 }}</dt><dd>{{ attr.1 }}</dd></div>
+            {% endfor %}
+          </dl>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if inv.rows.is_empty() %}
+      <tr><td colspan="5" class="placeholder">No listener filter chains.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  <h3>Overrides <span class="hint">vhost- and route-level</span></h3>
+  <table class="dataplanes">
+    <thead><tr><th>Route config</th><th>Scope</th><th>Kind</th><th>Attributes</th></tr></thead>
+    <tbody>
+      {% for ov in inv.overrides %}
+      <tr>
+        <td>{{ ov.route_config }}</td>
+        <td>{{ ov.scope }}</td>
+        <td><span class="chip">{{ ov.kind }}</span></td>
+        <td>
+          {% if ov.attrs.is_empty() %}<span class="hint">—</span>{% else %}
+          <dl class="stats">
+            {% for attr in ov.attrs %}
+            <div><dt>{{ attr.0 }}</dt><dd>{{ attr.1 }}</dd></div>
+            {% endfor %}
+          </dl>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if inv.overrides.is_empty() %}
+      <tr><td colspan="4" class="placeholder">No filter overrides.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  <p class="hint footer-kinds">Kinds in use: {% if inv.kinds_in_use.is_empty() %}none{% else %}{{ inv.kinds_in_use.join(", ") }}{% endif %}</p>
+</section>
+{% when filters_inventory::FiltersPanel::Unauthorized with { collection } %}
+<section class="panel unauthorized" id="panel-res-filters">
+  <h2>HTTP filters</h2>
+  <p>Not authorized to view {{ collection }} — the inventory needs listeners and route configs.</p>
+</section>
+{% when filters_inventory::FiltersPanel::Unavailable with { collection } %}
+<section class="panel unavailable" id="panel-res-filters">
+  <h2>HTTP filters</h2>
+  <p>The {{ collection }} collection is currently unavailable — the inventory cannot render.</p>
+</section>
+{% endmatch %}

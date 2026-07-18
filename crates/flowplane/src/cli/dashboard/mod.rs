@@ -8,6 +8,7 @@
 //! nothing in this module writes it to a response or a log.
 
 mod data;
+mod filters_inventory;
 mod joins;
 mod ratelimits;
 mod resources;
@@ -45,6 +46,7 @@ pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/partials/resources/listeners",
     "/partials/resources/rate-limits",
     "/partials/resources/rate-limit-policies",
+    "/partials/resources/filters",
     "/assets/htmx.min.js",
     "/assets/dashboard.css",
     "/assets/resources.js",
@@ -169,6 +171,7 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
                 "/partials/resources/rate-limit-policies" => {
                     get(resources_rate_limit_policies_partial)
                 }
+                "/partials/resources/filters" => get(resources_filters_partial),
                 "/assets/htmx.min.js" => get(htmx_js),
                 "/assets/dashboard.css" => get(dashboard_css),
                 "/assets/resources.js" => get(resources_js),
@@ -497,6 +500,21 @@ async fn resources_rate_limit_policies_partial(
     let result = ratelimits::fetch_policies(&state.client, &state.team, &domain)
         .await
         .map(|panel| PoliciesPanelTemplate { panel });
+    render_resources_panel(result)
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/resources_filters.html")]
+struct FiltersPanelTemplate {
+    panel: filters_inventory::FiltersPanel,
+}
+
+async fn resources_filters_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = filters_inventory::fetch_filters(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| FiltersPanelTemplate { panel });
     render_resources_panel(result)
 }
 
