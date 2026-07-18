@@ -842,6 +842,27 @@ pub async fn list_spec_versions_meta(
     ))
 }
 
+/// Full spec-version row (including the `spec` JSONB body) by per-API version number.
+/// Pool-based read-side variant of the transactional `get_spec_version_for_api_by_version`.
+pub async fn get_spec_version_by_api_version(
+    pool: &PgPool,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+    version: i64,
+) -> DomainResult<Option<SpecVersion>> {
+    let row = sqlx::query(&format!(
+        "SELECT {SPEC_COLUMNS} FROM spec_versions \
+         WHERE team_id = $1 AND api_definition_id = $2 AND version = $3"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .bind(version)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get spec version content: {e}")))?;
+    row.as_ref().map(spec_from_row).transpose()
+}
+
 /// Metadata-only lookup of one spec version by its per-API version number.
 pub async fn get_spec_version_meta(
     pool: &PgPool,

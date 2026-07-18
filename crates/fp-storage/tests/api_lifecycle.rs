@@ -1389,3 +1389,45 @@ async fn spec_review_event_history_is_oldest_first_paginated_and_team_scoped() {
             .is_none()
     );
 }
+
+// -- ui-f4 S3: full content lookup --
+
+#[tokio::test]
+async fn spec_version_content_round_trips_and_hash_matches_canonical_encoding() {
+    use sha2::{Digest, Sha256};
+    let Some(w) = world().await else { return };
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api =
+        api_lifecycle::create_api_definition(&mut tx, w.team_a, &unique("api"), &api_spec("A"))
+            .await
+            .expect("api");
+    tx.commit().await.expect("commit api");
+    let created = commit_spec_version(&w.pool, w.team_a, api.id, "content-v1").await;
+
+    let fetched = api_lifecycle::get_spec_version_by_api_version(&w.pool, w.team_a.id, api.id, 1)
+        .await
+        .expect("fetch")
+        .expect("some");
+    assert_eq!(fetched.id, created.id);
+    assert_eq!(fetched.spec, created.spec, "stored JSONB round-trips");
+    // The hash contract: Sha256 over the canonical serde_json encoding of the stored value.
+    let recomputed = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&fetched.spec).expect("encode"))
+    );
+    assert_eq!(recomputed, fetched.spec_hash);
+
+    assert!(
+        api_lifecycle::get_spec_version_by_api_version(&w.pool, w.team_b.id, api.id, 1)
+            .await
+            .expect("cross fetch")
+            .is_none(),
+        "cross-team returns none"
+    );
+    assert!(
+        api_lifecycle::get_spec_version_by_api_version(&w.pool, w.team_a.id, api.id, 999)
+            .await
+            .expect("missing fetch")
+            .is_none()
+    );
+}

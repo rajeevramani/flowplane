@@ -454,6 +454,60 @@ pub async fn list_spec_review_events(
     }))
 }
 
+#[utoipa::path(get, path = "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/content",
+    tag = "ApiDefinitions",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "API name"),
+        ("version" = i64, Path, description = "Spec version"),
+        ("If-None-Match" = Option<String>, Header, description = "Prior ETag; matching hash returns 304"),
+    ),
+    responses(
+        (status = 200, body = serde_json::Value,
+            description = "Canonical serde_json encoding of the stored document — the bytes spec_hash was computed over. ETag: \"<spec_hash>\"; Cache-Control: private, no-store."),
+        (status = 304, description = "If-None-Match matched the current spec_hash"),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    ))]
+pub async fn get_spec_version_content(
+    State(state): State<AppState>,
+    Path((team, name, version)): Path<(String, String, i64)>,
+    headers: HeaderMap,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<axum::response::Response, ApiError> {
+    use axum::response::IntoResponse;
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::get_spec_version_content(&state.pool, &ctx, team, &name, version, rid).await
+    };
+    let spec = run.await.map_err(|e| ApiError::new(e, rid))?;
+    let etag = format!("\"{}\"", spec.spec_hash);
+    let base_headers = [
+        (axum::http::header::ETAG, etag.clone()),
+        (
+            axum::http::header::CACHE_CONTROL,
+            "private, no-store".to_string(),
+        ),
+    ];
+    let revalidated = headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|raw| {
+            raw.split(',').any(|candidate| {
+                let candidate = candidate.trim();
+                candidate == "*"
+                    || candidate.strip_prefix("W/").unwrap_or(candidate) == etag
+                    || candidate.trim_matches('"') == spec.spec_hash
+            })
+        });
+    if revalidated {
+        return Ok((axum::http::StatusCode::NOT_MODIFIED, base_headers).into_response());
+    }
+    Ok((base_headers, Json(spec.spec)).into_response())
+}
+
 #[utoipa::path(patch, path = "/api/v1/teams/{team}/mcp/tools/{name}",
     tag = "McpTools",
     params(

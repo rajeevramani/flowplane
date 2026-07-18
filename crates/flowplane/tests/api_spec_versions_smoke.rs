@@ -67,6 +67,18 @@ async fn spec_versions_list_smoke_over_real_cp() {
         .await
         .expect("agent grant");
     }
+    // The content endpoint additionally requires learning-sessions:read (dual-grant rule).
+    identity::add_agent_grant_in_tx(
+        &mut tx,
+        agent.id,
+        org.id,
+        team.id,
+        fp_domain::authz::Resource::LearningSessions,
+        fp_domain::authz::Action::Read,
+        None,
+    )
+    .await
+    .expect("learning grant");
     tx.commit().await.expect("commit");
 
     let app = fp_api::build_router(fp_api::AppState {
@@ -194,6 +206,42 @@ async fn spec_versions_list_smoke_over_real_cp() {
         .as_u16()
         .into();
     assert_eq!(missing, 404);
+
+    // ui-f4 S3 smoke: content round-trips with ETag revalidation over HTTP.
+    let content_url = format!(
+        "{base_url}/api/v1/teams/{}/api-definitions/{api_name}/specs/1/content",
+        team.name
+    );
+    let content_resp = http
+        .get(&content_url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("content");
+    assert_eq!(content_resp.status(), 200);
+    let etag = content_resp
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .expect("etag header")
+        .to_string();
+    let cache_control = content_resp
+        .headers()
+        .get("cache-control")
+        .and_then(|v| v.to_str().ok())
+        .expect("cache-control")
+        .to_string();
+    assert!(cache_control.contains("no-store") && cache_control.contains("private"));
+    let doc: Value = content_resp.json().await.expect("content json");
+    assert_eq!(doc["info"]["title"], "smoke");
+    let not_modified = http
+        .get(&content_url)
+        .bearer_auth(&token)
+        .header("If-None-Match", &etag)
+        .send()
+        .await
+        .expect("revalidate");
+    assert_eq!(not_modified.status(), 304);
 
     server.abort();
 }

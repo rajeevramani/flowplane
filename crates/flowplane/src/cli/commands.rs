@@ -685,6 +685,23 @@ pub enum ApiSpecCommand {
         #[arg(long, default_value_t = 0)]
         offset: i64,
     },
+    /// Show one spec version. `--content` prints the stored OpenAPI document; the
+    /// metadata view (without --content) lands with the dashboard slice.
+    #[command(
+        after_help = "Example:\n  flowplane api spec show catalog 2 --content --team payments"
+    )]
+    Show {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Name of the API whose spec version to show.
+        api: String,
+        /// Spec version number.
+        version: i64,
+        /// Print the stored spec document (required for now; a metadata view is planned).
+        #[arg(long, required = true)]
+        content: bool,
+    },
     /// Show a spec version's ordered review-event history (oldest first).
     #[command(after_help = "Example:\n  flowplane api spec events catalog 3 --team payments")]
     Events {

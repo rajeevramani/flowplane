@@ -138,6 +138,7 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(api_lifecycle_api::api_status))
         .routes(routes!(api_lifecycle_api::list_spec_versions))
         .routes(routes!(api_lifecycle_api::list_spec_review_events))
+        .routes(routes!(api_lifecycle_api::get_spec_version_content))
         .routes(routes!(crate::mcp_api::status))
         .routes(routes!(crate::mcp_api::connections))
         .routes(routes!(api_lifecycle_api::update_mcp_tool))

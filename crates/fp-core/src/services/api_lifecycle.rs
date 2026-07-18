@@ -43,6 +43,23 @@ pub struct PublishSpecResult {
     pub tool_count: i64,
 }
 
+async fn authorize_as(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    resource: Resource,
+    action: Action,
+    team: TeamRef,
+    request_id: RequestId,
+) -> DomainResult<()> {
+    match check_resource_access(ctx, resource, action, Some(team)) {
+        Decision::Allow(_) => Ok(()),
+        Decision::Deny(reason) => {
+            record_authz_denial(pool, ctx, request_id, resource, action, Some(team), reason).await;
+            Err(deny_to_error(resource, action, reason))
+        }
+    }
+}
+
 async fn authorize(
     pool: &PgPool,
     ctx: &PrincipalCtx,
@@ -50,22 +67,15 @@ async fn authorize(
     team: TeamRef,
     request_id: RequestId,
 ) -> DomainResult<()> {
-    match check_resource_access(ctx, Resource::ApiDefinitions, action, Some(team)) {
-        Decision::Allow(_) => Ok(()),
-        Decision::Deny(reason) => {
-            record_authz_denial(
-                pool,
-                ctx,
-                request_id,
-                Resource::ApiDefinitions,
-                action,
-                Some(team),
-                reason,
-            )
-            .await;
-            Err(deny_to_error(Resource::ApiDefinitions, action, reason))
-        }
-    }
+    authorize_as(
+        pool,
+        ctx,
+        Resource::ApiDefinitions,
+        action,
+        team,
+        request_id,
+    )
+    .await
 }
 
 fn mutation_audit(
@@ -316,6 +326,35 @@ pub async fn list_spec_review_events(
         .await?
         .ok_or_else(|| DomainError::not_found("spec version", &query.version.to_string()))?;
     api_lifecycle::list_spec_review_events(pool, team.id, spec.id, query.limit, query.offset).await
+}
+
+/// Full spec-version content for one version. Spec content can embed captured-traffic-derived
+/// material, so this requires BOTH `api-definitions:read` AND `learning-sessions:read` —
+/// uniformly for every source_kind (imported specs are held to the same bar; fail closed).
+pub async fn get_spec_version_content(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    api_name: &str,
+    version: i64,
+    request_id: RequestId,
+) -> DomainResult<SpecVersion> {
+    authorize(pool, ctx, Action::Read, team, request_id).await?;
+    authorize_as(
+        pool,
+        ctx,
+        Resource::LearningSessions,
+        Action::Read,
+        team,
+        request_id,
+    )
+    .await?;
+    let api = api_lifecycle::get_api_definition(pool, team.id, api_name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("api", api_name))?;
+    api_lifecycle::get_spec_version_by_api_version(pool, team.id, api.id, version)
+        .await?
+        .ok_or_else(|| DomainError::not_found("spec version", &version.to_string()))
 }
 
 pub async fn api_status(

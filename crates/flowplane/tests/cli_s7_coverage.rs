@@ -122,6 +122,7 @@ const SHARED_LAYER_COVERED: &[&str] = &[
     "api spec publish",
     "api spec list",
     "api spec events",
+    "api spec show",
     // mcp
     "mcp status",
     "mcp connections",

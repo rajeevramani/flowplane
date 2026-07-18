@@ -1416,6 +1416,24 @@ pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
                     )
                     .await?
             }
+            commands::ApiSpecCommand::Show {
+                team,
+                api,
+                version,
+                content: _,
+            } => {
+                let team = client.team(team)?;
+                client
+                    .request(
+                        reqwest::Method::GET,
+                        &format!(
+                            "/api/v1/teams/{team}/api-definitions/{}/specs/{version}/content",
+                            query_component(&api)
+                        ),
+                        None,
+                    )
+                    .await?
+            }
             commands::ApiSpecCommand::Events {
                 team,
                 api,
@@ -2675,6 +2693,7 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/api-definitions/{name}",
         "/api/v1/teams/{team}/api-definitions/{name}/status",
         "/api/v1/teams/{team}/api-definitions/{name}/specs",
+        "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/content",
         "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/events",
         "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/reject",
         "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/publish",
