@@ -1,0 +1,59 @@
+{% if let Some(t) = panel.data() %}
+<section class="panel" id="panel-apis-list">
+  <h2>API definitions <span class="hint">{{ t.rows.len() }} of {{ t.total }}</span></h2>
+  {% if let Some(p) = t.partial %}
+  {% if p.budget() %}
+  <p class="banner">Partial — first {{ p.shown }} of {{ p.total }} (budget reached). Remaining pages were not fetched.</p>
+  {% else %}
+  <p class="banner">Partial data: the {{ p.collection }} collection is incomplete — an upstream fetch failed mid-sweep.</p>
+  {% endif %}
+  {% endif %}
+  <table class="dataplanes">
+    <thead>
+      <tr><th>API</th><th>Display name</th><th>Versions</th><th>Tools</th><th>Bindings</th><th>Updated</th></tr>
+    </thead>
+    <tbody>
+      {% for row in t.rows %}
+      <tr>
+        <td>{{ row.name }}</td>
+        {% if row.unparsed %}
+        <td colspan="5" class="placeholder">unparseable row (version skew?)</td>
+        {% else %}
+        <td>{{ row.display_name }}</td>
+        <td>{{ row.versions }}</td>
+        <td>{{ row.tool_count }}</td>
+        <td>{{ row.route_binding_count }}</td>
+        <td>{{ row.updated }}</td>
+        {% endif %}
+      </tr>
+      {% if !row.unparsed %}
+      <tr class="detail-row">
+        <td colspan="6">
+          <details hx-get="/{{ nonce }}/partials/apis/detail?api={{ row.name|urlencode }}"
+                   hx-trigger="toggle once"
+                   hx-target="find div"
+                   hx-swap="innerHTML">
+            <summary>Lifecycle, Envoy chain &amp; tools</summary>
+            <div><p class="placeholder">Loading…</p></div>
+          </details>
+        </td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+      {% if t.rows.is_empty() %}
+      <tr><td colspan="6" class="placeholder">No API definitions.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+{% else if panel.unauthorized() %}
+<section class="panel unauthorized" id="panel-apis-list">
+  <h2>API definitions</h2>
+  <p>Not authorized to view API definitions.</p>
+</section>
+{% else %}
+<section class="panel unavailable" id="panel-apis-list">
+  <h2>API definitions</h2>
+  <p>API definitions are currently unavailable.</p>
+</section>
+{% endif %}

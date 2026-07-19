@@ -1163,3 +1163,567 @@ async fn raw_observation_body_can_merge_after_target_completion() {
     assert_eq!(refreshed.sample_count, 1);
     assert_eq!(refreshed.byte_count, 9);
 }
+
+// -- ui-f4 S1: paginated spec-version metadata + batched latest review decisions --
+
+async fn commit_spec_version(
+    pool: &PgPool,
+    team: TeamRef,
+    api_id: fp_domain::ApiDefinitionId,
+    title: &str,
+) -> fp_domain::api_lifecycle::SpecVersion {
+    let mut tx = pool.begin().await.expect("spec tx");
+    let spec = api_lifecycle::create_spec_version(&mut tx, team, api_id, &openapi(title))
+        .await
+        .expect("spec version");
+    tx.commit().await.expect("commit spec");
+    spec
+}
+
+async fn commit_review_event(
+    pool: &PgPool,
+    team: TeamRef,
+    api_id: fp_domain::ApiDefinitionId,
+    spec_version_id: fp_domain::SpecVersionId,
+    decision: fp_domain::api_lifecycle::SpecReviewDecision,
+) {
+    let mut tx = pool.begin().await.expect("event tx");
+    api_lifecycle::append_spec_review_event(
+        &mut tx,
+        team,
+        api_lifecycle::SpecReviewEventInsert {
+            api_id,
+            spec_version_id,
+            decision,
+            actor_type: "user",
+            actor_id: None,
+            reason: "",
+            metadata: serde_json::json!({}),
+        },
+    )
+    .await
+    .expect("append event");
+    tx.commit().await.expect("commit event");
+}
+
+#[tokio::test]
+async fn spec_version_meta_list_pages_newest_first_with_batched_latest_decisions() {
+    use fp_domain::api_lifecycle::SpecReviewDecision as D;
+    let Some(w) = world().await else { return };
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api =
+        api_lifecycle::create_api_definition(&mut tx, w.team_a, &unique("api"), &api_spec("A"))
+            .await
+            .expect("api");
+    tx.commit().await.expect("commit api");
+
+    let v1 = commit_spec_version(&w.pool, w.team_a, api.id, "v1").await;
+    let v2 = commit_spec_version(&w.pool, w.team_a, api.id, "v2").await;
+    let v3 = commit_spec_version(&w.pool, w.team_a, api.id, "v3").await;
+    // v1 has no events; v2 ends published; v3 ends rejected.
+    commit_review_event(&w.pool, w.team_a, api.id, v2.id, D::Submitted).await;
+    commit_review_event(&w.pool, w.team_a, api.id, v2.id, D::Published).await;
+    commit_review_event(&w.pool, w.team_a, api.id, v3.id, D::Submitted).await;
+    commit_review_event(&w.pool, w.team_a, api.id, v3.id, D::Rejected).await;
+
+    let (page, total) = api_lifecycle::list_spec_versions_meta(&w.pool, w.team_a.id, api.id, 2, 0)
+        .await
+        .expect("page 1");
+    assert_eq!(total, 3);
+    assert_eq!(
+        page.iter().map(|m| m.version).collect::<Vec<_>>(),
+        vec![v3.version, v2.version]
+    );
+    assert_eq!(page[0].id, v3.id);
+    assert_eq!(page[0].spec_hash, v3.spec_hash);
+    assert_eq!(page[0].source_kind, SpecSourceKind::Imported);
+
+    let ids: Vec<_> = page.iter().map(|m| m.id).collect();
+    let decisions = api_lifecycle::latest_spec_review_decisions(&w.pool, w.team_a.id, &ids)
+        .await
+        .expect("decisions");
+    let of = |id| decisions.iter().find(|(d, _)| *d == id).map(|(_, d)| *d);
+    assert_eq!(of(v3.id), Some(D::Rejected));
+    assert_eq!(of(v2.id), Some(D::Published));
+
+    let (page2, total2) =
+        api_lifecycle::list_spec_versions_meta(&w.pool, w.team_a.id, api.id, 2, 2)
+            .await
+            .expect("page 2");
+    assert_eq!(total2, 3);
+    assert_eq!(page2.len(), 1);
+    assert_eq!(page2[0].version, v1.version);
+    let decisions2 =
+        api_lifecycle::latest_spec_review_decisions(&w.pool, w.team_a.id, &[page2[0].id])
+            .await
+            .expect("decisions 2");
+    assert!(decisions2.is_empty(), "v1 has no review events");
+}
+
+#[tokio::test]
+async fn latest_spec_review_decisions_scope_by_team_and_break_ties_deterministically() {
+    use fp_domain::api_lifecycle::SpecReviewDecision as D;
+    let Some(w) = world().await else { return };
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api =
+        api_lifecycle::create_api_definition(&mut tx, w.team_a, &unique("api"), &api_spec("A"))
+            .await
+            .expect("api");
+    tx.commit().await.expect("commit api");
+    let v1 = commit_spec_version(&w.pool, w.team_a, api.id, "v1").await;
+
+    // Empty input short-circuits without touching the DB.
+    let none = api_lifecycle::latest_spec_review_decisions(&w.pool, w.team_a.id, &[])
+        .await
+        .expect("empty");
+    assert!(none.is_empty());
+
+    // Two events with IDENTICAL created_at: the id tie-break must decide, matching the
+    // single-version query's `created_at DESC, id DESC`.
+    let ts = Utc::now();
+    // Random per-run ids (fixed ids collide across suite runs on the shared DB); both Rust
+    // Uuid and PostgreSQL uuid compare byte-wise, so sorting picks the same winner.
+    let (low, high) = {
+        let (a, b) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        (a.min(b), a.max(b))
+    };
+    for (id, decision) in [(low, "published"), (high, "rejected")] {
+        sqlx::query(
+            "INSERT INTO spec_version_review_events \
+             (id, team_id, org_id, api_definition_id, spec_version_id, decision, actor_type, \
+              actor_id, reason, metadata, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'user', NULL, '', '{}'::jsonb, $7)",
+        )
+        .bind(id)
+        .bind(w.team_a.id.as_uuid())
+        .bind(w.team_a.org_id.as_uuid())
+        .bind(api.id.as_uuid())
+        .bind(v1.id.as_uuid())
+        .bind(decision)
+        .bind(ts)
+        .execute(&w.pool)
+        .await
+        .expect("seed event");
+    }
+    let batch = api_lifecycle::latest_spec_review_decisions(&w.pool, w.team_a.id, &[v1.id])
+        .await
+        .expect("batch");
+    assert_eq!(batch, vec![(v1.id, D::Rejected)], "highest id wins the tie");
+    let mut tx = w.pool.begin().await.expect("tx single");
+    let single = api_lifecycle::latest_spec_review_decision(&mut tx, w.team_a.id, v1.id)
+        .await
+        .expect("single");
+    tx.rollback().await.expect("rollback");
+    assert_eq!(single, Some(D::Rejected), "batch and single queries agree");
+
+    // Cross-team: team_b sees nothing for team_a's versions.
+    let cross = api_lifecycle::latest_spec_review_decisions(&w.pool, w.team_b.id, &[v1.id])
+        .await
+        .expect("cross");
+    assert!(cross.is_empty());
+    let (cross_list, cross_total) =
+        api_lifecycle::list_spec_versions_meta(&w.pool, w.team_b.id, api.id, 50, 0)
+            .await
+            .expect("cross list");
+    assert!(cross_list.is_empty());
+    assert_eq!(cross_total, 0);
+}
+
+// -- ui-f4 S2: ordered review-event history --
+
+#[tokio::test]
+async fn spec_review_event_history_is_oldest_first_paginated_and_team_scoped() {
+    use fp_domain::api_lifecycle::SpecReviewDecision as D;
+    let Some(w) = world().await else { return };
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api =
+        api_lifecycle::create_api_definition(&mut tx, w.team_a, &unique("api"), &api_spec("A"))
+            .await
+            .expect("api");
+    tx.commit().await.expect("commit api");
+    let v1 = commit_spec_version(&w.pool, w.team_a, api.id, "v1").await;
+
+    for decision in [D::Submitted, D::Reviewed, D::Published, D::Unpublished] {
+        commit_review_event(&w.pool, w.team_a, api.id, v1.id, decision).await;
+    }
+
+    let (all, total) = api_lifecycle::list_spec_review_events(&w.pool, w.team_a.id, v1.id, 50, 0)
+        .await
+        .expect("history");
+    assert_eq!(total, 4);
+    assert_eq!(
+        all.iter().map(|e| e.decision).collect::<Vec<_>>(),
+        vec![D::Submitted, D::Reviewed, D::Published, D::Unpublished],
+        "oldest first, verbatim order"
+    );
+    assert!(all.iter().all(|e| e.spec_version_id == v1.id));
+
+    let (page, page_total) =
+        api_lifecycle::list_spec_review_events(&w.pool, w.team_a.id, v1.id, 2, 1)
+            .await
+            .expect("page");
+    assert_eq!(page_total, 4);
+    assert_eq!(
+        page.iter().map(|e| e.decision).collect::<Vec<_>>(),
+        vec![D::Reviewed, D::Published]
+    );
+
+    // Cross-team: team_b sees an empty history for team_a's version.
+    let (cross, cross_total) =
+        api_lifecycle::list_spec_review_events(&w.pool, w.team_b.id, v1.id, 50, 0)
+            .await
+            .expect("cross");
+    assert!(cross.is_empty());
+    assert_eq!(cross_total, 0);
+
+    // Metadata lookup resolves the version and stays scoped.
+    let meta = api_lifecycle::get_spec_version_meta(&w.pool, w.team_a.id, api.id, v1.version)
+        .await
+        .expect("meta")
+        .expect("some");
+    assert_eq!(meta.id, v1.id);
+    assert!(
+        api_lifecycle::get_spec_version_meta(&w.pool, w.team_b.id, api.id, v1.version)
+            .await
+            .expect("cross meta")
+            .is_none()
+    );
+}
+
+// -- ui-f4 S3: full content lookup --
+
+#[tokio::test]
+async fn spec_version_content_round_trips_and_hash_matches_canonical_encoding() {
+    use sha2::{Digest, Sha256};
+    let Some(w) = world().await else { return };
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api =
+        api_lifecycle::create_api_definition(&mut tx, w.team_a, &unique("api"), &api_spec("A"))
+            .await
+            .expect("api");
+    tx.commit().await.expect("commit api");
+    let created = commit_spec_version(&w.pool, w.team_a, api.id, "content-v1").await;
+
+    let fetched = api_lifecycle::get_spec_version_by_api_version(&w.pool, w.team_a.id, api.id, 1)
+        .await
+        .expect("fetch")
+        .expect("some");
+    assert_eq!(fetched.id, created.id);
+    assert_eq!(fetched.spec, created.spec, "stored JSONB round-trips");
+    // The hash contract: Sha256 over the canonical serde_json encoding of the stored value.
+    let recomputed = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&fetched.spec).expect("encode"))
+    );
+    assert_eq!(recomputed, fetched.spec_hash);
+
+    assert!(
+        api_lifecycle::get_spec_version_by_api_version(&w.pool, w.team_b.id, api.id, 1)
+            .await
+            .expect("cross fetch")
+            .is_none(),
+        "cross-team returns none"
+    );
+    assert!(
+        api_lifecycle::get_spec_version_by_api_version(&w.pool, w.team_a.id, api.id, 999)
+            .await
+            .expect("missing fetch")
+            .is_none()
+    );
+}
+
+// -- ui-f4 S4: paginated bindings/tools + MCP-exclusion parity --
+
+#[tokio::test]
+async fn paged_tool_and_binding_lists_include_disabled_while_mcp_query_excludes_them() {
+    let Some(w) = world().await else { return };
+    let route = insert_route_config(&w.pool, w.team_a, &unique("rc")).await;
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api =
+        api_lifecycle::create_api_definition(&mut tx, w.team_a, &unique("api"), &api_spec("A"))
+            .await
+            .expect("api");
+    let spec = api_lifecycle::create_spec_version(&mut tx, w.team_a, api.id, &openapi("v1"))
+        .await
+        .expect("spec");
+    for name in ["tool-a", "tool-b", "tool-c"] {
+        api_lifecycle::create_api_tool(
+            &mut tx,
+            w.team_a,
+            api.id,
+            spec.id,
+            &format!("{}-{name}", api.name),
+            &ApiToolSpec {
+                operation_id: name.into(),
+                method: HttpMethod::Get,
+                path: format!("/{name}"),
+                input_schema: serde_json::json!({}),
+                output_schema: serde_json::json!({}),
+                enabled: true,
+            },
+        )
+        .await
+        .expect("tool");
+    }
+    api_lifecycle::create_route_binding(
+        &mut tx,
+        w.team_a,
+        api.id,
+        &unique("binding"),
+        &ApiRouteBindingSpec {
+            route_config_id: route,
+            listener_id: None,
+            virtual_host: None,
+            route: None,
+        },
+    )
+    .await
+    .expect("binding");
+    tx.commit().await.expect("commit");
+
+    // Publish the version and disable one tool: the paged list keeps it, MCP's query drops it.
+    let mut tx = w.pool.begin().await.expect("publish tx");
+    api_lifecycle::set_published_spec_version(&mut tx, w.team_a.id, api.id, spec.id)
+        .await
+        .expect("publish");
+    tx.commit().await.expect("commit publish");
+    let disabled_name = format!("{}-tool-b", api.name);
+    api_lifecycle::update_api_tool_enabled(&w.pool, w.team_a.id, &disabled_name, false)
+        .await
+        .expect("disable");
+
+    let (page, total) = api_lifecycle::list_api_tools_paged(&w.pool, w.team_a.id, api.id, 2, 0)
+        .await
+        .expect("tools page");
+    assert_eq!(total, 3);
+    assert_eq!(page.len(), 2, "limit respected");
+    let (all, _) = api_lifecycle::list_api_tools_paged(&w.pool, w.team_a.id, api.id, 50, 0)
+        .await
+        .expect("tools all");
+    assert!(
+        all.iter().any(|t| t.name == disabled_name && !t.enabled),
+        "disabled tool present exactly as PATCH left it"
+    );
+    let mcp = api_lifecycle::list_enabled_published_api_tools(&w.pool, w.team_a.id)
+        .await
+        .expect("mcp view");
+    assert!(
+        mcp.iter().all(|t| t.name != disabled_name),
+        "MCP serving query excludes the disabled tool"
+    );
+    assert!(
+        mcp.iter().any(|t| t.name == format!("{}-tool-a", api.name)),
+        "enabled published tools still served"
+    );
+
+    let (bindings, bindings_total) =
+        api_lifecycle::list_route_bindings_paged(&w.pool, w.team_a.id, api.id, 50, 0)
+            .await
+            .expect("bindings page");
+    assert_eq!(bindings_total, 1);
+    assert_eq!(bindings[0].route_config_id, route);
+
+    // Cross-team: both paged lists empty for team_b.
+    let (cross_tools, cross_tools_total) =
+        api_lifecycle::list_api_tools_paged(&w.pool, w.team_b.id, api.id, 50, 0)
+            .await
+            .expect("cross tools");
+    assert!(cross_tools.is_empty());
+    assert_eq!(cross_tools_total, 0);
+    let (cross_bindings, cross_bindings_total) =
+        api_lifecycle::list_route_bindings_paged(&w.pool, w.team_b.id, api.id, 50, 0)
+            .await
+            .expect("cross bindings");
+    assert!(cross_bindings.is_empty());
+    assert_eq!(cross_bindings_total, 0);
+}
+
+// -- ui-f4 S5: enriched definition-list aggregate — correctness + measurement --
+
+#[tokio::test]
+async fn enriched_definition_list_matches_per_api_facts() {
+    let Some(w) = world().await else { return };
+    let route = insert_route_config(&w.pool, w.team_a, &unique("rc")).await;
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api =
+        api_lifecycle::create_api_definition(&mut tx, w.team_a, &unique("api"), &api_spec("A"))
+            .await
+            .expect("api");
+    api_lifecycle::create_route_binding(
+        &mut tx,
+        w.team_a,
+        api.id,
+        &unique("binding"),
+        &ApiRouteBindingSpec {
+            route_config_id: route,
+            listener_id: None,
+            virtual_host: None,
+            route: None,
+        },
+    )
+    .await
+    .expect("binding");
+    tx.commit().await.expect("commit");
+    let v1 = commit_spec_version(&w.pool, w.team_a, api.id, "v1").await;
+    let _v2 = commit_spec_version(&w.pool, w.team_a, api.id, "v2").await;
+    let mut tx = w.pool.begin().await.expect("tool tx");
+    api_lifecycle::create_api_tool(
+        &mut tx,
+        w.team_a,
+        api.id,
+        v1.id,
+        &format!("{}-t", api.name),
+        &ApiToolSpec {
+            operation_id: "op".into(),
+            method: HttpMethod::Get,
+            path: "/op".into(),
+            input_schema: serde_json::json!({}),
+            output_schema: serde_json::json!({}),
+            enabled: true,
+        },
+    )
+    .await
+    .expect("tool");
+    api_lifecycle::set_published_spec_version(&mut tx, w.team_a.id, api.id, v1.id)
+        .await
+        .expect("publish v1");
+    tx.commit().await.expect("commit tools");
+
+    let (rows, _total) = api_lifecycle::list_api_definitions_enriched(&w.pool, w.team_a.id, 500, 0)
+        .await
+        .expect("enriched");
+    let row = rows
+        .iter()
+        .find(|r| r.api.id == api.id)
+        .expect("created api present");
+    assert_eq!(row.tool_count, 1);
+    assert_eq!(row.route_binding_count, 1);
+    assert_eq!(row.latest_version, Some(2));
+    assert_eq!(
+        row.published_version,
+        Some(1),
+        "published stays v1 while latest is v2"
+    );
+
+    let (cross, cross_total) =
+        api_lifecycle::list_api_definitions_enriched(&w.pool, w.team_b.id, 500, 0)
+            .await
+            .expect("cross");
+    assert!(cross.iter().all(|r| r.api.id != api.id));
+    assert_eq!(
+        cross_total,
+        cross.len() as i64,
+        "total is team-scoped (uses only rows this test can see: none of team_a's)"
+    );
+}
+
+#[tokio::test]
+async fn enriched_definition_list_aggregate_meets_p95_budget_on_design_fixture() {
+    // Design measurement gate (10-design.md "All:" paragraph): one aggregate query must
+    // serve a 100-API/500-version fixture at p95 < 50 ms, else the dashboard lazy-loads.
+    let Some(w) = world().await else { return };
+    let mut tx = w.pool.begin().await.expect("tx");
+    let mut api_ids = Vec::new();
+    for i in 0..100 {
+        let api = api_lifecycle::create_api_definition(
+            &mut tx,
+            w.team_a,
+            &unique(&format!("bench-{i}")),
+            &api_spec("bench"),
+        )
+        .await
+        .expect("api");
+        api_ids.push(api.id);
+    }
+    tx.commit().await.expect("commit apis");
+    for (i, api_id) in api_ids.iter().enumerate() {
+        for v in 0..5 {
+            commit_spec_version(&w.pool, w.team_a, *api_id, &format!("bench-{i}-v{v}")).await;
+        }
+    }
+
+    let mut samples_ms: Vec<f64> = Vec::with_capacity(50);
+    for _ in 0..50 {
+        let start = std::time::Instant::now();
+        let (rows, total) =
+            api_lifecycle::list_api_definitions_enriched(&w.pool, w.team_a.id, 100, 0)
+                .await
+                .expect("enriched");
+        samples_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+        assert!(rows.len() >= 100);
+        assert!(total >= 100);
+    }
+    samples_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let p95 = samples_ms[(samples_ms.len() as f64 * 0.95) as usize - 1];
+    let p50 = samples_ms[samples_ms.len() / 2];
+    eprintln!("enriched-list measurement: p50={p50:.2}ms p95={p95:.2}ms (100 APIs, 500 versions)");
+    assert!(
+        p95 < 50.0,
+        "design gate: aggregate must serve the fixture at p95 < 50ms, got {p95:.2}ms"
+    );
+
+    // Design evidence contract is "EXPLAIN + timing test": run EXPLAIN ANALYZE over the
+    // exact production SQL on the same fixture and record the plan in the test output.
+    let plan = api_lifecycle::explain_list_api_definitions_enriched(&w.pool, w.team_a.id, 100, 0)
+        .await
+        .expect("explain");
+    assert!(!plan.is_empty(), "EXPLAIN produced a plan");
+    assert!(
+        plan.iter().any(|line| line.contains("Execution Time")),
+        "EXPLAIN ANALYZE ran to completion (has Execution Time)"
+    );
+    eprintln!("enriched-list EXPLAIN ANALYZE plan:");
+    for line in &plan {
+        eprintln!("  {line}");
+    }
+}
+
+// -- ui-f4 S8: capture-session provenance in spec-version metadata --
+
+#[tokio::test]
+async fn spec_meta_list_extracts_capture_session_provenance() {
+    let Some(w) = world().await else { return };
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api =
+        api_lifecycle::create_api_definition(&mut tx, w.team_a, &unique("api"), &api_spec("A"))
+            .await
+            .expect("api");
+    tx.commit().await.expect("commit api");
+
+    // v1: plain imported document — no stamp, no provenance.
+    let _v1 = commit_spec_version(&w.pool, w.team_a, api.id, "no-stamp").await;
+    // v2: learned-style document carrying the learning-source stamp.
+    let session_id = uuid::Uuid::new_v4();
+    let mut tx = w.pool.begin().await.expect("tx v2");
+    api_lifecycle::create_spec_version(
+        &mut tx,
+        w.team_a,
+        api.id,
+        &fp_domain::api_lifecycle::SpecVersionInput {
+            source_kind: SpecSourceKind::Learned,
+            format: SpecFormat::OpenApi3,
+            spec: serde_json::json!({
+                "openapi": "3.0.3",
+                "info": {"title": "stamped", "version": "1.0.0"},
+                "paths": {},
+                "x-flowplane-learning-source": {
+                    "api_definition_id": api.id.as_uuid(),
+                    "capture_session_id": session_id,
+                }
+            }),
+        },
+    )
+    .await
+    .expect("v2");
+    tx.commit().await.expect("commit v2");
+
+    let (metas, total) =
+        api_lifecycle::list_spec_versions_meta(&w.pool, w.team_a.id, api.id, 50, 0)
+            .await
+            .expect("meta list");
+    assert_eq!(total, 2);
+    let v2 = metas.iter().find(|m| m.version == 2).expect("v2");
+    assert_eq!(v2.capture_session_id, Some(session_id));
+    let v1 = metas.iter().find(|m| m.version == 1).expect("v1");
+    assert_eq!(v1.capture_session_id, None);
+}

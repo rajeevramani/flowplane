@@ -1,0 +1,13 @@
+{% match view %}
+{% when learning::ContentView::Document with { api, version, etag, pretty, revalidated } %}
+<section class="panel spec-viewer">
+  <h3>{{ api }} — v{{ version }}
+    <span class="hint">hash {{ etag }}{% if revalidated %} · revalidated (unchanged){% endif %}</span>
+  </h3>
+  <pre class="spec-content">{{ pretty }}</pre>
+</section>
+{% when learning::ContentView::Unauthorized %}
+<section class="panel unauthorized"><p>Not authorized to view spec content (requires both api-definitions and learning-sessions read grants).</p></section>
+{% when learning::ContentView::Unavailable %}
+<section class="panel unavailable"><p>Spec content is currently unavailable.</p></section>
+{% endmatch %}

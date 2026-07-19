@@ -1365,6 +1365,7 @@ fn imported_create_hint(format: OutputFormat, api_name: &str) -> Option<String> 
 
 pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
     let format = global.format();
+    let render_global = global.clone();
     let client = RestClient::new(global)?;
     match command {
         ApiCommand::List { team } => {
@@ -1397,7 +1398,156 @@ pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
                 )
                 .await?
         }
+        ApiCommand::Bindings {
+            team,
+            api,
+            limit,
+            offset,
+        } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!(
+                        "/api/v1/teams/{team}/api-definitions/{}/route-bindings?limit={limit}&offset={offset}",
+                        query_component(&api)
+                    ),
+                    None,
+                )
+                .await?
+        }
+        ApiCommand::Tools {
+            team,
+            api,
+            limit,
+            offset,
+        } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!(
+                        "/api/v1/teams/{team}/api-definitions/{}/tools?limit={limit}&offset={offset}",
+                        query_component(&api)
+                    ),
+                    None,
+                )
+                .await?
+        }
         ApiCommand::Spec { command } => match command {
+            commands::ApiSpecCommand::List {
+                team,
+                api,
+                limit,
+                offset,
+            } => {
+                let team = client.team(team)?;
+                client
+                    .request(
+                        reqwest::Method::GET,
+                        &format!(
+                            "/api/v1/teams/{team}/api-definitions/{}/specs?limit={limit}&offset={offset}",
+                            query_component(&api)
+                        ),
+                        None,
+                    )
+                    .await?
+            }
+            commands::ApiSpecCommand::Show {
+                team,
+                api,
+                version,
+                content,
+            } => {
+                let team = client.team(team)?;
+                if content {
+                    client
+                        .request(
+                            reqwest::Method::GET,
+                            &format!(
+                                "/api/v1/teams/{team}/api-definitions/{}/specs/{version}/content",
+                                query_component(&api)
+                            ),
+                            None,
+                        )
+                        .await?
+                } else {
+                    // Metadata view: one row of the specs list (the list endpoint is the
+                    // only metadata source; there is deliberately no per-version GET).
+                    // Page through the whole list — the target version may sit beyond the
+                    // first 500-row page, and a capped single fetch would false-404 it.
+                    let mut item = None;
+                    let mut offset = 0_i64;
+                    loop {
+                        let page = client
+                            .request_quiet(
+                                reqwest::Method::GET,
+                                &format!(
+                                    "/api/v1/teams/{team}/api-definitions/{}/specs?limit=500&offset={offset}",
+                                    query_component(&api)
+                                ),
+                                None,
+                                None,
+                            )
+                            .await?;
+                        let Some(page) = page else { break };
+                        let items = page
+                            .get("items")
+                            .and_then(serde_json::Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        if let Some(hit) = items.iter().find(|i| {
+                            i.get("version").and_then(serde_json::Value::as_i64) == Some(version)
+                        }) {
+                            item = Some(hit.clone());
+                            break;
+                        }
+                        let total = page
+                            .get("total")
+                            .and_then(serde_json::Value::as_i64)
+                            .unwrap_or(0);
+                        offset += items.len() as i64;
+                        if items.is_empty() || offset >= total {
+                            break;
+                        }
+                    }
+                    match item {
+                        Some(item) => {
+                            crate::cli::output::render(&render_global, "api-spec-version", &item)?;
+                            Some(item)
+                        }
+                        None => {
+                            return Err(crate::cli::output::render_error(
+                                &render_global,
+                                reqwest::StatusCode::NOT_FOUND,
+                                None,
+                                &format!(
+                                    "{{\"code\":\"not_found\",\"message\":\"spec version {version} not found\"}}"
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+            commands::ApiSpecCommand::Events {
+                team,
+                api,
+                version,
+                limit,
+                offset,
+            } => {
+                let team = client.team(team)?;
+                client
+                    .request(
+                        reqwest::Method::GET,
+                        &format!(
+                            "/api/v1/teams/{team}/api-definitions/{}/specs/{version}/events?limit={limit}&offset={offset}",
+                            query_component(&api)
+                        ),
+                        None,
+                    )
+                    .await?
+            }
             commands::ApiSpecCommand::Reject {
                 team,
                 api,
@@ -2637,6 +2787,11 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/api-definitions",
         "/api/v1/teams/{team}/api-definitions/{name}",
         "/api/v1/teams/{team}/api-definitions/{name}/status",
+        "/api/v1/teams/{team}/api-definitions/{name}/route-bindings",
+        "/api/v1/teams/{team}/api-definitions/{name}/tools",
+        "/api/v1/teams/{team}/api-definitions/{name}/specs",
+        "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/content",
+        "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/events",
         "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/reject",
         "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/publish",
         "/api/v1/teams/{team}/mcp/status",

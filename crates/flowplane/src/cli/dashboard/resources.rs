@@ -35,6 +35,11 @@ pub(super) const COLLECTIONS: &[&str] = &[
     "secrets",
     // Needed for secret used-by resolution (`credential_secret_id`).
     "ai/providers",
+    // API lifecycle read model (ui-f4 S7): definitions plus their per-API sub-lists
+    // (specs / events / route-bindings / tools), all read-only paginated GETs.
+    "api-definitions",
+    // Learning tab (ui-f4 S8): capture-session metadata list (no observation bodies).
+    "learning-sessions",
 ];
 
 /// Percent-encode one path segment (RFC 3986 unreserved kept verbatim). Rate-limit
@@ -55,6 +60,24 @@ pub(super) fn encode_segment(raw: &str) -> String {
 /// The one allowlisted non-flat sweep target: a domain's policies list.
 pub(super) fn policies_sub_path(domain: &str) -> String {
     format!("rate-limit-domains/{}/policies", encode_segment(domain))
+}
+
+/// Release-safe sweep allowlist: the flat COLLECTIONS, per-domain policy sub-lists, and
+/// the API-lifecycle metadata sub-lists. Spec CONTENT paths are structurally excluded —
+/// the dashboard never fetches a spec document body.
+pub(super) fn allowed_sweep_segment(segment: &str) -> bool {
+    if COLLECTIONS.contains(&segment) || segment.ends_with("/policies") {
+        return true;
+    }
+    let Some(rest) = segment.strip_prefix("api-definitions/") else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    match parts.as_slice() {
+        [_api, "specs"] | [_api, "route-bindings"] | [_api, "tools"] => true,
+        [_api, "specs", version, "events"] => version.parse::<i64>().is_ok(),
+        _ => false,
+    }
 }
 
 /// The API's list-page cap (`fp-api` `ListQuery`, cap 500) — a cap, not a guarantee.
@@ -114,10 +137,15 @@ pub(super) async fn sweep(
     segment: &str,
     byte_budget: usize,
 ) -> Result<Sweep, SweepFailure> {
-    debug_assert!(
-        COLLECTIONS.contains(&segment) || segment.ends_with("/policies"),
-        "sweep segment {segment:?} is not in the resources allowlist"
-    );
+    // Fail closed at runtime, not just in debug builds: an unlisted segment (notably any
+    // spec CONTENT path) is never fetched — it resolves to Unavailable instead.
+    if !allowed_sweep_segment(segment) {
+        debug_assert!(
+            false,
+            "sweep segment {segment:?} is not in the resources allowlist"
+        );
+        return Err(SweepFailure::Unavailable);
+    }
     let mut items: Vec<Value> = Vec::new();
     let mut total: i64 = 0;
     let mut bytes: usize = 0;
@@ -349,7 +377,7 @@ fn listener_row(item: Value, now: DateTime<Utc>) -> ListenerRow {
     }
 }
 
-fn to_panel<R>(
+pub(super) fn to_panel<R>(
     result: Result<Sweep, SweepFailure>,
     collection: &'static str,
     row: impl Fn(Value) -> R,
@@ -797,6 +825,32 @@ mod tests {
         assert!(out.partial.is_none(), "short page ends the sweep cleanly");
     }
 
+    /// Codex S7 review finding 2: the sweep allowlist must structurally exclude spec
+    /// CONTENT paths in release builds, not only via debug_assert. Enumerates the
+    /// allowed api-definitions subpath shapes and pins the content rejection.
+    #[test]
+    fn sweep_allowlist_rejects_spec_content_paths_at_runtime() {
+        assert!(allowed_sweep_segment("api-definitions"));
+        assert!(allowed_sweep_segment("api-definitions/catalog/specs"));
+        assert!(allowed_sweep_segment(
+            "api-definitions/catalog/route-bindings"
+        ));
+        assert!(allowed_sweep_segment("api-definitions/catalog/tools"));
+        assert!(allowed_sweep_segment(
+            "api-definitions/catalog/specs/3/events"
+        ));
+        assert!(!allowed_sweep_segment(
+            "api-definitions/catalog/specs/3/content"
+        ));
+        assert!(!allowed_sweep_segment(
+            "api-definitions/catalog/specs/abc/events"
+        ));
+        assert!(!allowed_sweep_segment("api-definitions/catalog/specs/3"));
+        assert!(!allowed_sweep_segment("api-definitions/catalog"));
+        assert!(!allowed_sweep_segment("secrets/value"));
+        assert!(allowed_sweep_segment("rate-limit-domains/foo/policies"));
+    }
+
     #[test]
     fn upstream_allowlist_has_no_secret_value_route() {
         // The exact allowlist: team-scoped LIST endpoints only. `secrets` is the
@@ -810,7 +864,15 @@ mod tests {
                 "listeners",
                 "rate-limit-domains",
                 "secrets",
-                "ai/providers"
+                "ai/providers",
+                // ui-f4 S7 (reviewed addition): API-lifecycle read model. Definitions
+                // plus per-API metadata sub-lists (specs / events / route-bindings /
+                // tools) — all read-only metadata; the spec CONTENT endpoint is
+                // deliberately NOT swept by the APIs tab.
+                "api-definitions",
+                // ui-f4 S8 (reviewed addition): capture-session metadata list for the
+                // Learning tab. Session bodies/observations are never fetched.
+                "learning-sessions"
             ],
             "the upstream allowlist is closed; review any change against design AC 4"
         );

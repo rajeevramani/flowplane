@@ -48,6 +48,82 @@ services:
     volumes:
       - shared:/shared
 
+  # One-shot PKI for the bundle's real xDS mTLS (fpv2-81c). postgres:16 is reused ONLY for its
+  # openssl binary (the slim eval image ships none, and adding one would fork it from the
+  # release image) — no database runs here; the entrypoint override bypasses the image's DB
+  # startup entirely. Single-CA design ON PURPOSE: one CA signs the CP's xDS server cert AND
+  # acts as the cert-issuer CA minting dataplane client certs, so FLOWPLANE_XDS_TLS_CLIENT_CA,
+  # Envoy's ca-path, and the agent's --tls-ca-path are all the same ca.crt — do not "fix"
+  # this into two CAs.
+  #
+  # Key isolation: private key material is SPLIT across two dedicated volumes so no container
+  # sees keys it does not need — the dashboard sees none of it, and the dataplane side never
+  # sees the issuer CA key or the CP server key:
+  #   pki-cp (/pki-cp): ca.crt + ca.key + server.crt + server.key — mounted ONLY here (rw)
+  #                     and read-only into flowplane-eval.
+  #   pki-dp (/pki-dp): ca.crt (public trust anchor) + client.crt/client.key (written later
+  #                     by init) — mounted rw here and in init, read-only into envoy + agent.
+  # Keys are 0600 owned by the eval uid (65532); Envoy runs as root here (entrypoint bypassed)
+  # and reads regardless. Guards fail closed: on re-runs the full published set is re-validated
+  # (presence, chain+hostname, expiry, key/cert match) and any partial, invalid, or expired
+  # state exits loudly instead of skipping. Publish staging is per-volume (a volume root is a
+  # mountpoint, so a single dir rename is impossible); the sentinel is written last and is the
+  # only thing that marks the set complete.
+  pki:
+    image: postgres:16
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        fail() { echo "$$1 — run: docker compose -f compose.eval.yml down -v" >&2; exit 1; }
+        keymatch() { [ "$$(openssl x509 -noout -pubkey -in "$$1" | sha256sum)" = "$$(openssl pkey -in "$$2" -pubout | sha256sum)" ]; }
+        if [ -f /pki-cp/.pki-complete ]; then
+          for f in /pki-cp/ca.crt /pki-cp/ca.key /pki-cp/server.crt /pki-cp/server.key /pki-dp/ca.crt; do
+            [ -s "$$f" ] || fail "incomplete PKI ($$f missing)"
+          done
+          openssl verify -CAfile /pki-cp/ca.crt -verify_hostname flowplane-eval /pki-cp/server.crt >/dev/null || fail "server certificate failed verification"
+          keymatch /pki-cp/ca.crt /pki-cp/ca.key || fail "CA key does not match certificate"
+          keymatch /pki-cp/server.crt /pki-cp/server.key || fail "server key does not match certificate"
+          openssl x509 -checkend 0 -in /pki-cp/ca.crt >/dev/null || fail "eval CA expired"
+          openssl x509 -checkend 0 -in /pki-cp/server.crt >/dev/null || fail "server certificate expired"
+          cmp -s /pki-cp/ca.crt /pki-dp/ca.crt || fail "trust anchor mismatch between volumes"
+          if [ -e /pki-dp/client.crt ] || [ -e /pki-dp/client.key ]; then
+            if [ -s /pki-dp/client.crt ] && [ -s /pki-dp/client.key ]; then :; else fail "client cert/key pair incomplete"; fi
+            openssl x509 -checkend 0 -in /pki-dp/client.crt >/dev/null || fail "eval client certificate expired"
+            keymatch /pki-dp/client.crt /pki-dp/client.key || fail "client key does not match certificate"
+          fi
+          echo "pki already complete"
+          exit 0
+        fi
+        if [ -e /pki-cp/ca.crt ] || [ -e /pki-cp/tmp ]; then
+          fail "partial PKI state"
+        fi
+        echo "generating eval CA + xDS server certificate..."
+        mkdir /pki-cp/tmp
+        cd /pki-cp/tmp
+        openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+          -subj "/CN=flowplane-eval-ca" -keyout ca.key -out ca.crt
+        openssl req -newkey rsa:2048 -nodes \
+          -subj "/CN=flowplane-eval" -addext "subjectAltName=DNS:flowplane-eval" \
+          -keyout server.key -out server.csr
+        openssl x509 -req -days 3650 -in server.csr \
+          -CA ca.crt -CAkey ca.key -CAcreateserial -copy_extensions copy -out server.crt
+        rm server.csr ca.srl
+        openssl verify -CAfile ca.crt -verify_hostname flowplane-eval server.crt
+        chmod 0600 ca.key server.key
+        chown -R 65532:65532 /pki-cp/tmp
+        mv /pki-cp/tmp/ca.crt /pki-cp/tmp/ca.key /pki-cp/tmp/server.crt /pki-cp/tmp/server.key /pki-cp/
+        rmdir /pki-cp/tmp
+        cp /pki-cp/ca.crt /pki-dp/ca.crt
+        chown -R 65532:65532 /pki-cp /pki-dp
+        touch /pki-cp/.pki-complete
+        chown 65532:65532 /pki-cp/.pki-complete
+        echo "pki complete"
+    # No shared-init dependency: pki does not mount /shared — its two volumes are its own.
+    volumes:
+      - pki-cp:/pki-cp
+      - pki-dp:/pki-dp
+
   flowplane-eval:
     image: ${FLOWPLANE_EVAL_IMAGE:-flowplane:eval-local}
     # The build here tags the image; shared-init and init reuse the same tag without rebuilding.
@@ -65,6 +141,17 @@ services:
       FLOWPLANE_XDS_ADDR: 0.0.0.0:18000
       # Dev-only constant key (32 chars). Never a real secret.
       FLOWPLANE_SECRET_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
+      # Real xDS mTLS (fpv2-81c): server cert + client-trust CA from the one-shot pki service,
+      # read-only from the CP-side pki volume (no other long-running service can see ca.key /
+      # server.key). The same CA doubles as the cert issuer that mints dataplane client certs
+      # (single-CA design, see the pki service comment). The issuer CA is loaded lazily on the
+      # first `dataplane cert issue` call, but the xDS server cert is loaded at boot — hence
+      # the pki dependency below.
+      FLOWPLANE_XDS_TLS_CERT: /pki-cp/server.crt
+      FLOWPLANE_XDS_TLS_KEY: /pki-cp/server.key
+      FLOWPLANE_XDS_TLS_CLIENT_CA: /pki-cp/ca.crt
+      FLOWPLANE_CERT_ISSUER_CA_CERT_PATH: /pki-cp/ca.crt
+      FLOWPLANE_CERT_ISSUER_CA_KEY_PATH: /pki-cp/ca.key
     ports:
       - "127.0.0.1:8080:8080"   # REST/MCP API, loopback only. xDS (18000) is NOT host-exposed —
                                 # Envoy reaches it over the compose network.
@@ -81,8 +168,11 @@ services:
         condition: service_healthy
       shared-init:
         condition: service_completed_successfully
+      pki:
+        condition: service_completed_successfully
     volumes:
       - shared:/shared
+      - pki-cp:/pki-cp:ro
 
   demo-upstream:
     image: hashicorp/http-echo:1.0.0
@@ -90,15 +180,29 @@ services:
     # No host port: only Envoy (same compose network) routes to it.
 
   # One-shot: read the dev token, then drive the same CLI flow the E2E harness uses
-  # (scripts/e2e/lib.sh:192-228) — create a dataplane, expose the demo upstream, and render the
-  # Envoy bootstrap to the shared volume.
+  # (scripts/e2e/lib.sh:192-228) — create a dataplane, issue its mTLS client certificate
+  # (fpv2-81c; one cert shared by Envoy and the agent), expose the demo upstream, and render
+  # the mTLS Envoy bootstrap to the shared volume. The guard is versioned (.init-mtls-v1) and
+  # fails closed: a volume holding an older plaintext bootstrap or inconsistent cert state
+  # exits loudly instead of silently reusing it.
   init:
     image: ${FLOWPLANE_EVAL_IMAGE:-flowplane:eval-local}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         set -e
-        if [ -s /shared/envoy.yaml ]; then echo "already initialized; nothing to do"; exit 0; fi
+        if [ -f /pki-dp/.init-mtls-v1 ]; then
+          if [ -s /pki-dp/client.crt ] && [ -s /pki-dp/client.key ] && grep -q "/pki-dp/client.crt" /shared/envoy.yaml; then
+            echo "already initialized; nothing to do"
+            exit 0
+          fi
+          echo "inconsistent init state — run: docker compose -f compose.eval.yml down -v" >&2
+          exit 1
+        fi
+        if [ -s /shared/envoy.yaml ]; then
+          echo "stale (pre-mTLS) bootstrap present — run: docker compose -f compose.eval.yml down -v" >&2
+          exit 1
+        fi
         echo "waiting for dev token..."
         for i in $$(seq 1 60); do [ -s /shared/dev-token ] && break; sleep 1; done
         [ -s /shared/dev-token ] || { echo "dev token never appeared"; exit 1; }
@@ -107,9 +211,21 @@ services:
         export FLOWPLANE_ORG=dev-org
         export FLOWPLANE_TEAM=default
         flowplane dataplane create dp-eval --description "eval dataplane"
+        echo "issuing dp-eval client certificate..."
+        json="$$(flowplane -o json dataplane cert issue dp-eval --ttl-hours 8760)"
+        pem_field() { printf "%s" "$$json" | tr -d "\n" | sed -n "s/.*\"$$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p"; }
+        for f in certificate_pem private_key_pem; do
+          [ -n "$$(pem_field $$f)" ] || { echo "cert issue: missing $$f in response" >&2; exit 1; }
+        done
+        printf "%b" "$$(pem_field certificate_pem)" > /pki-dp/client.crt
+        printf "%b" "$$(pem_field private_key_pem)" > /pki-dp/client.key
+        chmod 0600 /pki-dp/client.key
+        grep -q "BEGIN CERTIFICATE" /pki-dp/client.crt || { echo "bad client.crt" >&2; exit 1; }
+        grep -Eq -- "-----BEGIN (RSA |EC )?PRIVATE KEY-----" /pki-dp/client.key || { echo "bad client.key" >&2; exit 1; }
         flowplane expose "http://demo-upstream:5678" --name demo --path / --port 10000 --public-base-url "http://127.0.0.1:10000"
-        flowplane --out /shared/envoy.yaml dataplane bootstrap dp-eval --mode dev --xds-host flowplane-eval --xds-port 18000 --admin-port 9901
-        echo "init complete: dataplane + expose + bootstrap done"
+        flowplane --out /shared/envoy.yaml dataplane bootstrap dp-eval --mode mtls --xds-host flowplane-eval --xds-port 18000 --cert-path /pki-dp/client.crt --key-path /pki-dp/client.key --ca-path /pki-dp/ca.crt --admin-port 9901
+        touch /pki-dp/.init-mtls-v1
+        echo "init complete: dataplane + cert + expose + mtls bootstrap done"
     depends_on:
       flowplane-eval:
         condition: service_healthy
@@ -119,6 +235,7 @@ services:
         condition: service_completed_successfully
     volumes:
       - shared:/shared
+      - pki-dp:/pki-dp
 
   # Read-only dashboard for the eval stack (ui-f3 / fpv2-m4u.2). Same eval image; waits for
   # the dev token like init, then serves the container-profile dashboard. Discovery: the URL
@@ -174,8 +291,59 @@ services:
       init:
         condition: service_completed_successfully
     volumes:
-      - shared:/shared
+      # Read-only: Envoy only reads the bootstrap and the dataplane cert material.
+      - shared:/shared:ro
+      - pki-dp:/pki-dp:ro
+
+  # Dataplane agent (`flowplane-agent`, same eval image) running beside Envoy. It JOINS
+  # Envoy's network namespace (`network_mode: service:envoy`) so Envoy admin (127.0.0.1:9901)
+  # stays loopback-local to the dataplane unit — only the agent scrapes it, and nothing on the
+  # compose network can reach it — while heartbeats/diagnostics flow OUTBOUND to the control
+  # plane on the xDS port. Without this service every dataplane reads as "stale": liveness is
+  # derived from agent heartbeats, not from the Envoy xDS stream. The agent connects over real
+  # mTLS (fpv2-81c) with the same client cert Envoy uses (issued by init) and the bundle CA as
+  # server trust — the same posture docs/how-to/register-dataplane-mtls.md prescribes for
+  # production; --tls-server-name must match the server cert SAN (flowplane-eval), NOT the
+  # default (localhost).
+  flowplane-agent:
+    image: ${FLOWPLANE_EVAL_IMAGE:-flowplane:eval-local}
+    entrypoint: ["/bin/sh", "-c"]
+    network_mode: "service:envoy"
+    command:
+      - |
+        set -e
+        echo "waiting for dev token..."
+        for i in $$(seq 1 60); do [ -s /shared/dev-token ] && break; sleep 1; done
+        [ -s /shared/dev-token ] || { echo "dev token never appeared"; exit 1; }
+        export FLOWPLANE_SERVER=http://flowplane-eval:8080
+        export FLOWPLANE_TOKEN="$$(cat /shared/dev-token)"
+        export FLOWPLANE_ORG=dev-org
+        export FLOWPLANE_TEAM=default
+        echo "resolving dp-eval dataplane id..."
+        DP_ID="$$(flowplane -o json dataplane get dp-eval | tr -d ' \n' | grep -o '"id":"[0-9a-f-]\{36\}"' | head -1 | cut -d'"' -f4)"
+        [ -n "$$DP_ID" ] || { echo "could not resolve dp-eval id"; exit 1; }
+        echo "starting agent for dataplane $$DP_ID"
+        exec flowplane-agent \
+          --cp-endpoint https://flowplane-eval:18000 \
+          --dataplane-id "$$DP_ID" \
+          --tls-cert-path /pki-dp/client.crt \
+          --tls-key-path /pki-dp/client.key \
+          --tls-ca-path /pki-dp/ca.crt \
+          --tls-server-name flowplane-eval
+    depends_on:
+      envoy:
+        condition: service_started
+      init:
+        condition: service_completed_successfully
+    volumes:
+      # Read-only: the agent only reads the dev token and the dataplane cert material.
+      - shared:/shared:ro
+      - pki-dp:/pki-dp:ro
 
 volumes:
   shared: {}
   pgdata: {}
+  # CP-side PKI (issuer CA key + xDS server key): pki (rw) + flowplane-eval (ro) ONLY.
+  pki-cp: {}
+  # Dataplane cert material (trust anchor + client cert/key): never holds ca.key/server.key.
+  pki-dp: {}

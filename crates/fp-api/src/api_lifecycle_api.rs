@@ -42,6 +42,46 @@ impl From<ApiDefinition> for ApiDefinitionView {
     }
 }
 
+/// One row of the definition list: the API plus enrichment (counts + latest/published
+/// version numbers) served by a single aggregate query — no per-row `/status` call.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApiDefinitionListItemView {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub display_name: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published_spec_version_id: Option<uuid::Uuid>,
+    pub revision: i64,
+    pub tool_count: i64,
+    pub route_binding_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published_version: Option<i64>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<fp_domain::api_lifecycle::ApiDefinitionOverview> for ApiDefinitionListItemView {
+    fn from(value: fp_domain::api_lifecycle::ApiDefinitionOverview) -> Self {
+        Self {
+            id: value.api.id.as_uuid(),
+            name: value.api.name,
+            display_name: value.api.display_name,
+            description: value.api.description,
+            published_spec_version_id: value.api.published_spec_version_id.map(|id| id.as_uuid()),
+            revision: value.api.version,
+            tool_count: value.tool_count,
+            route_binding_count: value.route_binding_count,
+            latest_version: value.latest_version,
+            published_version: value.published_version,
+            created_at: value.api.created_at,
+            updated_at: value.api.updated_at,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApiStatusView {
     pub api: ApiDefinitionView,
@@ -59,6 +99,101 @@ pub struct SpecVersionSummary {
     pub format: String,
     pub spec_hash: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One row of the spec-version list: metadata plus the version's latest review decision.
+/// Content is never inlined here — fetch it via the version's `/content` endpoint.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SpecVersionListItemView {
+    pub id: uuid::Uuid,
+    pub version: i64,
+    pub source_kind: String,
+    pub format: String,
+    pub spec_hash: String,
+    /// Latest review decision (`submitted`, `reviewed`, `rejected`, `published`,
+    /// `unpublished`), or absent for a version with no review events yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_decision: Option<String>,
+    /// Provenance for learned versions: the capture session that produced this version
+    /// (from the document's learning-source stamp). Absent for imported/manual versions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_session_id: Option<uuid::Uuid>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<svc::SpecVersionListItem> for SpecVersionListItemView {
+    fn from(value: svc::SpecVersionListItem) -> Self {
+        Self {
+            id: value.meta.id.as_uuid(),
+            version: value.meta.version,
+            source_kind: value.meta.source_kind.as_str().into(),
+            format: value.meta.format.as_str().into(),
+            spec_hash: value.meta.spec_hash,
+            latest_decision: value.latest_decision.map(|d| d.as_str().into()),
+            capture_session_id: value.meta.capture_session_id,
+            created_at: value.meta.created_at,
+        }
+    }
+}
+
+/// One route binding: typed IDs into gateway resources (consumers join names via the
+/// resource endpoints — F2's dashboard data already carries them).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RouteBindingView {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub api_definition_id: uuid::Uuid,
+    pub route_config_id: uuid::Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listener_id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub virtual_host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<fp_domain::api_lifecycle::ApiRouteBinding> for RouteBindingView {
+    fn from(value: fp_domain::api_lifecycle::ApiRouteBinding) -> Self {
+        Self {
+            id: value.id.as_uuid(),
+            name: value.name,
+            api_definition_id: value.api_definition_id.as_uuid(),
+            route_config_id: value.route_config_id.as_uuid(),
+            listener_id: value.listener_id.map(|id| id.as_uuid()),
+            virtual_host: value.virtual_host,
+            route: value.route,
+            created_at: value.created_at,
+        }
+    }
+}
+
+/// One review event, rendered verbatim from the append-only history.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SpecReviewEventView {
+    pub id: uuid::Uuid,
+    /// One of `submitted`, `reviewed`, `rejected`, `published`, `unpublished`.
+    pub decision: String,
+    pub actor_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_id: Option<uuid::Uuid>,
+    pub reason: String,
+    pub metadata: serde_json::Value,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<fp_domain::api_lifecycle::SpecVersionReviewEvent> for SpecReviewEventView {
+    fn from(value: fp_domain::api_lifecycle::SpecVersionReviewEvent) -> Self {
+        Self {
+            id: value.id.as_uuid(),
+            decision: value.decision.as_str().into(),
+            actor_type: value.actor_type,
+            actor_id: value.actor_id,
+            reason: value.reason,
+            metadata: value.metadata,
+            created_at: value.created_at,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -203,7 +338,7 @@ impl CreateApiBody {
     tag = "ApiDefinitions",
     params(("team" = String, Path, description = "Team name or UUID"), ListQuery),
     responses(
-        (status = 200, body = Page<ApiDefinitionView>),
+        (status = 200, body = Page<ApiDefinitionListItemView>),
         (status = 401, body = crate::error::ErrorBody),
         (status = 404, body = crate::error::ErrorBody),
     ))]
@@ -213,14 +348,17 @@ pub async fn list_apis(
     Query(query): Query<ListQuery>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-) -> Result<Json<Page<ApiDefinitionView>>, ApiError> {
+) -> Result<Json<Page<ApiDefinitionListItemView>>, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
-        svc::list_apis(&state.pool, &ctx, team, query.limit, query.offset, rid).await
+        svc::list_apis_overview(&state.pool, &ctx, team, query.limit, query.offset, rid).await
     };
     let (items, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
     Ok(Json(Page {
-        items: items.into_iter().map(ApiDefinitionView::from).collect(),
+        items: items
+            .into_iter()
+            .map(ApiDefinitionListItemView::from)
+            .collect(),
         total,
         limit: query.limit.clamp(1, 500),
         offset: query.offset.max(0),
@@ -303,6 +441,236 @@ pub async fn api_status(
     run.await
         .map(|v| Json(ApiStatusView::from(v)))
         .map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(get, path = "/api/v1/teams/{team}/api-definitions/{name}/specs",
+    tag = "ApiDefinitions",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "API name"),
+        ListQuery,
+    ),
+    responses(
+        (status = 200, body = Page<SpecVersionListItemView>),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    ))]
+pub async fn list_spec_versions(
+    State(state): State<AppState>,
+    Path((team, name)): Path<(String, String)>,
+    Query(query): Query<ListQuery>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<Page<SpecVersionListItemView>>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::list_spec_versions(
+            &state.pool,
+            &ctx,
+            team,
+            &name,
+            query.limit,
+            query.offset,
+            rid,
+        )
+        .await
+    };
+    let (items, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok(Json(Page {
+        items: items
+            .into_iter()
+            .map(SpecVersionListItemView::from)
+            .collect(),
+        total,
+        limit: query.limit.clamp(1, 500),
+        offset: query.offset.max(0),
+    }))
+}
+
+#[utoipa::path(get, path = "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/events",
+    tag = "ApiDefinitions",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "API name"),
+        ("version" = i64, Path, description = "Spec version"),
+        ListQuery,
+    ),
+    responses(
+        (status = 200, body = Page<SpecReviewEventView>),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    ))]
+pub async fn list_spec_review_events(
+    State(state): State<AppState>,
+    Path((team, name, version)): Path<(String, String, i64)>,
+    Query(query): Query<ListQuery>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<Page<SpecReviewEventView>>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::list_spec_review_events(
+            &state.pool,
+            &ctx,
+            team,
+            svc::SpecEventsQuery {
+                api: name,
+                version,
+                limit: query.limit,
+                offset: query.offset,
+            },
+            rid,
+        )
+        .await
+    };
+    let (items, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok(Json(Page {
+        items: items.into_iter().map(SpecReviewEventView::from).collect(),
+        total,
+        limit: query.limit.clamp(1, 500),
+        offset: query.offset.max(0),
+    }))
+}
+
+#[utoipa::path(get, path = "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/content",
+    tag = "ApiDefinitions",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "API name"),
+        ("version" = i64, Path, description = "Spec version"),
+        ("If-None-Match" = Option<String>, Header, description = "Prior ETag; matching hash returns 304"),
+    ),
+    responses(
+        (status = 200, body = serde_json::Value,
+            description = "Canonical serde_json encoding of the stored document — the bytes spec_hash was computed over. ETag: \"<spec_hash>\"; Cache-Control: private, no-store."),
+        (status = 304, description = "If-None-Match matched the current spec_hash"),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    ))]
+pub async fn get_spec_version_content(
+    State(state): State<AppState>,
+    Path((team, name, version)): Path<(String, String, i64)>,
+    headers: HeaderMap,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<axum::response::Response, ApiError> {
+    use axum::response::IntoResponse;
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::get_spec_version_content(&state.pool, &ctx, team, &name, version, rid).await
+    };
+    let spec = run.await.map_err(|e| ApiError::new(e, rid))?;
+    let etag = format!("\"{}\"", spec.spec_hash);
+    let base_headers = [
+        (axum::http::header::ETAG, etag.clone()),
+        (
+            axum::http::header::CACHE_CONTROL,
+            "private, no-store".to_string(),
+        ),
+    ];
+    let revalidated = headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|raw| {
+            raw.split(',').any(|candidate| {
+                let candidate = candidate.trim();
+                candidate == "*"
+                    || candidate.strip_prefix("W/").unwrap_or(candidate) == etag
+                    || candidate.trim_matches('"') == spec.spec_hash
+            })
+        });
+    if revalidated {
+        return Ok((axum::http::StatusCode::NOT_MODIFIED, base_headers).into_response());
+    }
+    Ok((base_headers, Json(spec.spec)).into_response())
+}
+
+#[utoipa::path(get, path = "/api/v1/teams/{team}/api-definitions/{name}/route-bindings",
+    tag = "ApiDefinitions",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "API name"),
+        ListQuery,
+    ),
+    responses(
+        (status = 200, body = Page<RouteBindingView>),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    ))]
+pub async fn list_route_bindings(
+    State(state): State<AppState>,
+    Path((team, name)): Path<(String, String)>,
+    Query(query): Query<ListQuery>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<Page<RouteBindingView>>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::list_route_bindings(
+            &state.pool,
+            &ctx,
+            team,
+            &name,
+            query.limit,
+            query.offset,
+            rid,
+        )
+        .await
+    };
+    let (items, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok(Json(Page {
+        items: items.into_iter().map(RouteBindingView::from).collect(),
+        total,
+        limit: query.limit.clamp(1, 500),
+        offset: query.offset.max(0),
+    }))
+}
+
+#[utoipa::path(get, path = "/api/v1/teams/{team}/api-definitions/{name}/tools",
+    tag = "ApiDefinitions",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "API name"),
+        ListQuery,
+    ),
+    responses(
+        (status = 200, body = Page<ApiToolView>,
+            description = "Generated tools for this API including disabled rows; MCP tools/list continues to serve only enabled tools of the published version."),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    ))]
+pub async fn list_api_tools(
+    State(state): State<AppState>,
+    Path((team, name)): Path<(String, String)>,
+    Query(query): Query<ListQuery>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<Page<ApiToolView>>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::list_api_tools(
+            &state.pool,
+            &ctx,
+            team,
+            &name,
+            query.limit,
+            query.offset,
+            rid,
+        )
+        .await
+    };
+    let (items, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok(Json(Page {
+        items: items.into_iter().map(ApiToolView::from).collect(),
+        total,
+        limit: query.limit.clamp(1, 500),
+        offset: query.offset.max(0),
+    }))
 }
 
 #[utoipa::path(patch, path = "/api/v1/teams/{team}/mcp/tools/{name}",

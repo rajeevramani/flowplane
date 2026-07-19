@@ -7,7 +7,8 @@ use fp_domain::api_lifecycle::{
     validate_api_name, ApiDefinition, ApiDefinitionSpec, ApiRouteBinding, ApiRouteBindingSpec,
     ApiTool, ApiToolSpec, CaptureSession, CaptureSessionSpec, CaptureSessionStatus, HttpMethod,
     ObservationIngest, RawObservation, RetentionPolicy, RetentionPolicySpec, SpecFormat,
-    SpecReviewDecision, SpecSourceKind, SpecVersion, SpecVersionInput, SpecVersionReviewEvent,
+    SpecReviewDecision, SpecSourceKind, SpecVersion, SpecVersionInput, SpecVersionMeta,
+    SpecVersionReviewEvent,
 };
 use fp_domain::authz::TeamRef;
 use fp_domain::{
@@ -28,6 +29,11 @@ const BINDING_COLUMNS: &str = "id, team_id, api_definition_id, route_config_id, 
     name, virtual_host, route, created_at";
 const SPEC_COLUMNS: &str = "id, team_id, api_definition_id, version, source_kind, format, spec, \
     spec_hash, created_at";
+// Metadata-only projection: never selects the spec JSONB body (up to 512 KiB per row) —
+// only the single provenance field the learning stamp carries, extracted server-side.
+const SPEC_META_COLUMNS: &str = "id, team_id, api_definition_id, version, source_kind, format, \
+    spec_hash, spec #>> '{x-flowplane-learning-source,capture_session_id}' AS capture_session_id, \
+    created_at";
 const TOOL_COLUMNS: &str = "id, team_id, api_definition_id, spec_version_id, name, operation_id, \
     method, path, input_schema, output_schema, enabled, created_at, updated_at";
 const RETENTION_COLUMNS: &str = "id, team_id, api_definition_id, name, raw_observation_ttl_days, \
@@ -151,6 +157,23 @@ fn binding_from_row(row: &PgRow) -> ApiRouteBinding {
         route: row.get("route"),
         created_at: row.get("created_at"),
     }
+}
+
+fn spec_meta_from_row(row: &PgRow) -> DomainResult<SpecVersionMeta> {
+    Ok(SpecVersionMeta {
+        id: SpecVersionId::from(row.get::<Uuid, _>("id")),
+        team_id: TeamId::from(row.get::<Uuid, _>("team_id")),
+        api_definition_id: ApiDefinitionId::from(row.get::<Uuid, _>("api_definition_id")),
+        version: row.get("version"),
+        source_kind: SpecSourceKind::parse(&row.get::<String, _>("source_kind"))?,
+        format: SpecFormat::parse(&row.get::<String, _>("format"))?,
+        spec_hash: row.get("spec_hash"),
+        // Lenient: a hand-authored or foreign stamp that is not a UUID reads as None.
+        capture_session_id: row
+            .get::<Option<String>, _>("capture_session_id")
+            .and_then(|raw| raw.parse().ok()),
+        created_at: row.get("created_at"),
+    })
 }
 
 fn spec_from_row(row: &PgRow) -> DomainResult<SpecVersion> {
@@ -577,6 +600,75 @@ pub async fn list_api_definitions(
     Ok((rows.iter().map(api_from_row).collect(), total))
 }
 
+const API_ENRICHED_SQL: &str = "SELECT a.id, a.team_id, a.name, a.display_name, a.description, \
+            a.published_spec_version_id, a.version, a.created_at, a.updated_at, \
+            coalesce(tc.n, 0) AS tool_count, \
+            coalesce(bc.n, 0) AS route_binding_count, \
+            lv.version AS latest_version, \
+            pv.version AS published_version \
+     FROM api_definitions a \
+     LEFT JOIN (SELECT api_definition_id, count(*) AS n FROM api_tools \
+                WHERE team_id = $1 GROUP BY api_definition_id) tc \
+            ON tc.api_definition_id = a.id \
+     LEFT JOIN (SELECT api_definition_id, count(*) AS n FROM api_route_bindings \
+                WHERE team_id = $1 GROUP BY api_definition_id) bc \
+            ON bc.api_definition_id = a.id \
+     LEFT JOIN LATERAL (SELECT version FROM spec_versions v \
+                WHERE v.team_id = a.team_id AND v.api_definition_id = a.id \
+                ORDER BY version DESC LIMIT 1) lv ON true \
+     LEFT JOIN spec_versions pv ON pv.id = a.published_spec_version_id \
+     WHERE a.team_id = $1 ORDER BY a.name LIMIT $2 OFFSET $3";
+
+/// Paginated definition list enriched with tool/binding counts and latest/published version
+/// numbers in ONE aggregate query (ui-f4 S5 measured decision — see the feature's
+/// implement log for the EXPLAIN + p95 evidence). Group-by subqueries are team-scoped;
+/// the published version resolves through `published_spec_version_id`.
+pub async fn list_api_definitions_enriched(
+    pool: &PgPool,
+    team_id: TeamId,
+    limit: i64,
+    offset: i64,
+) -> DomainResult<(Vec<fp_domain::api_lifecycle::ApiDefinitionOverview>, i64)> {
+    let rows = sqlx::query(API_ENRICHED_SQL)
+        .bind(team_id.as_uuid())
+        .bind(limit.clamp(1, 500))
+        .bind(offset.max(0))
+        .fetch_all(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("list apis enriched: {e}")))?;
+    let total = count_api_definitions_for_team(pool, team_id).await?;
+    Ok((
+        rows.iter()
+            .map(|row| fp_domain::api_lifecycle::ApiDefinitionOverview {
+                api: api_from_row(row),
+                tool_count: row.get("tool_count"),
+                route_binding_count: row.get("route_binding_count"),
+                latest_version: row.get("latest_version"),
+                published_version: row.get("published_version"),
+            })
+            .collect(),
+        total,
+    ))
+}
+
+/// `EXPLAIN (ANALYZE)` of the enriched-list aggregate, over the exact same SQL the
+/// production path executes. Diagnostic read-only helper backing the design's
+/// "EXPLAIN + timing test" measurement gate (ui-f4 S5).
+pub async fn explain_list_api_definitions_enriched(
+    pool: &PgPool,
+    team_id: TeamId,
+    limit: i64,
+    offset: i64,
+) -> DomainResult<Vec<String>> {
+    sqlx::query_scalar(&format!("EXPLAIN (ANALYZE, SUMMARY) {API_ENRICHED_SQL}"))
+        .bind(team_id.as_uuid())
+        .bind(limit.clamp(1, 500))
+        .bind(offset.max(0))
+        .fetch_all(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("explain apis enriched: {e}")))
+}
+
 pub async fn count_api_definitions_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64> {
     sqlx::query_scalar("SELECT count(*) FROM api_definitions WHERE team_id = $1")
         .bind(team_id.as_uuid())
@@ -788,6 +880,155 @@ pub async fn append_spec_review_event(
     review_event_from_row(&row)
 }
 
+/// Paginated spec-version metadata for one API, newest version first. Metadata-only: the
+/// `spec` JSONB column is never selected (see [`SpecVersionMeta`]).
+pub async fn list_spec_versions_meta(
+    pool: &PgPool,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+    limit: i64,
+    offset: i64,
+) -> DomainResult<(Vec<SpecVersionMeta>, i64)> {
+    let rows = sqlx::query(&format!(
+        "SELECT {SPEC_META_COLUMNS} FROM spec_versions \
+         WHERE team_id = $1 AND api_definition_id = $2 \
+         ORDER BY version DESC LIMIT $3 OFFSET $4"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .bind(limit.clamp(1, 500))
+    .bind(offset.max(0))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list spec versions: {e}")))?;
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM spec_versions WHERE team_id = $1 AND api_definition_id = $2",
+    )
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count spec versions: {e}")))?;
+    Ok((
+        rows.iter()
+            .map(spec_meta_from_row)
+            .collect::<DomainResult<Vec<_>>>()?,
+        total,
+    ))
+}
+
+/// Full spec-version row (including the `spec` JSONB body) by per-API version number.
+/// Pool-based read-side variant of the transactional `get_spec_version_for_api_by_version`.
+pub async fn get_spec_version_by_api_version(
+    pool: &PgPool,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+    version: i64,
+) -> DomainResult<Option<SpecVersion>> {
+    let row = sqlx::query(&format!(
+        "SELECT {SPEC_COLUMNS} FROM spec_versions \
+         WHERE team_id = $1 AND api_definition_id = $2 AND version = $3"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .bind(version)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get spec version content: {e}")))?;
+    row.as_ref().map(spec_from_row).transpose()
+}
+
+/// Metadata-only lookup of one spec version by its per-API version number.
+pub async fn get_spec_version_meta(
+    pool: &PgPool,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+    version: i64,
+) -> DomainResult<Option<SpecVersionMeta>> {
+    let row = sqlx::query(&format!(
+        "SELECT {SPEC_META_COLUMNS} FROM spec_versions \
+         WHERE team_id = $1 AND api_definition_id = $2 AND version = $3"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .bind(version)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("get spec version meta: {e}")))?;
+    row.as_ref().map(spec_meta_from_row).transpose()
+}
+
+/// Paginated full review-event history for one spec version, oldest first. The
+/// `created_at ASC, id ASC` tie-break mirrors the latest-decision queries'
+/// `created_at DESC, id DESC` so both orderings agree on which event is newest.
+pub async fn list_spec_review_events(
+    pool: &PgPool,
+    team_id: TeamId,
+    spec_version_id: SpecVersionId,
+    limit: i64,
+    offset: i64,
+) -> DomainResult<(Vec<SpecVersionReviewEvent>, i64)> {
+    let rows = sqlx::query(&format!(
+        "SELECT {REVIEW_EVENT_COLUMNS} FROM spec_version_review_events \
+         WHERE team_id = $1 AND spec_version_id = $2 \
+         ORDER BY created_at ASC, id ASC LIMIT $3 OFFSET $4"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(spec_version_id.as_uuid())
+    .bind(limit.clamp(1, 500))
+    .bind(offset.max(0))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list spec review events: {e}")))?;
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM spec_version_review_events \
+         WHERE team_id = $1 AND spec_version_id = $2",
+    )
+    .bind(team_id.as_uuid())
+    .bind(spec_version_id.as_uuid())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count spec review events: {e}")))?;
+    Ok((
+        rows.iter()
+            .map(review_event_from_row)
+            .collect::<DomainResult<Vec<_>>>()?,
+        total,
+    ))
+}
+
+/// Latest review decision for each of the given spec versions in one query (no per-row
+/// N+1). The `created_at DESC, id DESC` tie-break matches `latest_spec_review_decision`.
+pub async fn latest_spec_review_decisions(
+    pool: &PgPool,
+    team_id: TeamId,
+    spec_version_ids: &[SpecVersionId],
+) -> DomainResult<Vec<(SpecVersionId, SpecReviewDecision)>> {
+    if spec_version_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<Uuid> = spec_version_ids.iter().map(|id| id.as_uuid()).collect();
+    let rows = sqlx::query(
+        "SELECT DISTINCT ON (spec_version_id) spec_version_id, decision \
+         FROM spec_version_review_events \
+         WHERE team_id = $1 AND spec_version_id = ANY($2) \
+         ORDER BY spec_version_id, created_at DESC, id DESC",
+    )
+    .bind(team_id.as_uuid())
+    .bind(&ids)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("latest spec review decisions: {e}")))?;
+    rows.iter()
+        .map(|row| {
+            Ok((
+                SpecVersionId::from(row.get::<Uuid, _>("spec_version_id")),
+                SpecReviewDecision::parse(&row.get::<String, _>("decision"))?,
+            ))
+        })
+        .collect()
+}
+
 pub async fn latest_spec_review_decision(
     tx: &mut Transaction<'_, Postgres>,
     team_id: TeamId,
@@ -957,6 +1198,57 @@ pub async fn list_route_bindings_for_api(
     .await
     .map_err(|e| DomainError::internal(format!("list api route bindings: {e}")))?;
     Ok(rows.iter().map(binding_from_row).collect())
+}
+
+/// Paginated route-binding rows for one API (ordered by name) plus the total count.
+pub async fn list_route_bindings_paged(
+    pool: &PgPool,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+    limit: i64,
+    offset: i64,
+) -> DomainResult<(Vec<ApiRouteBinding>, i64)> {
+    let rows = sqlx::query(&format!(
+        "SELECT {BINDING_COLUMNS} FROM api_route_bindings \
+         WHERE team_id = $1 AND api_definition_id = $2 ORDER BY name LIMIT $3 OFFSET $4"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .bind(limit.clamp(1, 500))
+    .bind(offset.max(0))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list api route bindings page: {e}")))?;
+    let total = count_route_bindings(pool, team_id, api_id).await?;
+    Ok((rows.iter().map(binding_from_row).collect(), total))
+}
+
+/// Paginated api-tool rows for one API (ordered by name, disabled included) plus the total.
+pub async fn list_api_tools_paged(
+    pool: &PgPool,
+    team_id: TeamId,
+    api_id: ApiDefinitionId,
+    limit: i64,
+    offset: i64,
+) -> DomainResult<(Vec<ApiTool>, i64)> {
+    let rows = sqlx::query(&format!(
+        "SELECT {TOOL_COLUMNS} FROM api_tools \
+         WHERE team_id = $1 AND api_definition_id = $2 ORDER BY name LIMIT $3 OFFSET $4"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(api_id.as_uuid())
+    .bind(limit.clamp(1, 500))
+    .bind(offset.max(0))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list api tools page: {e}")))?;
+    let total = count_api_tools(pool, team_id, api_id).await?;
+    Ok((
+        rows.iter()
+            .map(tool_from_row)
+            .collect::<DomainResult<Vec<_>>>()?,
+        total,
+    ))
 }
 
 pub async fn list_api_tools(

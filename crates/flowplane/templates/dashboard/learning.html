@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Flowplane — {{ team }} — learning</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/{{ nonce }}/assets/dashboard.css">
+  <script src="/{{ nonce }}/assets/htmx.min.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Flowplane</h1>
+    <nav class="nav">
+      <a href="/{{ nonce }}/">Overview</a>
+      <a href="/{{ nonce }}/resources">Resources</a>
+      <a href="/{{ nonce }}/apis">APIs</a>
+      <span class="active">Learning</span>
+    </nav>
+    <span class="team">team: {{ team }}</span>
+  </header>
+  <main id="resources">
+    <details id="learning-sessions" open
+             hx-get="/{{ nonce }}/partials/learning/sessions"
+             hx-trigger="load once"
+             hx-target="#learning-sessions-body"
+             hx-swap="innerHTML">
+      <summary>Learning sessions</summary>
+      <div id="learning-sessions-body"><p class="placeholder">Loading…</p></div>
+    </details>
+    <section class="panel" id="learning-viewer">
+      <h2>Spec viewer</h2>
+      <div id="learning-viewer-body"><p class="placeholder">Pick a produced spec version from a completed session.</p></div>
+    </section>
+  </main>
+</body>
+</html>

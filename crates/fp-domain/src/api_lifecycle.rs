@@ -168,6 +168,35 @@ pub struct SpecVersion {
     pub created_at: DateTime<Utc>,
 }
 
+/// Definition-list read model: one API row enriched with counts and version numbers so the
+/// list view needs no per-row `/status` call (measured aggregate; ui-f4 S5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApiDefinitionOverview {
+    pub api: ApiDefinition,
+    pub tool_count: i64,
+    pub route_binding_count: i64,
+    pub latest_version: Option<i64>,
+    pub published_version: Option<i64>,
+}
+
+/// Spec-version row without the `spec` JSONB body. List endpoints return this shape so a
+/// page of versions never inlines up to 512 KiB of content per row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpecVersionMeta {
+    pub id: SpecVersionId,
+    pub team_id: TeamId,
+    pub api_definition_id: ApiDefinitionId,
+    pub version: i64,
+    pub source_kind: SpecSourceKind,
+    pub format: SpecFormat,
+    pub spec_hash: String,
+    /// Provenance for learned versions: the capture session that produced this version,
+    /// extracted from the stored document's `x-flowplane-learning-source` stamp. `None`
+    /// for imported/manual versions or documents without the stamp.
+    pub capture_session_id: Option<uuid::Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpecReviewDecision {
