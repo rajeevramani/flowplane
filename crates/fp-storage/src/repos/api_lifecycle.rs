@@ -29,9 +29,11 @@ const BINDING_COLUMNS: &str = "id, team_id, api_definition_id, route_config_id, 
     name, virtual_host, route, created_at";
 const SPEC_COLUMNS: &str = "id, team_id, api_definition_id, version, source_kind, format, spec, \
     spec_hash, created_at";
-// Metadata-only projection: never selects the spec JSONB (up to 512 KiB per row).
+// Metadata-only projection: never selects the spec JSONB body (up to 512 KiB per row) —
+// only the single provenance field the learning stamp carries, extracted server-side.
 const SPEC_META_COLUMNS: &str = "id, team_id, api_definition_id, version, source_kind, format, \
-    spec_hash, created_at";
+    spec_hash, spec #>> '{x-flowplane-learning-source,capture_session_id}' AS capture_session_id, \
+    created_at";
 const TOOL_COLUMNS: &str = "id, team_id, api_definition_id, spec_version_id, name, operation_id, \
     method, path, input_schema, output_schema, enabled, created_at, updated_at";
 const RETENTION_COLUMNS: &str = "id, team_id, api_definition_id, name, raw_observation_ttl_days, \
@@ -166,6 +168,10 @@ fn spec_meta_from_row(row: &PgRow) -> DomainResult<SpecVersionMeta> {
         source_kind: SpecSourceKind::parse(&row.get::<String, _>("source_kind"))?,
         format: SpecFormat::parse(&row.get::<String, _>("format"))?,
         spec_hash: row.get("spec_hash"),
+        // Lenient: a hand-authored or foreign stamp that is not a UUID reads as None.
+        capture_session_id: row
+            .get::<Option<String>, _>("capture_session_id")
+            .and_then(|raw| raw.parse().ok()),
         created_at: row.get("created_at"),
     })
 }

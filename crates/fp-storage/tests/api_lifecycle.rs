@@ -1677,3 +1677,53 @@ async fn enriched_definition_list_aggregate_meets_p95_budget_on_design_fixture()
         eprintln!("  {line}");
     }
 }
+
+// -- ui-f4 S8: capture-session provenance in spec-version metadata --
+
+#[tokio::test]
+async fn spec_meta_list_extracts_capture_session_provenance() {
+    let Some(w) = world().await else { return };
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api =
+        api_lifecycle::create_api_definition(&mut tx, w.team_a, &unique("api"), &api_spec("A"))
+            .await
+            .expect("api");
+    tx.commit().await.expect("commit api");
+
+    // v1: plain imported document — no stamp, no provenance.
+    let _v1 = commit_spec_version(&w.pool, w.team_a, api.id, "no-stamp").await;
+    // v2: learned-style document carrying the learning-source stamp.
+    let session_id = uuid::Uuid::new_v4();
+    let mut tx = w.pool.begin().await.expect("tx v2");
+    api_lifecycle::create_spec_version(
+        &mut tx,
+        w.team_a,
+        api.id,
+        &fp_domain::api_lifecycle::SpecVersionInput {
+            source_kind: SpecSourceKind::Learned,
+            format: SpecFormat::OpenApi3,
+            spec: serde_json::json!({
+                "openapi": "3.0.3",
+                "info": {"title": "stamped", "version": "1.0.0"},
+                "paths": {},
+                "x-flowplane-learning-source": {
+                    "api_definition_id": api.id.as_uuid(),
+                    "capture_session_id": session_id,
+                }
+            }),
+        },
+    )
+    .await
+    .expect("v2");
+    tx.commit().await.expect("commit v2");
+
+    let (metas, total) =
+        api_lifecycle::list_spec_versions_meta(&w.pool, w.team_a.id, api.id, 50, 0)
+            .await
+            .expect("meta list");
+    assert_eq!(total, 2);
+    let v2 = metas.iter().find(|m| m.version == 2).expect("v2");
+    assert_eq!(v2.capture_session_id, Some(session_id));
+    let v1 = metas.iter().find(|m| m.version == 1).expect("v1");
+    assert_eq!(v1.capture_session_id, None);
+}

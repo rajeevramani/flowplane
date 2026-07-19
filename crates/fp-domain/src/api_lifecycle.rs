@@ -190,6 +190,10 @@ pub struct SpecVersionMeta {
     pub source_kind: SpecSourceKind,
     pub format: SpecFormat,
     pub spec_hash: String,
+    /// Provenance for learned versions: the capture session that produced this version,
+    /// extracted from the stored document's `x-flowplane-learning-source` stamp. `None`
+    /// for imported/manual versions or documents without the stamp.
+    pub capture_session_id: Option<uuid::Uuid>,
     pub created_at: DateTime<Utc>,
 }
 

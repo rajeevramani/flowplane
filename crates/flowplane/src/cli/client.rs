@@ -415,6 +415,47 @@ impl RestClient {
             .map(|value| (value, text.len()))
             .map_err(ReadError::Decode)
     }
+
+    /// Conditional GET for the dashboard's spec-content viewer (ui-f4 S8): sends
+    /// `If-None-Match` when a prior ETag is known. 304 → `NotModified`; 200 → the JSON
+    /// body plus the response ETag (if any).
+    pub(crate) async fn get_json_conditional(
+        &self,
+        path: &str,
+        etag: Option<&str>,
+    ) -> std::result::Result<ConditionalRead, ReadError> {
+        let url = self.url(path);
+        let mut req = self.add_auth_headers(self.http.request(reqwest::Method::GET, url), None);
+        if let Some(etag) = etag {
+            req = req.header(reqwest::header::IF_NONE_MATCH, etag);
+        }
+        let response = req.send().await.map_err(ReadError::Transport)?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_MODIFIED {
+            return Ok(ConditionalRead::NotModified);
+        }
+        let response_etag = response
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let text = response.text().await.map_err(ReadError::Transport)?;
+        if !status.is_success() {
+            return Err(ReadError::Status { status, body: text });
+        }
+        serde_json::from_str(&text)
+            .map(|value| ConditionalRead::Fresh {
+                value,
+                etag: response_etag,
+            })
+            .map_err(ReadError::Decode)
+    }
+}
+
+/// Result of a conditional GET: revalidated-unchanged, or a fresh body with its ETag.
+pub(crate) enum ConditionalRead {
+    NotModified,
+    Fresh { value: Value, etag: Option<String> },
 }
 
 /// Error type for the status-preserving read seam. Existing CLI call sites keep the

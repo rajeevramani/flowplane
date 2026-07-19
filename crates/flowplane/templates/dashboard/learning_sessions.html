@@ -1,0 +1,65 @@
+{% if let Some(p) = panel.data() %}
+<section class="panel" id="panel-learning-sessions">
+  <h2>Learning sessions <span class="hint">{{ p.rows.len() }} of {{ p.total }}</span></h2>
+  {% for n in p.notices %}
+  {% if n.budget() %}
+  <p class="banner">Partial — first {{ n.shown }} of {{ n.total }} {{ n.collection }} (budget reached).</p>
+  {% else %}
+  <p class="banner">Partial data: the {{ n.collection }} collection is incomplete.</p>
+  {% endif %}
+  {% endfor %}
+  {% if p.unparsed_specs > 0 %}
+  <p class="banner">{{ p.unparsed_specs }} spec-version row(s) could not be parsed (version skew?) and are not attributed to sessions.</p>
+  {% endif %}
+  <table class="dataplanes">
+    <thead>
+      <tr><th>Session</th><th>Status</th><th>API</th><th>Samples</th><th>Paths</th><th>When</th><th>Produced spec versions</th></tr>
+    </thead>
+    <tbody>
+      {% for row in p.rows %}
+      <tr>
+        <td>{{ row.name }}</td>
+        {% if row.unparsed %}
+        <td colspan="6" class="placeholder">unparseable session row (version skew?)</td>
+        {% else %}
+        <td>{{ row.status }}</td>
+        <td>{{ row.api }}</td>
+        <td>{{ row.samples }}</td>
+        <td>{{ row.paths }}</td>
+        <td>{{ row.age }}</td>
+        <td>
+          {% if row.completed %}
+          {% if row.produced.is_empty() %}
+          <span class="placeholder">none yet</span>
+          {% else %}
+          {% for spec in row.produced %}
+          <button class="spec-link"
+                  hx-get="/{{ nonce }}/partials/learning/content?api={{ spec.api|urlencode }}&version={{ spec.version }}"
+                  hx-target="#learning-viewer-body"
+                  hx-swap="innerHTML">{{ spec.api }} v{{ spec.version }}</button>
+          {% endfor %}
+          {% endif %}
+          {% else %}
+          <span class="placeholder">—</span>
+          {% endif %}
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+      {% if p.rows.is_empty() %}
+      <tr><td colspan="7" class="placeholder">No learning sessions.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+{% else if panel.unauthorized() %}
+<section class="panel unauthorized" id="panel-learning-sessions">
+  <h2>Learning sessions</h2>
+  <p>Not authorized to view learning sessions.</p>
+</section>
+{% else %}
+<section class="panel unavailable" id="panel-learning-sessions">
+  <h2>Learning sessions</h2>
+  <p>Learning sessions are currently unavailable.</p>
+</section>
+{% endif %}

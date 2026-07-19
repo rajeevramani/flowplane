@@ -11,6 +11,7 @@ mod apis;
 mod data;
 mod filters_inventory;
 mod joins;
+mod learning;
 mod orphans;
 mod ratelimits;
 mod resources;
@@ -64,9 +65,12 @@ pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/",
     "/resources",
     "/apis",
+    "/learning",
     "/partials/overview",
     "/partials/apis/list",
     "/partials/apis/detail",
+    "/partials/learning/sessions",
+    "/partials/learning/content",
     "/partials/resources/topology",
     "/partials/resources/clusters",
     "/partials/resources/route-configs",
@@ -90,6 +94,8 @@ pub(crate) struct DashState {
     client: RestClient,
     /// Resolved team the dashboard renders.
     team: String,
+    /// Per-launch spec-content viewer cache (ETag revalidation; ui-f4 S8).
+    content_cache: learning::ContentCache,
 }
 
 /// The configured team is interpolated into the two allowlisted upstream paths as ONE
@@ -149,6 +155,7 @@ pub(crate) async fn run(global: GlobalOptions, options: DashboardOptions) -> Res
         port: addr.port(),
         client,
         team,
+        content_cache: Default::default(),
     });
     let app = build_router(state.clone());
 
@@ -302,8 +309,11 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
                 "/" => get(overview),
                 "/resources" => get(resources_page),
                 "/apis" => get(apis_page),
+                "/learning" => get(learning_page),
                 "/partials/apis/list" => get(apis_list_partial),
                 "/partials/apis/detail" => get(apis_detail_partial),
+                "/partials/learning/sessions" => get(learning_sessions_partial),
+                "/partials/learning/content" => get(learning_content_partial),
                 "/partials/overview" => get(overview_partial),
                 "/partials/resources/topology" => get(resources_topology_partial),
                 "/partials/resources/clusters" => get(resources_clusters_partial),
@@ -548,6 +558,81 @@ async fn apis_detail_partial(
     let result = apis::fetch_api_detail(&state.client, &state.team, &query.api, chrono::Utc::now())
         .await
         .map(|panel| ApiDetailPanel { panel });
+    render_resources_panel(result)
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/learning.html")]
+struct LearningShell<'a> {
+    nonce: &'a str,
+    team: &'a str,
+}
+
+async fn learning_page(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let shell = LearningShell {
+        nonce: &state.nonce,
+        team: &state.team,
+    };
+    match askama::Template::render(&shell) {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/learning_sessions.html")]
+struct LearningSessionsPanel<'a> {
+    nonce: &'a str,
+    panel: data::Panel<learning::LearningPanel>,
+}
+
+async fn learning_sessions_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = learning::fetch_learning(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| LearningSessionsPanel {
+            nonce: &state.nonce,
+            panel,
+        });
+    render_resources_panel(result)
+}
+
+#[derive(serde::Deserialize)]
+struct ContentQuery {
+    api: String,
+    version: i64,
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/learning_content.html")]
+struct LearningContentPanel {
+    view: learning::ContentView,
+}
+
+async fn learning_content_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+    query: Result<axum::extract::Query<ContentQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    let query = match query {
+        Ok(axum::extract::Query(query)) if !query.api.is_empty() => query,
+        _ => {
+            return render_resources_panel::<LearningContentPanel>(Ok(LearningContentPanel {
+                view: learning::ContentView::Unavailable,
+            }))
+        }
+    };
+    let result = learning::fetch_content(
+        &state.client,
+        &state.team,
+        &query.api,
+        query.version,
+        &state.content_cache,
+    )
+    .await
+    .map(|view| LearningContentPanel { view });
     render_resources_panel(result)
 }
 
@@ -954,6 +1039,7 @@ mod tests {
                 callback_url: None,
             }),
             team: "test-team".into(),
+            content_cache: Default::default(),
         })
     }
 

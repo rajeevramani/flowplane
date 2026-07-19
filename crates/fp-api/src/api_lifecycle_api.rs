@@ -114,6 +114,10 @@ pub struct SpecVersionListItemView {
     /// `unpublished`), or absent for a version with no review events yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_decision: Option<String>,
+    /// Provenance for learned versions: the capture session that produced this version
+    /// (from the document's learning-source stamp). Absent for imported/manual versions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_session_id: Option<uuid::Uuid>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -126,6 +130,7 @@ impl From<svc::SpecVersionListItem> for SpecVersionListItemView {
             format: value.meta.format.as_str().into(),
             spec_hash: value.meta.spec_hash,
             latest_decision: value.latest_decision.map(|d| d.as_str().into()),
+            capture_session_id: value.meta.capture_session_id,
             created_at: value.meta.created_at,
         }
     }

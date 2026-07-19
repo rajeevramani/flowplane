@@ -38,6 +38,8 @@ pub(super) const COLLECTIONS: &[&str] = &[
     // API lifecycle read model (ui-f4 S7): definitions plus their per-API sub-lists
     // (specs / events / route-bindings / tools), all read-only paginated GETs.
     "api-definitions",
+    // Learning tab (ui-f4 S8): capture-session metadata list (no observation bodies).
+    "learning-sessions",
 ];
 
 /// Percent-encode one path segment (RFC 3986 unreserved kept verbatim). Rate-limit
@@ -867,7 +869,10 @@ mod tests {
                 // plus per-API metadata sub-lists (specs / events / route-bindings /
                 // tools) — all read-only metadata; the spec CONTENT endpoint is
                 // deliberately NOT swept by the APIs tab.
-                "api-definitions"
+                "api-definitions",
+                // ui-f4 S8 (reviewed addition): capture-session metadata list for the
+                // Learning tab. Session bodies/observations are never fetched.
+                "learning-sessions"
             ],
             "the upstream allowlist is closed; review any change against design AC 4"
         );
