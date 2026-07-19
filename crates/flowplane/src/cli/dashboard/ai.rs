@@ -85,7 +85,17 @@ struct UsagePage {
 
 #[derive(Debug, Deserialize)]
 struct UsageItem {
+    #[serde(default)]
+    route_config_id: Option<String>,
+    #[serde(default)]
+    provider_id: Option<String>,
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
     total_tokens: u64,
+    #[serde(default)]
+    event_count: u64,
 }
 
 // =============================================================================================
@@ -126,6 +136,16 @@ pub(super) struct BudgetRow {
     pub(super) window_started: String,
 }
 
+#[derive(Debug)]
+pub(super) struct UsageRow {
+    pub(super) route: String,
+    pub(super) provider: String,
+    pub(super) prompt_tokens: u64,
+    pub(super) completion_tokens: u64,
+    pub(super) total_tokens: u64,
+    pub(super) events: u64,
+}
+
 pub(super) struct AiPanel {
     // Summary cards.
     pub(super) provider_count: usize,
@@ -139,6 +159,8 @@ pub(super) struct AiPanel {
     pub(super) providers: Vec<ProviderRow>,
     pub(super) routes: Vec<RouteRow>,
     pub(super) budgets: Vec<BudgetRow>,
+    /// Windowed usage table rows (same captured window pair as the Tokens card).
+    pub(super) usage: Vec<UsageRow>,
     /// Budgets at ≥ 80% — the warning card lists them by name.
     pub(super) near_limit: Vec<String>,
     /// Typed-decode failures per collection (version skew) — surfaced, never dropped.
@@ -323,6 +345,35 @@ pub(super) async fn fetch_ai(
         }
     }
 
+    // Route-config id → name for the usage table (usage rows carry route_config_id).
+    let mut route_config_names: BTreeMap<String, String> = BTreeMap::new();
+    if usage_rows.iter().any(|u| u.route_config_id.is_some()) {
+        match record_notice(
+            sweep(client, team, "route-configs", SWEEP_BYTE_BUDGET).await,
+            "route configs",
+            &mut notices,
+        ) {
+            Ok(items) => {
+                for item in items {
+                    if let (Some(id), Some(name)) = (
+                        item.get("id").and_then(Value::as_str),
+                        item.get("name").and_then(Value::as_str),
+                    ) {
+                        route_config_names.insert(id.to_string(), name.to_string());
+                    }
+                }
+            }
+            Err(SweepFailure::AuthExpired) => return Err(AuthExpired),
+            // Without names the table falls back to raw ids; surface it, keep the rows.
+            Err(_) => notices.push(PartialNotice {
+                shown: 0,
+                total: 0,
+                reason: PartialReason::UpstreamFailure,
+                collection: "route configs",
+            }),
+        }
+    }
+
     // Provider id → name for chains and usage attribution.
     let provider_names: BTreeMap<&str, &str> = providers
         .iter()
@@ -401,6 +452,36 @@ pub(super) async fn fetch_ai(
         .map(|b| format!("{} ({}%, {})", b.name, b.pct, b.mode))
         .collect();
 
+    let usage: Vec<UsageRow> = usage_rows
+        .iter()
+        .map(|u| UsageRow {
+            route: u
+                .route_config_id
+                .as_deref()
+                .map(|id| {
+                    route_config_names
+                        .get(id)
+                        .cloned()
+                        .unwrap_or_else(|| id.to_string())
+                })
+                .unwrap_or_else(|| "—".into()),
+            provider: u
+                .provider_id
+                .as_deref()
+                .map(|id| {
+                    provider_names
+                        .get(id)
+                        .copied()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| id.to_string())
+                })
+                .unwrap_or_else(|| "—".into()),
+            prompt_tokens: u.prompt_tokens,
+            completion_tokens: u.completion_tokens,
+            total_tokens: u.total_tokens,
+            events: u.event_count,
+        })
+        .collect();
     let tokens_window: u64 = usage_rows.iter().map(|u| u.total_tokens).sum();
 
     Ok(Panel::Data(AiPanel {
@@ -412,6 +493,7 @@ pub(super) async fn fetch_ai(
         providers: provider_rows,
         routes: route_rows,
         budgets: budget_rows,
+        usage,
         near_limit,
         unparsed,
         hidden_provider_kinds,
@@ -442,6 +524,223 @@ fn percent_encode(raw: &str) -> String {
     out
 }
 
+// =============================================================================================
+// Traces (S5): cursor-paged list with the per-request hop-timeline drill-down. Hops arrive
+// inside the list response — the drill-down needs no second fetch. Paging is user-driven
+// ("Load older"), strictly-before `(created_at, id)` cursors; no window applies.
+// =============================================================================================
+
+/// The trace list page size (server cap is 500; 50 keeps drill-downs scannable).
+const TRACE_PAGE_LIMIT: i64 = 50;
+
+/// Envelope decode used only for the `miss` payload; rows are decoded per-item so one
+/// skewed row surfaces as a count instead of dropping the whole page.
+#[derive(Debug, Deserialize)]
+struct TraceResponse {
+    #[serde(default)]
+    miss: Option<TraceMiss>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TraceMiss {
+    message: String,
+    hint: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TraceItem {
+    id: String,
+    request_id: String,
+    #[serde(default)]
+    trace_id: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    status_code: Option<i32>,
+    #[serde(default)]
+    failure_hop: Option<String>,
+    #[serde(default)]
+    hops: Value,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug)]
+pub(super) struct HopRow {
+    pub(super) hop: String,
+    /// Operator-facing outcome label (design hop semantics: budget exhaustion =
+    /// "rejected (429)", `no_upstream_connection` = 503, auth / not_configured named).
+    pub(super) label: String,
+    pub(super) failed: bool,
+    /// Hop start/end timestamps, verbatim from the capture (the design's DIRECT
+    /// hop-timeline data); empty when the entry lacks them.
+    pub(super) started_at: String,
+    pub(super) ended_at: String,
+}
+
+#[derive(Debug)]
+pub(super) struct TraceRow {
+    pub(super) request_id: String,
+    pub(super) trace_id: String,
+    pub(super) model: String,
+    pub(super) status: String,
+    pub(super) failure_hop: String,
+    pub(super) age: String,
+    pub(super) hops: Vec<HopRow>,
+}
+
+pub(super) struct TracePanel {
+    pub(super) rows: Vec<TraceRow>,
+    /// Cursor for the NEXT (older) page — the last row's `(created_at, id)`; present only
+    /// when this page was full (more rows may exist).
+    pub(super) older_cursor: Option<String>,
+    /// Miss payload (id-filtered query matched nothing) — rendered distinctly.
+    pub(super) miss: Option<(String, String)>,
+    /// Rows that failed typed decode — surfaced, never dropped.
+    pub(super) unparsed: usize,
+}
+
+/// Design hop semantics: the operator-facing label for one hop entry.
+fn hop_label(hop: &str, outcome: &str, detail: Option<&Value>) -> String {
+    match (hop, outcome) {
+        ("budget", "rejected") => "rejected (429 budget exhausted)".to_string(),
+        (_, "no_upstream_connection") => "no upstream connection (503)".to_string(),
+        (_, "auth") => "auth failure".to_string(),
+        (_, "not_configured") => "not configured".to_string(),
+        ("budget", "enforcing") | ("budget", "ok") => outcome.to_string(),
+        _ => {
+            // `would_reject` shadow annotations carry detail worth surfacing.
+            if let Some(d) = detail.and_then(|d| d.get("would_reject")) {
+                if d == &Value::Bool(true) {
+                    return format!("{outcome} (shadow would_reject)");
+                }
+            }
+            outcome.to_string()
+        }
+    }
+}
+
+fn trace_rows(items: Vec<TraceItem>, now: DateTime<Utc>) -> Vec<TraceRow> {
+    items
+        .into_iter()
+        .map(|t| {
+            let hops = t
+                .hops
+                .as_array()
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .map(|e| {
+                            let hop = e
+                                .get("hop")
+                                .and_then(Value::as_str)
+                                .unwrap_or("(unknown)")
+                                .to_string();
+                            let outcome = e.get("outcome").and_then(Value::as_str).unwrap_or("—");
+                            HopRow {
+                                label: hop_label(&hop, outcome, e.get("detail")),
+                                failed: e.get("failed").and_then(Value::as_bool).unwrap_or(false),
+                                started_at: e
+                                    .get("started_at")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                ended_at: e
+                                    .get("ended_at")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                hop,
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            TraceRow {
+                request_id: t.request_id,
+                trace_id: t.trace_id.unwrap_or_else(|| "—".into()),
+                model: t.model.unwrap_or_else(|| "—".into()),
+                status: t
+                    .status_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "—".into()),
+                failure_hop: t.failure_hop.unwrap_or_default(),
+                age: humanize_age(now, t.created_at),
+                hops,
+            }
+        })
+        .collect()
+}
+
+/// Fetch one trace page; `before` is the raw `<created_at>,<id>` cursor from the previous
+/// page (validated server-side — a malformed value is the server's 400, surfaced as
+/// unavailable rather than guessed at here).
+pub(super) async fn fetch_traces(
+    client: &RestClient,
+    team: &str,
+    before: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<Panel<TracePanel>, AuthExpired> {
+    let mut path = format!("/api/v1/teams/{team}/ai/trace?limit={TRACE_PAGE_LIMIT}");
+    if let Some(before) = before {
+        path.push_str(&format!("&before={}", percent_encode(before)));
+    }
+    let value = match client.get_json(&path).await {
+        Ok(value) => value,
+        Err(ReadError::Status { status, .. }) if status == reqwest::StatusCode::UNAUTHORIZED => {
+            return Err(AuthExpired)
+        }
+        Err(ReadError::Status { status, .. }) if status == reqwest::StatusCode::FORBIDDEN => {
+            return Ok(Panel::Unauthorized)
+        }
+        Err(_) => return Ok(Panel::Unavailable),
+    };
+    // Track decode failures per row: decode the envelope loosely first.
+    let raw_traces = value
+        .get("traces")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let raw_count = raw_traces.len() as i64;
+    let last_raw_cursor = raw_traces.last().and_then(|r| {
+        let ts = r.get("created_at").and_then(Value::as_str)?;
+        let id = r.get("id").and_then(Value::as_str)?;
+        Some(format!("{ts},{id}"))
+    });
+    let mut unparsed = 0_usize;
+    let items: Vec<TraceItem> = raw_traces
+        .into_iter()
+        .filter_map(|item| serde_json::from_value(item).map_err(|_| unparsed += 1).ok())
+        .collect();
+    // Full-page detection uses the RAW row count: one skewed row must not strand every
+    // older page (review pass 1). The cursor prefers the last RAW row's verbatim
+    // created_at/id strings — a lossless round-trip of whatever the server serialized —
+    // falling back to the last decoded row only if the raw fields are unreadable.
+    let full_page = raw_count == TRACE_PAGE_LIMIT;
+    let older_cursor = if full_page {
+        last_raw_cursor.or_else(|| {
+            items.last().map(|t| {
+                format!(
+                    "{},{}",
+                    t.created_at.to_rfc3339_opts(SecondsFormat::Micros, true),
+                    t.id
+                )
+            })
+        })
+    } else {
+        None
+    };
+    let miss = serde_json::from_value::<TraceResponse>(value)
+        .ok()
+        .and_then(|r| r.miss)
+        .map(|m| (m.message, m.hint));
+    Ok(Panel::Data(TracePanel {
+        rows: trace_rows(items, now),
+        older_cursor,
+        miss,
+        unparsed,
+    }))
+}
+
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -467,5 +766,52 @@ mod tests {
     #[test]
     fn rendered_kinds_are_the_design_set() {
         assert_eq!(RENDERED_PROVIDER_KINDS, &["openai", "openai-compatible"]);
+    }
+
+    #[test]
+    fn hop_labels_follow_design_semantics() {
+        assert_eq!(
+            hop_label("budget", "rejected", None),
+            "rejected (429 budget exhausted)"
+        );
+        assert_eq!(
+            hop_label("upstream", "no_upstream_connection", None),
+            "no upstream connection (503)"
+        );
+        assert_eq!(
+            hop_label("credential_injection", "auth", None),
+            "auth failure"
+        );
+        assert_eq!(
+            hop_label("credential_injection", "not_configured", None),
+            "not configured"
+        );
+        assert_eq!(hop_label("route_match", "matched", None), "matched");
+        let detail = serde_json::json!({ "would_reject": true });
+        assert_eq!(
+            hop_label("budget", "shadow", Some(&detail)),
+            "shadow (shadow would_reject)"
+        );
+    }
+
+    #[test]
+    fn trace_cursor_only_present_on_full_pages() {
+        let now = "2026-07-19T12:00:00Z".parse().unwrap();
+        let item = |i: u32| TraceItem {
+            id: format!("00000000-0000-7000-8000-{i:012}"),
+            request_id: format!("req-{i}"),
+            trace_id: None,
+            model: None,
+            status_code: Some(200),
+            failure_hop: None,
+            hops: serde_json::json!([]),
+            created_at: now,
+        };
+        let short: Vec<TraceItem> = (0..3).map(item).collect();
+        assert_eq!(short.len(), 3);
+        // trace_rows shapes without panicking on empty hops.
+        let rows = trace_rows(short, now);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].status, "200");
     }
 }

@@ -27,6 +27,16 @@
          hx-swap="innerHTML">
       <p class="placeholder">Loading…</p>
     </div>
+    <section class="panel" id="ai-traces">
+      <h2>Traces <span class="hint">newest first; hop timeline per request</span></h2>
+      <div id="ai-traces-body"
+           hx-get="/{{ nonce }}/partials/ai/traces"
+           hx-trigger="load once"
+           hx-target="#ai-traces-body"
+           hx-swap="innerHTML">
+        <p class="placeholder">Loading…</p>
+      </div>
+    </section>
   </main>
 </body>
 </html>

@@ -70,6 +70,7 @@ pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/ai",
     "/partials/overview",
     "/partials/ai/overview",
+    "/partials/ai/traces",
     "/partials/apis/list",
     "/partials/apis/detail",
     "/partials/learning/sessions",
@@ -315,6 +316,7 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
                 "/learning" => get(learning_page),
                 "/ai" => get(ai_page),
                 "/partials/ai/overview" => get(ai_overview_partial),
+                "/partials/ai/traces" => get(ai_traces_partial),
                 "/partials/apis/list" => get(apis_list_partial),
                 "/partials/apis/detail" => get(apis_detail_partial),
                 "/partials/learning/sessions" => get(learning_sessions_partial),
@@ -596,6 +598,37 @@ async fn ai_overview_partial(
     let result = ai::fetch_ai(&state.client, &state.team, chrono::Utc::now())
         .await
         .map(|panel| AiOverviewPanel { panel });
+    render_resources_panel(result)
+}
+
+#[derive(serde::Deserialize)]
+struct TraceCursorQuery {
+    #[serde(default)]
+    before: Option<String>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/ai_traces.html")]
+struct AiTracesPanel<'a> {
+    nonce: &'a str,
+    panel: data::Panel<ai::TracePanel>,
+}
+
+async fn ai_traces_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+    axum::extract::Query(query): axum::extract::Query<TraceCursorQuery>,
+) -> Response {
+    let result = ai::fetch_traces(
+        &state.client,
+        &state.team,
+        query.before.as_deref(),
+        chrono::Utc::now(),
+    )
+    .await
+    .map(|panel| AiTracesPanel {
+        nonce: &state.nonce,
+        panel,
+    });
     render_resources_panel(result)
 }
 

@@ -1,0 +1,49 @@
+{% if let Some(p) = panel.data() %}
+{% if let Some(miss) = p.miss %}
+<p class="banner" id="ai-trace-miss"><strong>{{ miss.0 }}</strong> {{ miss.1 }}</p>
+{% endif %}
+{% if p.unparsed > 0 %}
+<p class="banner">{{ p.unparsed }} trace row(s) could not be parsed (version skew?).</p>
+{% endif %}
+<div class="trace-list" id="ai-trace-table">
+  {% for t in p.rows %}
+  <details class="trace-row">
+    <summary>
+      <span class="trace-request">{{ t.request_id }}</span>
+      <span class="hint">{{ t.trace_id }}</span>
+      <span>{{ t.model }}</span>
+      <span class="trace-status">{{ t.status }}</span>
+      {% if !t.failure_hop.is_empty() %}<span class="trace-failure">failed: {{ t.failure_hop }}</span>{% endif %}
+      <span class="hint">{{ t.age }}</span>
+    </summary>
+    <ol class="hop-timeline">
+      {% for h in t.hops %}
+      <li class="hop{% if h.failed %} failed{% endif %}">
+        <span class="hop-name">{{ h.hop }}</span>
+        <span class="hop-outcome">{{ h.label }}</span>
+        {% if !h.started_at.is_empty() %}
+        <span class="hint hop-times">{{ h.started_at }}{% if !h.ended_at.is_empty() %} → {{ h.ended_at }}{% endif %}</span>
+        {% endif %}
+      </li>
+      {% endfor %}
+      {% if t.hops.is_empty() %}
+      <li class="placeholder">no hop entries</li>
+      {% endif %}
+    </ol>
+  </details>
+  {% endfor %}
+  {% if p.rows.is_empty() %}
+  <p class="placeholder">No traces.</p>
+  {% endif %}
+</div>
+{% if let Some(cursor) = p.older_cursor %}
+<button class="spec-link" id="ai-trace-older"
+        hx-get="/{{ nonce }}/partials/ai/traces?before={{ cursor|urlencode }}"
+        hx-target="#ai-traces-body"
+        hx-swap="innerHTML">Load older</button>
+{% endif %}
+{% else if panel.unauthorized() %}
+<p>Not authorized to view AI traces.</p>
+{% else %}
+<p>AI traces are currently unavailable.</p>
+{% endif %}

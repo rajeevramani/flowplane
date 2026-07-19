@@ -31,6 +31,36 @@
 //! child on ephemeral ports (127.0.0.1:0) with an isolated `HOME` temp dir and unique
 //! team/resource names; nothing binds a fixed port. Every spawned server is killed via a
 //! Drop guard in all paths, including assertion failures.
+//!
+//! ---
+//!
+//! fpv2-0t4.5 additions (usage table + paged trace drill-down), same black-box discipline:
+//!
+//!   * The overview partial ALSO renders a "Usage" table: one row per windowed usage item —
+//!     route NAME (resolved via `GET .../route-configs?limit=500&offset=0`, performed only
+//!     when some usage row carries a `route_config_id`; raw id fallback when unresolvable),
+//!     provider NAME (from the ai/providers list), prompt/completion/total tokens and event
+//!     count. Empty window → "No usage in this window." placeholder (and no route-configs
+//!     mapping fetch).
+//!   * The AI shell page has a Traces section lazy-loading `GET /<nonce>/partials/ai/traces`
+//!     (hx-get, load once). The traces partial fetches
+//!     `GET /api/v1/teams/{team}/ai/trace?limit=50` — NO since/until (traces are
+//!     unwindowed) — and renders newest-first rows: request_id, trace_id ("—" when null),
+//!     model ("—" when null), status_code, a failure-hop marker when `failure_hop` is set,
+//!     a humanized age, and a details/summary drill-down with the hop timeline. Hop outcome
+//!     labels: hop "budget" + outcome "rejected" → contains "rejected" AND "429"; outcome
+//!     "no_upstream_connection" → contains "503"; "auth" → "auth failure";
+//!     "not_configured" → "not configured"; ordinary outcomes render verbatim. Failed hops
+//!     carry a distinguishing marker.
+//!   * CURSOR PAGING: exactly 50 rows → a "Load older" control whose hx-get targets
+//!     `/partials/ai/traces?before=<urlencoded cursor>`, cursor =
+//!     `<created_at RFC3339 with microseconds>,<id>` of the LAST rendered row. Fetching the
+//!     partial with `?before=X` forwards `before=X` (percent-decoded equal) to the CP
+//!     `GET .../ai/trace?limit=50&before=X`. A short page (< 50 rows) renders NO control.
+//!   * A `miss` object `{message, hint}` in the CP response renders as a distinct banner;
+//!     unparseable trace rows surface as a count banner, never silently dropped.
+//!   * Degradation: trace upstream 403 → "Not authorized"; 500 → "unavailable"; 401 →
+//!     HTTP 286 naming `flowplane auth login`. No token leak in any body.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
@@ -55,6 +85,9 @@ const SECRET_TOKEN: &str = "sekret-ai-tab-token-do-not-leak-7e2b";
 
 /// The documented list page size for every overview collection fetch.
 const PAGE_LIMIT: u64 = 500;
+
+/// The documented trace page size (also the "Load older" threshold).
+const TRACE_LIMIT: u64 = 50;
 
 const TS: &str = "2026-01-01T00:00:00Z";
 const TS2: &str = "2026-01-02T03:04:05Z";
@@ -90,23 +123,25 @@ struct Recorded {
     responded: u16,
 }
 
+/// Parse a raw query string through axum's `Query` extractor (percent-decoding included).
+fn parse_query<T: serde::de::DeserializeOwned + Default>(query: &str) -> T {
+    let uri: axum::http::Uri = format!("/q?{query}").parse().expect("query string parses");
+    Query::<T>::try_from_uri(&uri)
+        .map(|q| q.0)
+        .unwrap_or_default()
+}
+
 impl Recorded {
     fn page(&self) -> PageQuery {
-        let uri: axum::http::Uri = format!("/q?{}", self.query)
-            .parse()
-            .expect("recorded query");
-        Query::<PageQuery>::try_from_uri(&uri)
-            .map(|q| q.0)
-            .unwrap_or_default()
+        parse_query(&self.query)
     }
 
     fn usage_query(&self) -> UsageQuery {
-        let uri: axum::http::Uri = format!("/q?{}", self.query)
-            .parse()
-            .expect("recorded query");
-        Query::<UsageQuery>::try_from_uri(&uri)
-            .map(|q| q.0)
-            .unwrap_or_default()
+        parse_query(&self.query)
+    }
+
+    fn trace_query(&self) -> TraceQuery {
+        parse_query(&self.query)
     }
 }
 
@@ -124,6 +159,16 @@ struct UsageQuery {
     limit: Option<u64>,
 }
 
+/// The trace endpoint's query contract: `limit` plus optional cursor `before` — and NO
+/// window (`since`/`until` captured only so their absence can be asserted).
+#[derive(Debug, Default, Clone, serde::Deserialize)]
+struct TraceQuery {
+    limit: Option<u64>,
+    before: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+}
+
 struct StubState {
     team: String,
     /// Status for the ai/providers LIST endpoint (200 = healthy) — the degradation lever.
@@ -133,6 +178,15 @@ struct StubState {
     budgets: Vec<Value>,
     usage: Vec<Value>,
     route_configs: Vec<Value>,
+    /// Status for the ai/trace endpoint (200 = healthy) — the traces degradation lever.
+    trace_status: u16,
+    /// Trace rows served when NO `before` cursor is present (the newest page).
+    traces: Vec<Value>,
+    /// Trace rows served when a `before` cursor IS present (the older page). The recorded
+    /// journal — not this switch — is what asserts the cursor VALUE forwarded.
+    traces_older: Vec<Value>,
+    /// Optional `miss` object echoed into the trace response envelope.
+    trace_miss: Option<Value>,
     requests: Mutex<Vec<Recorded>>,
 }
 
@@ -183,7 +237,7 @@ fn paged(items: &[Value], page: PageQuery) -> Response {
     .into_response()
 }
 
-fn route_request(state: &StubState, path: &str, page: PageQuery) -> Response {
+fn route_request(state: &StubState, path: &str, page: PageQuery, query: &str) -> Response {
     let prefix = format!("/api/v1/teams/{}/", state.team);
     let Some(rest) = path.strip_prefix(&prefix) else {
         return canned_error(404);
@@ -200,6 +254,22 @@ fn route_request(state: &StubState, path: &str, page: PageQuery) -> Response {
         ["ai", "routes"] => paged(&state.routes, page),
         ["ai", "budgets"] => paged(&state.budgets, page),
         ["ai", "usage"] => paged(&state.usage, page),
+        ["ai", "trace"] => {
+            if state.trace_status != 200 {
+                return canned_error(state.trace_status);
+            }
+            let tq: TraceQuery = parse_query(query);
+            let items = if tq.before.is_some() {
+                &state.traces_older
+            } else {
+                &state.traces
+            };
+            let mut body = json!({ "traces": items });
+            if let Some(miss) = &state.trace_miss {
+                body["miss"] = miss.clone();
+            }
+            Json(body).into_response()
+        }
         ["route-configs"] => paged(&state.route_configs, page),
         _ => canned_error(404),
     }
@@ -218,7 +288,7 @@ async fn stub_handler(State(state): State<Arc<StubState>>, req: Request) -> Resp
         .map(|q| q.0)
         .unwrap_or_default();
 
-    let response = route_request(&state, &path, page);
+    let response = route_request(&state, &path, page, &query);
     state.requests.lock().unwrap().push(Recorded {
         path,
         query,
@@ -341,6 +411,63 @@ fn route_config_item(id: u64, name: &str) -> Value {
     })
 }
 
+/// A usage row with every column explicit (the table contract asserts each cell).
+fn usage_row(route_cfg: u64, provider: u64, prompt: u64, completion: u64, events: u64) -> Value {
+    json!({
+        "route_config_id": uid(route_cfg),
+        "provider_id": uid(provider),
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+        "event_count": events,
+    })
+}
+
+/// RFC3339 with microsecond precision, `mins` minutes in the past (negative = future).
+fn ts_minutes_ago(mins: i64) -> String {
+    (chrono::Utc::now() - chrono::Duration::minutes(mins))
+        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+}
+
+fn hop_entry(name: &str, outcome: &str, failed: bool) -> Value {
+    json!({
+        "hop": name,
+        "started_at": TS,
+        "ended_at": TS2,
+        "outcome": outcome,
+        "origin": "gateway",
+        "failed": failed,
+        "detail": null,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn trace_item(
+    id: u64,
+    request_id: &str,
+    trace_id: Option<&str>,
+    model: Option<&str>,
+    status_code: Option<i64>,
+    failure_hop: Option<&str>,
+    hops: Vec<Value>,
+    created_at: &str,
+) -> Value {
+    json!({
+        "id": uid(id),
+        "request_id": request_id,
+        "trace_id": trace_id,
+        "route_config_id": uid(300),
+        "listener_id": null,
+        "provider_id": uid(200),
+        "model": model,
+        "status_code": status_code,
+        "failure_hop": failure_hop,
+        "hops": hops,
+        "created_at": created_at,
+        "expires_at": ts_minutes_ago(-7 * 24 * 60),
+    })
+}
+
 // =============================================================================================
 // Dashboard child process: spawn, parse the announcement line, kill on drop.
 // =============================================================================================
@@ -372,6 +499,10 @@ impl Dashboard {
 
     fn overview_partial_url(&self) -> String {
         self.page_url("partials/ai/overview")
+    }
+
+    fn traces_partial_url(&self) -> String {
+        self.page_url("partials/ai/traces")
     }
 }
 
@@ -578,22 +709,79 @@ fn card_value(body: &str, label: &str) -> String {
         .to_string()
 }
 
-/// The table-row (`<tr>…</tr>`) fragment containing `marker`. Skips occurrences of the
-/// marker that are NOT inside a row (e.g. a banner chip naming the same resource).
+/// The row fragment containing `marker` — a `<tr>…</tr>` table row or a
+/// `<details>…</details>` trace row (the traces panel renders a definition-style list,
+/// not a table). Skips occurrences of the marker that are NOT inside a row (e.g. a
+/// banner chip naming the same resource).
 fn row_containing<'a>(body: &'a str, marker: &str) -> &'a str {
-    let mut from = 0;
-    while let Some(rel) = body[from..].find(marker) {
-        let idx = from + rel;
-        if let Some(start) = body[..idx].rfind("<tr") {
-            // Inside a row only if no row CLOSED between "<tr" and the marker.
-            if !body[start..idx].contains("</tr>") {
-                let end = idx + body[idx..].find("</tr>").unwrap_or(body.len() - idx);
-                return &body[start..end];
+    for (open, close) in [("<tr", "</tr>"), ("<details", "</details>")] {
+        let mut from = 0;
+        while let Some(rel) = body[from..].find(marker) {
+            let idx = from + rel;
+            if let Some(start) = body[..idx].rfind(open) {
+                // Inside a row only if no row CLOSED between the opener and the marker.
+                if !body[start..idx].contains(close) {
+                    let end = idx + body[idx..].find(close).unwrap_or(body.len() - idx);
+                    return &body[start..end];
+                }
             }
+            from = idx + marker.len();
         }
-        from = idx + marker.len();
     }
-    panic!("expected a table row containing {marker:?} in body:\n{body}");
+    panic!("expected a row containing {marker:?} in body:\n{body}");
+}
+
+/// The recorded fetches of the AI trace endpoint.
+fn trace_fetches(recorded: &[Recorded], team: &str) -> Vec<Recorded> {
+    let path = format!("/api/v1/teams/{team}/ai/trace");
+    recorded
+        .iter()
+        .filter(|r| r.path == path)
+        .cloned()
+        .collect()
+}
+
+/// TRACE QUERY CONTRACT: `limit=50`, NO `since`, NO `until` (traces are unwindowed).
+fn assert_trace_query_shape(req: &Recorded) {
+    let q = req.trace_query();
+    assert_eq!(
+        q.limit,
+        Some(TRACE_LIMIT),
+        "the trace fetch must carry limit=50; query: {:?}",
+        req.query
+    );
+    assert!(
+        q.since.is_none() && q.until.is_none(),
+        "the trace fetch must carry NO since/until — traces are unwindowed; query: {:?}",
+        req.query
+    );
+}
+
+/// Extract the "Load older" control's hx-get attribute value (the URL containing
+/// `?before=`). Panics when no such control rendered.
+fn load_older_url(body: &str) -> String {
+    let i = body.find("?before=").unwrap_or_else(|| {
+        panic!("expected a \"Load older\" control with ?before=; body:\n{body}")
+    });
+    let start = body[..i]
+        .rfind('"')
+        .expect("attribute opening quote before the ?before= URL")
+        + 1;
+    let end = i + body[i..]
+        .find('"')
+        .expect("attribute closing quote after the ?before= URL");
+    body[start..end].to_string()
+}
+
+/// Percent-decode the `before` value out of a `...?before=<enc>` URL.
+fn decode_before(url: &str) -> String {
+    let query = url
+        .split('?')
+        .nth(1)
+        .unwrap_or_else(|| panic!("URL {url:?} has no query string"));
+    let tq: TraceQuery = parse_query(query);
+    tq.before
+        .unwrap_or_else(|| panic!("URL {url:?} carries no before= parameter"))
 }
 
 // =============================================================================================
@@ -674,6 +862,10 @@ fn ai_fixture() -> AiFixture {
             budgets,
             usage,
             route_configs,
+            trace_status: 200,
+            traces: Vec::new(),
+            traces_older: Vec::new(),
+            trace_miss: None,
             requests: Mutex::new(Vec::new()),
         },
         team,
@@ -1069,5 +1261,693 @@ async fn ai_overview_sums_usage_across_pages_under_one_window_pair() {
         Some(500),
         "the follow-up fetch must continue at offset=500; got: {:?}",
         usage[1].query
+    );
+}
+
+// =============================================================================================
+// Test 6 (fpv2-0t4.5): USAGE TABLE — the overview partial renders one row per windowed usage
+// item: route NAME resolved via the route-configs list fetch (limit=500&offset=0), raw-id
+// fallback for an unresolvable route_config_id, provider NAME from the ai/providers list,
+// and each token/event cell. A second fixture with an EMPTY window renders the
+// "No usage in this window." placeholder and performs NO route-configs mapping fetch.
+// =============================================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ai_overview_usage_table_resolves_names_with_raw_id_fallback() {
+    let http = client();
+
+    // --- Populated window: one resolvable route_config_id, one unresolvable.
+    let mut fx = ai_fixture();
+    let rc_name = unique("rc-usage");
+    fx.stub_state.usage = vec![
+        usage_row(300, 200, 111, 222, 4), // route-config 300 resolves to rc_name
+        usage_row(999, 201, 55, 66, 2),   // 999 is NOT in the route-configs list
+    ];
+    fx.stub_state.route_configs = vec![route_config_item(300, &rc_name)];
+    let stub = start_stub(fx.stub_state).await;
+    let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &fx.team);
+
+    let resp = fetch(&http, &dash.overview_partial_url()).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let body = resp.text().await.expect("overview body");
+
+    // Resolved row: route NAME (not its id), provider NAME, every cell.
+    let resolved = row_containing(&body, &rc_name);
+    assert!(
+        resolved.contains(fx.prov_openai.as_str()),
+        "the usage row must show the provider NAME from the ai/providers list; \
+         row:\n{resolved}"
+    );
+    for cell in ["<td>111</td>", "<td>222</td>", "<td>333</td>", "<td>4</td>"] {
+        assert!(
+            resolved.contains(cell),
+            "the usage row must render prompt/completion/total/event cells; missing {cell}; \
+             row:\n{resolved}"
+        );
+    }
+    assert!(
+        !resolved.contains(&uid(300)),
+        "a RESOLVED route must render by name, not by raw id; row:\n{resolved}"
+    );
+
+    // Fallback row: the raw route_config_id when unresolvable.
+    let fallback = row_containing(&body, &uid(999));
+    assert!(
+        fallback.contains(fx.prov_compat.as_str()),
+        "the fallback usage row must still resolve its provider name; row:\n{fallback}"
+    );
+    for cell in ["<td>55</td>", "<td>66</td>", "<td>121</td>", "<td>2</td>"] {
+        assert!(
+            fallback.contains(cell),
+            "the fallback usage row must render its cells; missing {cell}; row:\n{fallback}"
+        );
+    }
+
+    // Journal: the id → name mapping fetch, page-envelope query.
+    let recorded = stub.recorded();
+    assert_paged_fetch(
+        &recorded,
+        &format!("/api/v1/teams/{}/route-configs", fx.team),
+    );
+    assert_no_secret_paths(&recorded);
+    assert_bearer_and_no_leak(&recorded, &[&body]);
+
+    // --- Empty window: placeholder, and NO route-configs mapping fetch.
+    let fx2 = ai_fixture();
+    let team2 = fx2.team.clone();
+    let mut state2 = fx2.stub_state;
+    state2.usage = Vec::new();
+    // Keep the route-configs collection non-empty so a fetch's ABSENCE is meaningful.
+    assert!(!state2.route_configs.is_empty());
+    let stub2 = start_stub(state2).await;
+    let dash2 = spawn_dashboard(common::unique_tempdir(), &stub2.base_url, &team2);
+
+    let resp = fetch(&http, &dash2.overview_partial_url()).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let empty_body = resp.text().await.expect("empty-window overview body");
+    assert!(
+        empty_body.contains("No usage in this window."),
+        "an empty usage window must render the placeholder; body:\n{empty_body}"
+    );
+
+    // Grace for any (incorrect) stray fetch, then assert none targeted route-configs.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let rc_path = format!("/api/v1/teams/{team2}/route-configs");
+    let recorded2 = stub2.recorded();
+    assert!(
+        recorded2.iter().all(|r| r.path != rc_path),
+        "with no usage row carrying a route_config_id there must be NO route-configs \
+         mapping fetch; recorded: {:?}",
+        recorded2.iter().map(|r| r.path.clone()).collect::<Vec<_>>()
+    );
+    assert_bearer_and_no_leak(&recorded2, &[&empty_body]);
+}
+
+// =============================================================================================
+// Test 7 (fpv2-0t4.5): TRACES HAPPY PATH — the shell's Traces section lazy-loads the traces
+// partial; the partial fetches `.../ai/trace?limit=50` (no window) and renders newest-first
+// rows with request_id, "—" for null trace_id/model, status_code, failure-hop marker,
+// humanized age, and a details/summary hop-timeline drill-down honoring the outcome-label
+// semantics (budget+rejected → "rejected"+"429"; no_upstream_connection → "503";
+// auth → "auth failure"; not_configured → "not configured"; ordinary outcomes verbatim;
+// failed hops marked). A short page renders NO "Load older"; no miss banner renders.
+// =============================================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ai_traces_render_rows_hop_labels_and_drilldown() {
+    let mut fx = ai_fixture();
+    // Newest-first fixture. Null status_codes on bravo/charlie ensure "429"/"503" can ONLY
+    // come from the hop outcome labels, not from a rendered status cell.
+    fx.stub_state.traces = vec![
+        trace_item(
+            400,
+            "req-alpha",
+            Some("trace-0abc"),
+            Some("gpt-test-x"),
+            Some(200),
+            None,
+            vec![
+                hop_entry("route", "matched", false),
+                hop_entry("provider", "ok", false),
+            ],
+            &ts_minutes_ago(1),
+        ),
+        trace_item(
+            401,
+            "req-bravo",
+            None,
+            None,
+            None,
+            Some("budget"),
+            vec![
+                hop_entry("route", "matched", false),
+                hop_entry("budget", "rejected", true),
+            ],
+            &ts_minutes_ago(5),
+        ),
+        trace_item(
+            402,
+            "req-charlie",
+            Some("trace-0c"),
+            Some("gpt-test-x"),
+            None,
+            Some("upstream"),
+            vec![
+                hop_entry("route", "matched", false),
+                hop_entry("upstream", "no_upstream_connection", true),
+            ],
+            &ts_minutes_ago(9),
+        ),
+        trace_item(
+            403,
+            "req-delta",
+            Some("trace-0d"),
+            Some("gpt-test-x"),
+            None,
+            Some("provider-auth"),
+            vec![
+                hop_entry("provider-auth", "auth", true),
+                hop_entry("fallback", "not_configured", false),
+            ],
+            &ts_minutes_ago(13),
+        ),
+    ];
+    let team = fx.team.clone();
+    let stub = start_stub(fx.stub_state).await;
+    let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+    let http = client();
+
+    // --- Shell wiring: a Traces section lazy-loading the traces partial via htmx.
+    let shell_resp = fetch(&http, &dash.ai_shell_url()).await;
+    assert_eq!(shell_resp.status().as_u16(), 200);
+    let shell = shell_resp.text().await.expect("shell body");
+    let idx = shell
+        .find("partials/ai/traces")
+        .unwrap_or_else(|| panic!("the shell must lazy-load /partials/ai/traces; body:\n{shell}"));
+    let window = &shell[idx..(idx + 300).min(shell.len())];
+    assert!(
+        window.contains("load once"),
+        "the traces container must fetch on load, once; shell near the container:\n{window}"
+    );
+    assert!(
+        shell[..idx].rfind("hx-get").is_some(),
+        "the traces partial must load via htmx (hx-get); body:\n{shell}"
+    );
+
+    // --- The partial itself.
+    let resp = fetch(&http, &dash.traces_partial_url()).await;
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "the traces partial must be 200"
+    );
+    let body = resp.text().await.expect("traces body");
+
+    // Newest-first row order.
+    let pos = |needle: &str| {
+        body.find(needle)
+            .unwrap_or_else(|| panic!("traces must render {needle:?}; body:\n{body}"))
+    };
+    let (a, b, c, d) = (
+        pos("req-alpha"),
+        pos("req-bravo"),
+        pos("req-charlie"),
+        pos("req-delta"),
+    );
+    assert!(
+        a < b && b < c && c < d,
+        "traces must render newest-first (alpha, bravo, charlie, delta); body:\n{body}"
+    );
+
+    // Drill-down markup: details/summary rows.
+    assert!(
+        body.contains("<details") && body.contains("<summary"),
+        "each trace row must be a details/summary drill-down; body:\n{body}"
+    );
+
+    // alpha: trace id, model, status 200, humanized age, ordinary outcomes verbatim, no
+    // failure markers.
+    let alpha = row_containing(&body, "req-alpha");
+    assert!(
+        alpha.contains("trace-0abc") && alpha.contains("gpt-test-x") && alpha.contains("200"),
+        "the alpha row must show trace_id, model and status_code; row:\n{alpha}"
+    );
+    assert!(
+        alpha.contains("ago"),
+        "the alpha row must show a humanized age; row:\n{alpha}"
+    );
+    assert!(
+        alpha.contains(">matched<") && alpha.contains(">ok<"),
+        "ordinary hop outcomes must render VERBATIM as labels; row:\n{alpha}"
+    );
+    assert!(
+        alpha.contains("route") && alpha.contains("provider"),
+        "the drill-down must name each hop; row:\n{alpha}"
+    );
+    assert!(
+        !alpha.contains("failed"),
+        "a fully-successful trace must carry no failure marker; row:\n{alpha}"
+    );
+
+    // bravo: null trace_id AND null model → two "—" placeholders; budget+rejected label
+    // contains "rejected" AND "429"; the failed hop and the failure_hop are marked.
+    let bravo = row_containing(&body, "req-bravo");
+    assert!(
+        bravo.matches('—').count() >= 2,
+        "null trace_id and null model must each render as \"—\"; row:\n{bravo}"
+    );
+    assert!(
+        bravo.contains("rejected") && bravo.contains("429"),
+        "hop \"budget\" outcome \"rejected\" must label with \"rejected\" AND \"429\"; \
+         row:\n{bravo}"
+    );
+    assert!(
+        bravo.contains("failed") && bravo.contains("budget"),
+        "a set failure_hop must render a failure marker naming the hop; row:\n{bravo}"
+    );
+
+    // charlie: no_upstream_connection → label contains "503".
+    let charlie = row_containing(&body, "req-charlie");
+    assert!(
+        charlie.contains("503"),
+        "outcome \"no_upstream_connection\" must label with \"503\"; row:\n{charlie}"
+    );
+
+    // delta: auth → "auth failure"; not_configured → "not configured".
+    let delta = row_containing(&body, "req-delta");
+    assert!(
+        delta.contains("auth failure"),
+        "outcome \"auth\" must label as \"auth failure\"; row:\n{delta}"
+    );
+    assert!(
+        delta.contains("not configured"),
+        "outcome \"not_configured\" must label as \"not configured\"; row:\n{delta}"
+    );
+
+    // Short page (4 < 50) → no pager; healthy response → no miss banner.
+    assert!(
+        !body.contains("Load older"),
+        "a short trace page must render NO \"Load older\" control; body:\n{body}"
+    );
+    assert!(
+        !body.contains("ai-trace-miss"),
+        "no miss banner may render when the CP response carries no miss; body:\n{body}"
+    );
+
+    // Journal: exactly one trace fetch, limit=50, unwindowed, no cursor.
+    let fetches = trace_fetches(&stub.recorded(), &team);
+    assert_eq!(
+        fetches.len(),
+        1,
+        "one partial render performs exactly one trace fetch; got: {fetches:?}"
+    );
+    assert_trace_query_shape(&fetches[0]);
+    assert!(
+        fetches[0].trace_query().before.is_none(),
+        "the first page must carry NO before cursor; query: {:?}",
+        fetches[0].query
+    );
+    assert_no_secret_paths(&stub.recorded());
+    assert_bearer_and_no_leak(&stub.recorded(), &[&shell, &body]);
+}
+
+// =============================================================================================
+// Test 8 (fpv2-0t4.5): CURSOR PAGING — exactly 50 rows render a "Load older" control whose
+// cursor is "<created_at RFC3339 with microseconds>,<id>" of the LAST rendered row; fetching
+// the partial with ?before=X forwards before=X (percent-decoded equal) to the CP with
+// limit=50 and no window; a short second page renders NO "Load older".
+// =============================================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ai_traces_page_of_50_renders_load_older_and_forwards_the_cursor() {
+    let mut fx = ai_fixture();
+    // Page 1: exactly 50 rows, newest-first. The LAST row (index 49) defines the cursor.
+    let mut page1 = Vec::new();
+    for i in 0..TRACE_LIMIT {
+        page1.push(trace_item(
+            1000 + i,
+            &format!("pg1-req-{i:03}"),
+            Some("t"),
+            Some("m"),
+            Some(200),
+            None,
+            vec![hop_entry("route", "matched", false)],
+            &ts_minutes_ago(i as i64 + 1),
+        ));
+    }
+    let last_created = page1[49]["created_at"]
+        .as_str()
+        .expect("created_at")
+        .to_string();
+    let last_id = uid(1049);
+    fx.stub_state.traces = page1;
+    // Page 2 (served whenever a cursor arrives): 3 rows — a SHORT page.
+    fx.stub_state.traces_older = (0..3u64)
+        .map(|i| {
+            trace_item(
+                2000 + i,
+                &format!("pg2-req-{i}"),
+                Some("t"),
+                Some("m"),
+                Some(200),
+                None,
+                vec![hop_entry("route", "matched", false)],
+                &ts_minutes_ago(100 + i as i64),
+            )
+        })
+        .collect();
+    let team = fx.team.clone();
+    let stub = start_stub(fx.stub_state).await;
+    let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+    let http = client();
+
+    // --- Page 1: full page → "Load older" targeting /partials/ai/traces?before=<cursor>.
+    let resp = fetch(&http, &dash.traces_partial_url()).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let body = resp.text().await.expect("page-1 body");
+    assert!(
+        body.contains("pg1-req-000") && body.contains("pg1-req-049"),
+        "page 1 must render all 50 rows; body:\n{body}"
+    );
+    assert!(
+        body.contains("Load older"),
+        "a page of exactly 50 rows must render a \"Load older\" control; body:\n{body}"
+    );
+    let older_url = load_older_url(&body);
+    let expected_prefix = format!("/{}/partials/ai/traces?before=", dash.nonce);
+    assert!(
+        older_url.starts_with(&expected_prefix),
+        "the Load older control must target the traces partial with a before cursor; \
+         got {older_url:?}, want prefix {expected_prefix:?}"
+    );
+
+    // Cursor semantics: "<created_at RFC3339 with microseconds>,<id>" of the LAST row.
+    let cursor = decode_before(&older_url);
+    let (cur_ts, cur_id) = cursor
+        .rsplit_once(',')
+        .unwrap_or_else(|| panic!("cursor must be \"<created_at>,<id>\"; got {cursor:?}"));
+    assert_eq!(
+        cur_id, last_id,
+        "the cursor id must be the LAST rendered row's id; cursor: {cursor:?}"
+    );
+    let cur_t = chrono::DateTime::parse_from_rfc3339(cur_ts)
+        .unwrap_or_else(|e| panic!("cursor timestamp must be RFC3339, got {cur_ts:?}: {e}"));
+    let last_t = chrono::DateTime::parse_from_rfc3339(&last_created).expect("fixture ts");
+    assert_eq!(
+        cur_t, last_t,
+        "the cursor timestamp must be the LAST rendered row's created_at; cursor: {cursor:?}, \
+         last row created_at: {last_created:?}"
+    );
+    let frac: String = cur_ts
+        .split('.')
+        .nth(1)
+        .unwrap_or("")
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    assert_eq!(
+        frac.len(),
+        6,
+        "the cursor timestamp must carry MICROSECOND precision; got {cur_ts:?}"
+    );
+
+    // --- Page 2: follow the control; before must be forwarded percent-decoded-equal.
+    let page2_url = format!("http://127.0.0.1:{}{}", dash.port, older_url);
+    let resp = fetch(&http, &page2_url).await;
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "the traces partial with ?before= must be 200"
+    );
+    let body2 = resp.text().await.expect("page-2 body");
+    assert!(
+        body2.contains("pg2-req-0") && body2.contains("pg2-req-2"),
+        "page 2 must render the older rows; body:\n{body2}"
+    );
+    assert!(
+        !body2.contains("pg1-req-"),
+        "page 2 replaces the list — no page-1 rows; body:\n{body2}"
+    );
+    assert!(
+        !body2.contains("Load older"),
+        "a short page (3 < 50 rows) must render NO \"Load older\" control; body:\n{body2}"
+    );
+
+    // Journal: two trace fetches; the second forwards the EXACT cursor with limit=50 and
+    // no window.
+    let fetches = trace_fetches(&stub.recorded(), &team);
+    assert_eq!(
+        fetches.len(),
+        2,
+        "two renders → two trace fetches; got: {fetches:?}"
+    );
+    assert_trace_query_shape(&fetches[0]);
+    assert!(fetches[0].trace_query().before.is_none());
+    assert_trace_query_shape(&fetches[1]);
+    assert_eq!(
+        fetches[1].trace_query().before.as_deref(),
+        Some(cursor.as_str()),
+        "before must be forwarded to the CP percent-decoded-equal to the rendered cursor; \
+         query: {:?}",
+        fetches[1].query
+    );
+    assert_no_secret_paths(&stub.recorded());
+    assert_bearer_and_no_leak(&stub.recorded(), &[&body, &body2]);
+}
+
+// =============================================================================================
+// Test 9 (fpv2-0t4.5): MISS + UNPARSEABLE ROWS — a CP `miss` object {message, hint} renders
+// as a distinct banner; an unparseable trace row is surfaced as a count banner while the
+// parseable rows still render (never silently dropped).
+// =============================================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ai_traces_surface_miss_banner_and_unparsed_row_count() {
+    let http = client();
+
+    // --- Miss object → distinct banner carrying message AND hint.
+    {
+        let mut fx = ai_fixture();
+        let miss_message = unique("trace-store-miss");
+        let miss_hint = unique("enable-tracing-hint");
+        fx.stub_state.trace_miss = Some(json!({
+            "message": miss_message.clone(),
+            "hint": miss_hint.clone(),
+        }));
+        let team = fx.team.clone();
+        let stub = start_stub(fx.stub_state).await;
+        let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+        let resp = fetch(&http, &dash.traces_partial_url()).await;
+        assert_eq!(resp.status().as_u16(), 200);
+        let body = resp.text().await.expect("miss body");
+        assert!(
+            body.contains(&miss_message) && body.contains(&miss_hint),
+            "the miss banner must render BOTH the message and the hint; body:\n{body}"
+        );
+        assert!(
+            body.contains("ai-trace-miss") || body.contains("banner"),
+            "the miss must render as a DISTINCT banner element; body:\n{body}"
+        );
+        assert_bearer_and_no_leak(&stub.recorded(), &[&body]);
+    }
+
+    // --- One unparseable row among parseable ones → count banner + surviving rows.
+    {
+        let mut fx = ai_fixture();
+        fx.stub_state.traces = vec![
+            trace_item(
+                410,
+                "req-good",
+                Some("trace-g"),
+                Some("gpt-test-x"),
+                Some(200),
+                None,
+                vec![hop_entry("route", "matched", false)],
+                &ts_minutes_ago(2),
+            ),
+            json!({ "bogus": true }),
+        ];
+        let team = fx.team.clone();
+        let stub = start_stub(fx.stub_state).await;
+        let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+        let resp = fetch(&http, &dash.traces_partial_url()).await;
+        assert_eq!(resp.status().as_u16(), 200);
+        let body = resp.text().await.expect("unparsed body");
+        assert!(
+            body.contains("req-good"),
+            "parseable rows must still render alongside an unparseable one; body:\n{body}"
+        );
+        let lower = body.to_lowercase();
+        assert!(
+            lower.contains("could not be parsed"),
+            "an unparseable trace row must surface a parse banner — never silently dropped; \
+             body:\n{body}"
+        );
+        let bidx = lower.find("could not be parsed").expect("located above");
+        let banner_zone = &body[bidx.saturating_sub(120)..bidx];
+        assert!(
+            banner_zone.contains('1'),
+            "the parse banner must carry the COUNT of dropped rows (1); body:\n{body}"
+        );
+        assert_bearer_and_no_leak(&stub.recorded(), &[&body]);
+    }
+}
+
+// =============================================================================================
+// Test 10 (fpv2-0t4.5): TRACES DEGRADATION — trace upstream 403 → 200 partial saying
+// "Not authorized" (no team data); 500 → "unavailable"; 401 → HTTP 286 naming
+// `flowplane auth login`. No token leak in any body.
+// =============================================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ai_traces_degrade_on_403_500_and_401() {
+    let http = client();
+
+    let degraded_fixture = |status: u16| {
+        let mut fx = ai_fixture();
+        fx.stub_state.traces = vec![trace_item(
+            420,
+            "req-should-not-render",
+            Some("trace-x"),
+            Some("gpt-test-x"),
+            Some(200),
+            None,
+            vec![hop_entry("route", "matched", false)],
+            &ts_minutes_ago(3),
+        )];
+        fx.stub_state.trace_status = status;
+        fx
+    };
+
+    // 403 → not-authorized section, none of the team's trace data.
+    {
+        let fx = degraded_fixture(403);
+        let team = fx.team.clone();
+        let stub = start_stub(fx.stub_state).await;
+        let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+        let resp = fetch(&http, &dash.traces_partial_url()).await;
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "an upstream 403 must not fail the traces partial itself"
+        );
+        let body = resp.text().await.expect("body");
+        assert!(
+            body.to_lowercase().contains("not authorized"),
+            "the traces partial must say \"Not authorized\" on upstream 403; body:\n{body}"
+        );
+        assert!(
+            !body.contains("req-should-not-render"),
+            "no trace data may render on 403; body:\n{body}"
+        );
+        assert_bearer_and_no_leak(&stub.recorded(), &[&body]);
+    }
+
+    // 500 → unavailable state.
+    {
+        let fx = degraded_fixture(500);
+        let team = fx.team.clone();
+        let stub = start_stub(fx.stub_state).await;
+        let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+        let resp = fetch(&http, &dash.traces_partial_url()).await;
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "an upstream 500 must not fail the traces partial itself"
+        );
+        let body = resp.text().await.expect("body");
+        assert!(
+            body.to_lowercase().contains("unavailable"),
+            "the traces partial must render an \"unavailable\" state on upstream 500; \
+             body:\n{body}"
+        );
+        assert!(
+            !body.contains("req-should-not-render"),
+            "no trace data may render on 500; body:\n{body}"
+        );
+        assert_bearer_and_no_leak(&stub.recorded(), &[&body]);
+    }
+
+    // 401 → HTTP 286 naming `flowplane auth login`.
+    {
+        let fx = degraded_fixture(401);
+        let team = fx.team.clone();
+        let stub = start_stub(fx.stub_state).await;
+        let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+        let resp = fetch(&http, &dash.traces_partial_url()).await;
+        assert_eq!(
+            resp.status().as_u16(),
+            286,
+            "trace upstream 401 must yield the htmx stop-polling status 286"
+        );
+        let body = resp.text().await.expect("body");
+        assert!(
+            body.contains("flowplane auth login"),
+            "the 286 body must tell the user to run \"flowplane auth login\"; body:\n{body}"
+        );
+        assert_bearer_and_no_leak(&stub.recorded(), &[&body]);
+    }
+}
+
+// =============================================================================================
+// Reconcile pass 1 (Codex finding): a FULL raw page containing one unparseable row must
+// still page — full-page detection counts RAW rows, so one skewed row cannot strand every
+// older trace.
+// =============================================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ai_traces_full_page_with_one_bogus_row_still_pages() {
+    let mut fx = ai_fixture();
+    let mut traces: Vec<Value> = (0..48u64)
+        .map(|i| {
+            trace_item(
+                7000 + i,
+                &format!("req-full-{i}"),
+                None,
+                Some("gpt-x"),
+                Some(200),
+                None,
+                vec![hop_entry("route_match", "matched", false)],
+                &ts_minutes_ago(i as i64 + 1),
+            )
+        })
+        .collect();
+    // One mid-page skewed row: raw count stays 50, decoded count drops to 49.
+    // (48 valid + 1 bogus + 1 last = 50 raw rows.)
+    traces.insert(10, json!({ "bogus": true }));
+    let last_created = ts_minutes_ago(49);
+    let last = trace_item(
+        7999,
+        "req-full-last",
+        None,
+        Some("gpt-x"),
+        Some(200),
+        None,
+        vec![hop_entry("route_match", "matched", false)],
+        &last_created,
+    );
+    let expected_cursor = format!(
+        "{},{}",
+        last["created_at"].as_str().unwrap(),
+        last["id"].as_str().unwrap()
+    );
+    traces.push(last);
+    assert_eq!(traces.len(), 50, "fixture must fill the raw page exactly");
+    fx.stub_state.traces = traces;
+
+    let stub = start_stub(fx.stub_state).await;
+    let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &fx.team);
+    let http = client();
+
+    let resp = fetch(&http, &dash.traces_partial_url()).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let body = resp.text().await.expect("traces body");
+    assert!(
+        body.contains("could not be parsed"),
+        "the skewed row must surface as an unparsed count; body:\n{body}"
+    );
+    assert!(
+        body.contains("?before="),
+        "a FULL raw page (50 rows, 1 bogus) must still render Load older; body:\n{body}"
+    );
+    let older = load_older_url(&body);
+    assert_eq!(
+        decode_before(&older),
+        expected_cursor,
+        "the cursor must be the last RAW row's verbatim created_at,id"
     );
 }

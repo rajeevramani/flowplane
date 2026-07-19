@@ -72,6 +72,30 @@
   </table>
 </section>
 
+<section class="panel" id="panel-ai-usage">
+  <h2>Usage <span class="hint">grouped by route × provider, same 24h window as the cards</span></h2>
+  <table class="dataplanes">
+    <thead>
+      <tr><th>Route</th><th>Provider</th><th>Prompt</th><th>Completion</th><th>Total</th><th>Events</th></tr>
+    </thead>
+    <tbody>
+      {% for u in p.usage %}
+      <tr>
+        <td>{{ u.route }}</td>
+        <td>{{ u.provider }}</td>
+        <td>{{ u.prompt_tokens }}</td>
+        <td>{{ u.completion_tokens }}</td>
+        <td>{{ u.total_tokens }}</td>
+        <td>{{ u.events }}</td>
+      </tr>
+      {% endfor %}
+      {% if p.usage.is_empty() %}
+      <tr><td colspan="6" class="placeholder">No usage in this window.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+
 <section class="panel" id="panel-ai-providers">
   <h2>Providers <span class="hint">openai / openai-compatible</span></h2>
   <table class="dataplanes">
