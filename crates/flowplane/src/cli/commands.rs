@@ -715,8 +715,8 @@ pub enum ApiSpecCommand {
         #[arg(long, default_value_t = 0)]
         offset: i64,
     },
-    /// Show one spec version. `--content` prints the stored OpenAPI document; the
-    /// metadata view (without --content) lands with the dashboard slice.
+    /// Show one spec version: metadata by default, the stored OpenAPI document with
+    /// `--content`.
     #[command(
         after_help = "Example:\n  flowplane api spec show catalog 2 --content --team payments"
     )]
@@ -728,8 +728,8 @@ pub enum ApiSpecCommand {
         api: String,
         /// Spec version number.
         version: i64,
-        /// Print the stored spec document (required for now; a metadata view is planned).
-        #[arg(long, required = true)]
+        /// Print the stored spec document instead of the metadata row.
+        #[arg(long)]
         content: bool,
     },
     /// Show a spec version's ordered review-event history (oldest first).
