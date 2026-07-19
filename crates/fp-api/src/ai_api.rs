@@ -10,8 +10,8 @@ use axum::Json;
 use fp_core::services::ai as ai_svc;
 use fp_core::PrincipalCtx;
 use fp_domain::{
-    AiBudget, AiBudgetSpec, AiProvider, AiProviderSpec, AiRoute, AiRouteSpec, AiTraceEvent,
-    AiUsageSummary, RequestId,
+    AiBudgetSpec, AiProvider, AiProviderSpec, AiRoute, AiRouteSpec, AiTraceEvent, AiUsageSummary,
+    RequestId,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -43,6 +43,9 @@ pub struct AiBudgetView {
     pub id: uuid::Uuid,
     pub name: String,
     pub spec: AiBudgetSpec,
+    /// Current-window consumption (used/limit + aligned window), present on every
+    /// budget-returning endpoint.
+    pub state: fp_domain::AiBudgetState,
     pub revision: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -76,15 +79,16 @@ impl From<AiRoute> for AiRouteView {
     }
 }
 
-impl From<AiBudget> for AiBudgetView {
-    fn from(value: AiBudget) -> Self {
+impl From<fp_domain::AiBudgetWithState> for AiBudgetView {
+    fn from(value: fp_domain::AiBudgetWithState) -> Self {
         Self {
-            id: value.id.as_uuid(),
-            name: value.name,
-            spec: value.spec,
-            revision: value.version,
-            created_at: value.created_at,
-            updated_at: value.updated_at,
+            id: value.budget.id.as_uuid(),
+            name: value.budget.name,
+            spec: value.budget.spec,
+            state: value.state,
+            revision: value.budget.version,
+            created_at: value.budget.created_at,
+            updated_at: value.budget.updated_at,
         }
     }
 }
@@ -135,6 +139,14 @@ pub struct AiUsageQuery {
     pub route_config_id: Option<uuid::Uuid>,
     #[serde(default)]
     pub provider_id: Option<uuid::Uuid>,
+    /// RFC 3339 lower bound (inclusive) of the half-open usage window `[since, until)`.
+    /// Omitted = an explicit all-time read (exempt from the span cap).
+    #[serde(default)]
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+    /// RFC 3339 upper bound (exclusive). Omitted = resolved server-side to `now`.
+    /// With `since` present the span `until - since` is capped at 92 days (400 beyond).
+    #[serde(default)]
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default = "default_usage_limit")]
     pub limit: i64,
     #[serde(default)]
@@ -536,8 +548,32 @@ pub struct AiTraceParams {
     /// W3C trace id from an inbound `traceparent` (non-unique, list-queryable).
     #[serde(default)]
     pub trace_id: Option<String>,
+    /// Total-order pagination cursor `<created_at RFC 3339>,<id UUID>`: returns rows
+    /// strictly before that position in `created_at DESC, id DESC` order. Take the last
+    /// row of a page as the next cursor. Malformed values are a 400.
+    #[serde(default)]
+    pub before: Option<String>,
     #[serde(default = "default_trace_limit")]
     pub limit: i64,
+}
+
+/// Parse the `before` cursor (`<rfc3339>,<uuid>`); RFC 3339 timestamps contain no comma,
+/// so the first comma is the separator.
+fn parse_trace_cursor(
+    raw: &str,
+) -> Result<(chrono::DateTime<chrono::Utc>, uuid::Uuid), fp_domain::DomainError> {
+    let malformed = || {
+        fp_domain::DomainError::validation(
+            "before must be \"<created_at RFC 3339>,<id UUID>\" (the last row of the \
+             previous page)",
+        )
+    };
+    let (ts, id) = raw.split_once(',').ok_or_else(malformed)?;
+    let ts = chrono::DateTime::parse_from_rfc3339(ts)
+        .map_err(|_| malformed())?
+        .with_timezone(&chrono::Utc);
+    let id = uuid::Uuid::parse_str(id).map_err(|_| malformed())?;
+    Ok((ts, id))
 }
 
 fn default_trace_limit() -> i64 {
@@ -636,6 +672,11 @@ pub async fn get_ai_trace(
     Extension(rid): Extension<RequestId>,
 ) -> Result<Json<AiTraceResponse>, ApiError> {
     let run = async {
+        let before = params
+            .before
+            .as_deref()
+            .map(parse_trace_cursor)
+            .transpose()?;
         let team = resolve_team(&state, &ctx, &team).await?;
         ai_svc::trace_events(
             &state.pool,
@@ -644,6 +685,7 @@ pub async fn get_ai_trace(
             fp_storage::repos::ai_trace::AiTraceQuery {
                 request_id: params.request_id.as_deref(),
                 trace_id: params.trace_id.as_deref(),
+                before,
                 limit: trace_limit(params.limit),
             },
             rid,
@@ -752,14 +794,14 @@ pub async fn put_ai_retention(
 #[utoipa::path(get, path = "/api/v1/teams/{team}/ai/usage",
     tag = "AI",
     params(("team" = String, Path, description = "Team name or UUID"), AiUsageQuery),
-    responses((status = 200, body = Vec<AiUsageSummary>)))]
+    responses((status = 200, body = Page<AiUsageSummary>)))]
 pub async fn get_ai_usage(
     State(state): State<AppState>,
     Path(team): Path<String>,
     Query(query): Query<AiUsageQuery>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-) -> Result<Json<Vec<AiUsageSummary>>, ApiError> {
+) -> Result<Json<Page<AiUsageSummary>>, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
         ai_svc::usage_summary(
@@ -769,6 +811,8 @@ pub async fn get_ai_usage(
             fp_storage::repos::ai::AiUsageQuery {
                 route_config_id: query.route_config_id.map(fp_domain::RouteConfigId::from),
                 provider_id: query.provider_id.map(fp_domain::AiProviderId::from),
+                since: query.since,
+                until: query.until,
                 limit: query.limit,
                 offset: query.offset,
             },
@@ -776,7 +820,16 @@ pub async fn get_ai_usage(
         )
         .await
     };
-    run.await.map(Json).map_err(|e| ApiError::new(e, rid))
+    run.await
+        .map(|(items, total)| {
+            Json(Page {
+                items,
+                total,
+                limit: query.limit,
+                offset: query.offset,
+            })
+        })
+        .map_err(|e| ApiError::new(e, rid))
 }
 
 #[cfg(test)]

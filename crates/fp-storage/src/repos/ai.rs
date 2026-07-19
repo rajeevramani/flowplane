@@ -2,10 +2,10 @@
 
 use fp_domain::authz::TeamRef;
 use fp_domain::{
-    AiBudget, AiBudgetId, AiBudgetMode, AiBudgetSpec, AiProvider, AiProviderId, AiProviderKind,
-    AiProviderSpec, AiRoute, AiRouteBackend, AiRouteId, AiRouteMaterializedResources, AiRouteSpec,
-    AiRouteStatus, AiUsageSummary, DomainError, DomainResult, ErrorCode, OpenAiTokenUsage,
-    RouteConfigId, SecretId, TeamId,
+    AiBudget, AiBudgetId, AiBudgetMode, AiBudgetSpec, AiBudgetState, AiProvider, AiProviderId,
+    AiProviderKind, AiProviderSpec, AiRoute, AiRouteBackend, AiRouteId,
+    AiRouteMaterializedResources, AiRouteSpec, AiRouteStatus, AiUsageSummary, DomainError,
+    DomainResult, ErrorCode, OpenAiTokenUsage, RouteConfigId, SecretId, TeamId,
 };
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -41,6 +41,10 @@ pub struct AiUsageEventInsert {
 pub struct AiUsageQuery {
     pub route_config_id: Option<RouteConfigId>,
     pub provider_id: Option<AiProviderId>,
+    /// Half-open window lower bound: only events with `created_at >= since` count.
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+    /// Half-open window upper bound: only events with `created_at < until` count.
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
     pub limit: i64,
     pub offset: i64,
 }
@@ -1004,6 +1008,57 @@ pub async fn delete_budget(
     }
 }
 
+/// Current-window state for a set of the team's budgets, in ONE batched query: LEFT JOIN
+/// `ai_budget_counters` on the per-budget server-aligned window (the same alignment
+/// formula enforcement uses in [`exhausted_enforcing_budget`]); a missing counter row
+/// yields `used_units = 0` with the server-computed aligned `window_start`. Operator-facing
+/// derived read — never writes.
+pub async fn budget_window_states(
+    pool: &PgPool,
+    team_id: TeamId,
+    budget_ids: &[Uuid],
+) -> DomainResult<Vec<(AiBudgetId, AiBudgetState)>> {
+    let rows = sqlx::query(
+        "SELECT b.id, \
+                COALESCE(c.used_units, 0)::BIGINT AS used_units, \
+                to_timestamp(floor(extract(epoch FROM now()) / b.window_seconds) * b.window_seconds) AS window_start, \
+                b.limit_units, b.window_seconds \
+         FROM ai_budgets b \
+         LEFT JOIN ai_budget_counters c \
+           ON c.budget_id = b.id \
+          AND c.window_start = to_timestamp(floor(extract(epoch FROM now()) / b.window_seconds) * b.window_seconds) \
+         WHERE b.team_id = $1 AND b.id = ANY($2)",
+    )
+    .bind(team_id.as_uuid())
+    .bind(budget_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("read AI budget window states: {e}")))?;
+    rows.iter()
+        .map(|row| {
+            Ok((
+                AiBudgetId::from(row.get::<Uuid, _>("id")),
+                AiBudgetState {
+                    used_units: u64::try_from(row.get::<i64, _>("used_units")).map_err(|_| {
+                        DomainError::internal("AI budget used_units is outside domain range")
+                    })?,
+                    window_start: row.get("window_start"),
+                    limit_units: u64::try_from(row.get::<i64, _>("limit_units")).map_err(|_| {
+                        DomainError::internal("AI budget limit_units is outside domain range")
+                    })?,
+                    window_seconds: u32::try_from(row.get::<i32, _>("window_seconds")).map_err(
+                        |_| {
+                            DomainError::internal(
+                                "AI budget window_seconds is outside domain range",
+                            )
+                        },
+                    )?,
+                },
+            ))
+        })
+        .collect()
+}
+
 pub async fn count_budgets_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64> {
     sqlx::query_scalar("SELECT count(*) FROM ai_budgets WHERE team_id = $1")
         .bind(team_id.as_uuid())
@@ -1012,11 +1067,34 @@ pub async fn count_budgets_for_team(pool: &PgPool, team_id: TeamId) -> DomainRes
         .map_err(|e| DomainError::internal(format!("count AI budgets: {e}")))
 }
 
+/// Windowed usage summary plus the total number of grouped `(route_config_id, provider_id)`
+/// summary rows matching the same filters (the `Page.total`, NOT the raw event count). The
+/// items and the total are two reads without a shared snapshot — acceptable drift for an
+/// observability read.
 pub async fn usage_summary(
     pool: &PgPool,
     team_id: TeamId,
     query: AiUsageQuery,
-) -> DomainResult<Vec<AiUsageSummary>> {
+) -> DomainResult<(Vec<AiUsageSummary>, i64)> {
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM ( \
+            SELECT 1 FROM ai_usage_events \
+            WHERE team_id = $1 \
+              AND ($2::UUID IS NULL OR route_config_id = $2) \
+              AND ($3::UUID IS NULL OR provider_id = $3) \
+              AND ($4::TIMESTAMPTZ IS NULL OR created_at >= $4) \
+              AND ($5::TIMESTAMPTZ IS NULL OR created_at < $5) \
+            GROUP BY route_config_id, provider_id \
+         ) grouped",
+    )
+    .bind(team_id.as_uuid())
+    .bind(query.route_config_id.map(|id| id.as_uuid()))
+    .bind(query.provider_id.map(|id| id.as_uuid()))
+    .bind(query.since)
+    .bind(query.until)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count AI usage summary groups: {e}")))?;
     let rows = sqlx::query(
         "SELECT route_config_id, provider_id, \
                 COALESCE(sum(prompt_tokens), 0)::BIGINT AS prompt_tokens, \
@@ -1027,19 +1105,24 @@ pub async fn usage_summary(
          WHERE team_id = $1 \
            AND ($2::UUID IS NULL OR route_config_id = $2) \
            AND ($3::UUID IS NULL OR provider_id = $3) \
+           AND ($4::TIMESTAMPTZ IS NULL OR created_at >= $4) \
+           AND ($5::TIMESTAMPTZ IS NULL OR created_at < $5) \
          GROUP BY route_config_id, provider_id \
          ORDER BY total_tokens DESC, route_config_id, provider_id \
-         LIMIT $4 OFFSET $5",
+         LIMIT $6 OFFSET $7",
     )
     .bind(team_id.as_uuid())
     .bind(query.route_config_id.map(|id| id.as_uuid()))
     .bind(query.provider_id.map(|id| id.as_uuid()))
+    .bind(query.since)
+    .bind(query.until)
     .bind(query.limit.clamp(1, 500))
     .bind(query.offset.max(0))
     .fetch_all(pool)
     .await
     .map_err(|e| DomainError::internal(format!("query AI usage summary: {e}")))?;
-    rows.into_iter()
+    let items: DomainResult<Vec<AiUsageSummary>> = rows
+        .into_iter()
         .map(|row| {
             Ok(AiUsageSummary {
                 route_config_id: row
@@ -1068,7 +1151,8 @@ pub async fn usage_summary(
                 })?,
             })
         })
-        .collect()
+        .collect();
+    Ok((items?, total))
 }
 
 async fn insert_route_backends(

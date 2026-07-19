@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Flowplane — {{ team }} — AI gateway</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/{{ nonce }}/assets/dashboard.css">
+  <script src="/{{ nonce }}/assets/htmx.min.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Flowplane</h1>
+    <nav class="nav">
+      <a href="/{{ nonce }}/">Overview</a>
+      <a href="/{{ nonce }}/resources">Resources</a>
+      <a href="/{{ nonce }}/apis">APIs</a>
+      <a href="/{{ nonce }}/learning">Learning</a>
+      <span class="active">AI</span>
+    </nav>
+    <span class="team">team: {{ team }}</span>
+  </header>
+  <main id="resources">
+    <div id="ai-overview"
+         hx-get="/{{ nonce }}/partials/ai/overview"
+         hx-trigger="load once"
+         hx-target="#ai-overview"
+         hx-swap="innerHTML">
+      <p class="placeholder">Loading…</p>
+    </div>
+    <section class="panel" id="ai-traces">
+      <h2>Traces <span class="hint">newest first; hop timeline per request</span></h2>
+      <div id="ai-traces-body"
+           hx-get="/{{ nonce }}/partials/ai/traces"
+           hx-trigger="load once"
+           hx-target="#ai-traces-body"
+           hx-swap="innerHTML">
+        <p class="placeholder">Loading…</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

@@ -53,6 +53,31 @@ pub struct AiBudget {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Current-window consumption of one budget, read from `ai_budget_counters` at the
+/// server-aligned window enforcement uses. `used_units = 0` with the computed
+/// `window_start` when no counter row exists yet. Derived read model — the counters
+/// table stays the single authority.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct AiBudgetState {
+    pub used_units: u64,
+    /// Start of the server-aligned current window (`floor(epoch(now) / window_seconds)
+    /// * window_seconds`), the same alignment settlement and enforcement use.
+    pub window_start: DateTime<Utc>,
+    /// The budget's configured limit, duplicated beside `used_units` so a meter needs
+    /// no spec lookup.
+    pub limit_units: u64,
+    pub window_seconds: u32,
+}
+
+/// A budget plus its current-window state; the shape every budget-returning service
+/// read yields, so REST and MCP surface identical data by construction.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AiBudgetWithState {
+    #[serde(flatten)]
+    pub budget: AiBudget,
+    pub state: AiBudgetState,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AiBudgetSpec {

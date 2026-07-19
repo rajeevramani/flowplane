@@ -62,6 +62,11 @@ pub struct AiTraceUpsertOutcome {
 pub struct AiTraceQuery<'a> {
     pub request_id: Option<&'a str>,
     pub trace_id: Option<&'a str>,
+    /// Total-order cursor: return only rows strictly before `(created_at, id)` in the
+    /// `ORDER BY created_at DESC, id DESC` ordering. `created_at` alone is not unique,
+    /// so the id tiebreaker keeps paging duplicate- and gap-free under equal timestamps
+    /// and stable under retention deletes (design fpv2-0t4.3).
+    pub before: Option<(DateTime<Utc>, Uuid)>,
     pub limit: i64,
 }
 
@@ -171,17 +176,24 @@ pub async fn list_trace_events(
     team_id: TeamId,
     query: AiTraceQuery<'_>,
 ) -> DomainResult<Vec<AiTraceEvent>> {
+    let (before_created_at, before_id) = match query.before {
+        Some((created_at, id)) => (Some(created_at), Some(id)),
+        None => (None, None),
+    };
     let rows = sqlx::query(&format!(
         "SELECT {TRACE_COLUMNS} FROM ai_trace_events \
          WHERE team_id = $1 \
            AND ($2::TEXT IS NULL OR request_id = $2) \
            AND ($3::TEXT IS NULL OR trace_id = $3) \
-         ORDER BY created_at DESC \
-         LIMIT $4"
+           AND ($4::TIMESTAMPTZ IS NULL OR (created_at, id) < ($4::TIMESTAMPTZ, $5::UUID)) \
+         ORDER BY created_at DESC, id DESC \
+         LIMIT $6"
     ))
     .bind(team_id.as_uuid())
     .bind(query.request_id)
     .bind(query.trace_id)
+    .bind(before_created_at)
+    .bind(before_id)
     .bind(query.limit.clamp(1, 500))
     .fetch_all(pool)
     .await

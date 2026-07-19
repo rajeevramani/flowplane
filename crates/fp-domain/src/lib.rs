@@ -24,10 +24,11 @@ pub use ai::{
     prepare_openai_chat_request, rewrite_openai_chat_request_model,
     strip_synthetic_openai_usage_sse, validate_ai_budget_name, validate_ai_provider_name,
     validate_ai_route_name, validate_trace_ttl_days, AiBudget, AiBudgetMode, AiBudgetSpec,
-    AiProvider, AiProviderKind, AiProviderSpec, AiRetentionPolicy, AiRoute, AiRouteBackend,
-    AiRouteMaterializedResources, AiRouteSpec, AiRouteStatus, AiTraceEvent, AiUsageSummary,
-    OpenAiChatRequest, OpenAiTokenUsage, AI_MODEL_HEADER, DEFAULT_AI_ROUTE_TIMEOUT_SECS,
-    MAX_AI_REQUEST_BODY_BYTES, MAX_AI_TRACE_TTL_DAYS,
+    AiBudgetState, AiBudgetWithState, AiProvider, AiProviderKind, AiProviderSpec,
+    AiRetentionPolicy, AiRoute, AiRouteBackend, AiRouteMaterializedResources, AiRouteSpec,
+    AiRouteStatus, AiTraceEvent, AiUsageSummary, OpenAiChatRequest, OpenAiTokenUsage,
+    AI_MODEL_HEADER, DEFAULT_AI_ROUTE_TIMEOUT_SECS, MAX_AI_REQUEST_BODY_BYTES,
+    MAX_AI_TRACE_TTL_DAYS,
 };
 pub use dataplane::{validate_spiffe_uri, Dataplane, ProxyCertificate, TeamStatsOverview};
 pub use discovery::{

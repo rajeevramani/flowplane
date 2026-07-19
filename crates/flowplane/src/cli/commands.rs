@@ -396,6 +396,10 @@ pub enum AiCommand {
         /// W3C trace id from an inbound traceparent header.
         #[arg(long)]
         trace_id: Option<String>,
+        /// Pagination cursor "<created_at RFC 3339>,<id UUID>" — the last row of the
+        /// previous page; returns strictly older rows.
+        #[arg(long)]
+        before: Option<String>,
         /// Maximum number of traces to return.
         #[arg(long, default_value_t = 50)]
         limit: i64,
@@ -416,6 +420,14 @@ pub enum AiCommand {
         /// Filter usage records to this route configuration ID.
         #[arg(long)]
         route_config_id: Option<String>,
+        /// RFC 3339 inclusive lower bound of the half-open window [since, until).
+        /// Omitted = all-time.
+        #[arg(long)]
+        since: Option<String>,
+        /// RFC 3339 exclusive upper bound; omitted = now (server-side). With --since
+        /// present the span is capped at 92 days.
+        #[arg(long)]
+        until: Option<String>,
         /// Maximum number of records to return.
         #[arg(long, default_value_t = 50)]
         limit: i64,

@@ -151,6 +151,7 @@ async fn upsert_merges_listener_and_upstream_contributions_order_independently()
         ai_trace::AiTraceQuery {
             request_id: Some(&req_1),
             trace_id: None,
+            before: None,
             limit: 10,
         },
     )
@@ -164,6 +165,7 @@ async fn upsert_merges_listener_and_upstream_contributions_order_independently()
         ai_trace::AiTraceQuery {
             request_id: Some(&req_2),
             trace_id: None,
+            before: None,
             limit: 10,
         },
     )
@@ -223,6 +225,7 @@ async fn list_is_scoped_by_construction_and_finds_nothing_for_other_team() {
         ai_trace::AiTraceQuery {
             request_id: Some(&request_id),
             trace_id: None,
+            before: None,
             limit: 10,
         },
     )
@@ -237,6 +240,7 @@ async fn list_is_scoped_by_construction_and_finds_nothing_for_other_team() {
         ai_trace::AiTraceQuery {
             request_id: Some(&request_id),
             trace_id: None,
+            before: None,
             limit: 10,
         },
     )
@@ -250,6 +254,7 @@ async fn list_is_scoped_by_construction_and_finds_nothing_for_other_team() {
         ai_trace::AiTraceQuery {
             request_id: None,
             trace_id: mine[0].trace_id.as_deref(),
+            before: None,
             limit: 10,
         },
     )
@@ -484,6 +489,7 @@ async fn delete_expired_trace_events_scopes_to_expired_rows_only() {
                 ai_trace::AiTraceQuery {
                     request_id: Some(&request_id),
                     trace_id: None,
+                    before: None,
                     limit: 10,
                 },
             )

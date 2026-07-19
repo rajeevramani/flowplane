@@ -1571,6 +1571,12 @@ async fn secret_values_are_write_only_over_http() {
     let body = json_of(response).await;
     assert_eq!(body["name"], budget_name);
     assert_eq!(body["revision"], 1);
+    // A freshly created budget has no counter row: state is 0-used with the
+    // server-computed aligned window_start and the spec's limit/window echoed.
+    assert_eq!(body["state"]["used_units"], 0);
+    assert_eq!(body["state"]["limit_units"], 100);
+    assert_eq!(body["state"]["window_seconds"], 3600);
+    assert!(body["state"]["window_start"].is_string());
 
     fp_storage::repos::ai::record_usage_event_and_settle_budgets(
         &query_pool,
@@ -1599,6 +1605,18 @@ async fn secret_values_are_write_only_over_http() {
             .expect("budget counter");
     assert_eq!(used_units, 11);
 
+    // The settled counter surfaces as the budget's current-window state on GET.
+    let response = app
+        .clone()
+        .oneshot(request("GET", &format!("{budgets}/{budget_name}"), None))
+        .await
+        .expect("get AI budget with state");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["state"]["used_units"], 11);
+    assert_eq!(body["spec"]["mode"], "shadow");
+    assert!(body["state"]["window_start"].is_string());
+
     let response = app
         .clone()
         .oneshot(request(
@@ -1610,9 +1628,47 @@ async fn secret_values_are_write_only_over_http() {
         .expect("get AI usage");
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_of(response).await;
-    assert_eq!(body[0]["prompt_tokens"], 3);
-    assert_eq!(body[0]["completion_tokens"], 4);
-    assert_eq!(body[0]["total_tokens"], 7);
+    assert_eq!(body["items"][0]["prompt_tokens"], 3);
+    assert_eq!(body["items"][0]["completion_tokens"], 4);
+    assert_eq!(body["items"][0]["total_tokens"], 7);
+    assert_eq!(body["total"], 1);
+
+    // Windowed read spanning now still sees the row; the window is half-open [since, until).
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!(
+                "/api/v1/teams/{}/ai/usage?since={}",
+                team.name,
+                (chrono::Utc::now() - chrono::Duration::hours(1))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            ),
+            None,
+        ))
+        .await
+        .expect("get windowed AI usage");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["items"][0]["total_tokens"], 7);
+    assert_eq!(body["total"], 1);
+
+    // A span beyond the 92-day cap (since present) is rejected with 400.
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!(
+                "/api/v1/teams/{}/ai/usage?since={}",
+                team.name,
+                (chrono::Utc::now() - chrono::Duration::days(93))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            ),
+            None,
+        ))
+        .await
+        .expect("get over-cap AI usage");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     let response = app
         .clone()
@@ -1624,11 +1680,9 @@ async fn secret_values_are_write_only_over_http() {
         .await
         .expect("get other-team AI usage");
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(json_of(response)
-        .await
-        .as_array()
-        .expect("usage")
-        .is_empty());
+    let body = json_of(response).await;
+    assert!(body["items"].as_array().expect("usage items").is_empty());
+    assert_eq!(body["total"], 0);
 
     let response = app
         .clone()
@@ -1973,6 +2027,45 @@ async fn ai_trace_retrieval_over_http() {
         body.get("miss").is_none(),
         "hit must not carry a miss: {body}"
     );
+
+    // Cursor paging: `before` at the seeded row's (created_at, id) excludes it (strictly
+    // older only); a malformed cursor is a 400.
+    let cursor = format!(
+        "{},{}",
+        traces[0]["created_at"].as_str().expect("created_at"),
+        traces[0]["id"].as_str().expect("id")
+    );
+    let response = app
+        .clone()
+        .oneshot(request(
+            &admin_token,
+            &format!(
+                "/api/v1/teams/{}/ai/trace?before={}",
+                team.name,
+                cursor.replace('+', "%2B")
+            ),
+        ))
+        .await
+        .expect("trace before cursor");
+    assert_eq!(response.status(), StatusCode::OK);
+    let paged = json_of(response).await;
+    assert!(
+        !paged["traces"]
+            .as_array()
+            .expect("traces")
+            .iter()
+            .any(|t| t["request_id"] == request_id.as_str()),
+        "before-cursor page must exclude the cursor row itself: {paged}"
+    );
+    let response = app
+        .clone()
+        .oneshot(request(
+            &admin_token,
+            &format!("/api/v1/teams/{}/ai/trace?before=not-a-cursor", team.name),
+        ))
+        .await
+        .expect("trace malformed cursor");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     // trace_id filter returns the same row.
     let response = app
