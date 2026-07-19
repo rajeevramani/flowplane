@@ -4183,6 +4183,7 @@ mod tests {
             fp_storage::repos::ai_trace::AiTraceQuery {
                 request_id: Some(&request_id),
                 trace_id: None,
+                before: None,
                 limit: 10,
             },
         )
@@ -4266,6 +4267,7 @@ mod tests {
             fp_storage::repos::ai_trace::AiTraceQuery {
                 request_id: Some(&request_id),
                 trace_id: None,
+                before: None,
                 limit: 10,
             },
         )
@@ -4321,6 +4323,7 @@ mod tests {
             fp_storage::repos::ai_trace::AiTraceQuery {
                 request_id: Some(&bare_request_id),
                 trace_id: None,
+                before: None,
                 limit: 10,
             },
         )
@@ -4388,6 +4391,7 @@ mod tests {
             fp_storage::repos::ai_trace::AiTraceQuery {
                 request_id: Some(&request_id),
                 trace_id: None,
+                before: None,
                 limit: 10,
             },
         )
@@ -4726,6 +4730,7 @@ mod tests {
                 fp_storage::repos::ai_trace::AiTraceQuery {
                     request_id: Some(&request_id),
                     trace_id: None,
+                    before: None,
                     limit: 10,
                 },
             )
@@ -4857,6 +4862,7 @@ mod tests {
                 fp_storage::repos::ai_trace::AiTraceQuery {
                     request_id: Some(&request_id),
                     trace_id: None,
+                    before: None,
                     limit: 10,
                 },
             )
@@ -5112,6 +5118,7 @@ mod tests {
                     fp_storage::repos::ai_trace::AiTraceQuery {
                         request_id: Some(&request_id),
                         trace_id: None,
+                        before: None,
                         limit: 10,
                     },
                 )
@@ -5772,6 +5779,7 @@ mod tests {
             fp_storage::repos::ai_trace::AiTraceQuery {
                 request_id: Some(&request_id),
                 trace_id: None,
+                before: None,
                 limit: 10,
             },
         )
@@ -5978,6 +5986,7 @@ mod tests {
             fp_storage::repos::ai_trace::AiTraceQuery {
                 request_id: Some(&request_id),
                 trace_id: None,
+                before: None,
                 limit: 10,
             },
         )

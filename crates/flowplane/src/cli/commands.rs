@@ -396,6 +396,10 @@ pub enum AiCommand {
         /// W3C trace id from an inbound traceparent header.
         #[arg(long)]
         trace_id: Option<String>,
+        /// Pagination cursor "<created_at RFC 3339>,<id UUID>" — the last row of the
+        /// previous page; returns strictly older rows.
+        #[arg(long)]
+        before: Option<String>,
         /// Maximum number of traces to return.
         #[arg(long, default_value_t = 50)]
         limit: i64,

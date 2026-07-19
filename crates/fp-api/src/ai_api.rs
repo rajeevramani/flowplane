@@ -548,8 +548,32 @@ pub struct AiTraceParams {
     /// W3C trace id from an inbound `traceparent` (non-unique, list-queryable).
     #[serde(default)]
     pub trace_id: Option<String>,
+    /// Total-order pagination cursor `<created_at RFC 3339>,<id UUID>`: returns rows
+    /// strictly before that position in `created_at DESC, id DESC` order. Take the last
+    /// row of a page as the next cursor. Malformed values are a 400.
+    #[serde(default)]
+    pub before: Option<String>,
     #[serde(default = "default_trace_limit")]
     pub limit: i64,
+}
+
+/// Parse the `before` cursor (`<rfc3339>,<uuid>`); RFC 3339 timestamps contain no comma,
+/// so the first comma is the separator.
+fn parse_trace_cursor(
+    raw: &str,
+) -> Result<(chrono::DateTime<chrono::Utc>, uuid::Uuid), fp_domain::DomainError> {
+    let malformed = || {
+        fp_domain::DomainError::validation(
+            "before must be \"<created_at RFC 3339>,<id UUID>\" (the last row of the \
+             previous page)",
+        )
+    };
+    let (ts, id) = raw.split_once(',').ok_or_else(malformed)?;
+    let ts = chrono::DateTime::parse_from_rfc3339(ts)
+        .map_err(|_| malformed())?
+        .with_timezone(&chrono::Utc);
+    let id = uuid::Uuid::parse_str(id).map_err(|_| malformed())?;
+    Ok((ts, id))
 }
 
 fn default_trace_limit() -> i64 {
@@ -648,6 +672,11 @@ pub async fn get_ai_trace(
     Extension(rid): Extension<RequestId>,
 ) -> Result<Json<AiTraceResponse>, ApiError> {
     let run = async {
+        let before = params
+            .before
+            .as_deref()
+            .map(parse_trace_cursor)
+            .transpose()?;
         let team = resolve_team(&state, &ctx, &team).await?;
         ai_svc::trace_events(
             &state.pool,
@@ -656,6 +685,7 @@ pub async fn get_ai_trace(
             fp_storage::repos::ai_trace::AiTraceQuery {
                 request_id: params.request_id.as_deref(),
                 trace_id: params.trace_id.as_deref(),
+                before,
                 limit: trace_limit(params.limit),
             },
             rid,

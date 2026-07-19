@@ -2028,6 +2028,45 @@ async fn ai_trace_retrieval_over_http() {
         "hit must not carry a miss: {body}"
     );
 
+    // Cursor paging: `before` at the seeded row's (created_at, id) excludes it (strictly
+    // older only); a malformed cursor is a 400.
+    let cursor = format!(
+        "{},{}",
+        traces[0]["created_at"].as_str().expect("created_at"),
+        traces[0]["id"].as_str().expect("id")
+    );
+    let response = app
+        .clone()
+        .oneshot(request(
+            &admin_token,
+            &format!(
+                "/api/v1/teams/{}/ai/trace?before={}",
+                team.name,
+                cursor.replace('+', "%2B")
+            ),
+        ))
+        .await
+        .expect("trace before cursor");
+    assert_eq!(response.status(), StatusCode::OK);
+    let paged = json_of(response).await;
+    assert!(
+        !paged["traces"]
+            .as_array()
+            .expect("traces")
+            .iter()
+            .any(|t| t["request_id"] == request_id.as_str()),
+        "before-cursor page must exclude the cursor row itself: {paged}"
+    );
+    let response = app
+        .clone()
+        .oneshot(request(
+            &admin_token,
+            &format!("/api/v1/teams/{}/ai/trace?before=not-a-cursor", team.name),
+        ))
+        .await
+        .expect("trace malformed cursor");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
     // trace_id filter returns the same row.
     let response = app
         .clone()

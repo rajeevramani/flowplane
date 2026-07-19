@@ -366,6 +366,7 @@ async fn trace_read_enforces_ai_usage_read_before_any_repo_read() {
         ai_trace::AiTraceQuery {
             request_id: Some(&request_id),
             trace_id: None,
+            before: None,
             limit: 50,
         },
         RequestId::generate(),
@@ -403,6 +404,7 @@ async fn trace_read_enforces_ai_usage_read_before_any_repo_read() {
         ai_trace::AiTraceQuery {
             request_id: Some(&request_id),
             trace_id: None,
+            before: None,
             limit: 50,
         },
         RequestId::generate(),
@@ -462,6 +464,7 @@ async fn cross_team_trace_reads_are_isolated_by_authz_and_by_scoping() {
         ai_trace::AiTraceQuery {
             request_id: Some(&request_id_a),
             trace_id: None,
+            before: None,
             limit: 50,
         },
         RequestId::generate(),
@@ -498,6 +501,7 @@ async fn cross_team_trace_reads_are_isolated_by_authz_and_by_scoping() {
         ai_trace::AiTraceQuery {
             request_id: Some(&request_id_a),
             trace_id: None,
+            before: None,
             limit: 50,
         },
         RequestId::generate(),
@@ -517,6 +521,7 @@ async fn cross_team_trace_reads_are_isolated_by_authz_and_by_scoping() {
         ai_trace::AiTraceQuery {
             request_id: Some(&request_id_a),
             trace_id: None,
+            before: None,
             limit: 50,
         },
         RequestId::generate(),

@@ -1030,6 +1030,7 @@ pub async fn run_ai(global: GlobalOptions, command: AiCommand) -> Result<()> {
             team,
             request_id,
             trace_id,
+            before,
             limit,
         } => {
             let client = RestClient::new(global)?;
@@ -1040,6 +1041,9 @@ pub async fn run_ai(global: GlobalOptions, command: AiCommand) -> Result<()> {
             }
             if let Some(trace_id) = trace_id {
                 query.push(("trace_id", trace_id));
+            }
+            if let Some(before) = before {
+                query.push(("before", before));
             }
             query.push(("limit", limit.to_string()));
             let query = query
