@@ -176,6 +176,43 @@ services:
     volumes:
       - shared:/shared
 
+  # Dataplane agent (`flowplane-agent`, same eval image) running beside Envoy. It JOINS
+  # Envoy's network namespace (`network_mode: service:envoy`) so Envoy admin (127.0.0.1:9901)
+  # stays loopback-local to the dataplane unit — only the agent scrapes it, and nothing on the
+  # compose network can reach it — while heartbeats/diagnostics flow OUTBOUND to the control
+  # plane on the xDS port. Without this service every dataplane reads as "stale": liveness is
+  # derived from agent heartbeats, not from the Envoy xDS stream. Plaintext diagnostics is the
+  # dev-mode-only posture of this bundle (the agent logs a warning); production uses the mTLS
+  # triad per docs/how-to/register-dataplane-mtls.md.
+  flowplane-agent:
+    image: ${FLOWPLANE_EVAL_IMAGE:-flowplane:eval-local}
+    entrypoint: ["/bin/sh", "-c"]
+    network_mode: "service:envoy"
+    command:
+      - |
+        set -e
+        echo "waiting for dev token..."
+        for i in $$(seq 1 60); do [ -s /shared/dev-token ] && break; sleep 1; done
+        [ -s /shared/dev-token ] || { echo "dev token never appeared"; exit 1; }
+        export FLOWPLANE_SERVER=http://flowplane-eval:8080
+        export FLOWPLANE_TOKEN="$$(cat /shared/dev-token)"
+        export FLOWPLANE_ORG=dev-org
+        export FLOWPLANE_TEAM=default
+        echo "resolving dp-eval dataplane id..."
+        DP_ID="$$(flowplane -o json dataplane get dp-eval | tr -d ' \n' | grep -o '"id":"[0-9a-f-]\{36\}"' | head -1 | cut -d'"' -f4)"
+        [ -n "$$DP_ID" ] || { echo "could not resolve dp-eval id"; exit 1; }
+        echo "starting agent for dataplane $$DP_ID"
+        exec flowplane-agent \
+          --cp-endpoint http://flowplane-eval:18000 \
+          --dataplane-id "$$DP_ID"
+    depends_on:
+      envoy:
+        condition: service_started
+      init:
+        condition: service_completed_successfully
+    volumes:
+      - shared:/shared
+
 volumes:
   shared: {}
   pgdata: {}
