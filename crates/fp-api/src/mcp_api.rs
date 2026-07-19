@@ -647,11 +647,13 @@ const STATIC_TOOLS: &[StaticTool] = &[
     },
     StaticTool {
         name: "cp_ai_usage",
-        description: "Read AI usage summary rows for one team.",
+        description: "Read AI usage summary rows for one team, optionally windowed by \
+                      RFC 3339 since/until (half-open [since, until); same semantics as \
+                      the REST endpoint).",
         resource: Resource::AiUsage,
         action: Action::Read,
         risk: ToolRisk::Read,
-        input_schema: schema_list,
+        input_schema: schema_usage,
         executor: ToolExecutor::AiUsage,
     },
 ];
@@ -1463,20 +1465,22 @@ async fn execute_static_tool(
             serde_json::to_value(item).map_err(json_err)
         }
         ToolExecutor::AiUsage => {
-            let items = fp_core::services::ai::usage_summary(
+            let (items, total) = fp_core::services::ai::usage_summary(
                 &state.pool,
                 ctx,
                 team,
                 fp_storage::repos::ai::AiUsageQuery {
                     route_config_id: None,
                     provider_id: None,
+                    since: optional_timestamp_arg(&arguments, "since")?,
+                    until: optional_timestamp_arg(&arguments, "until")?,
                     limit: integer_arg(&arguments, "limit").unwrap_or(50),
                     offset: integer_arg(&arguments, "offset").unwrap_or(0),
                 },
                 rid,
             )
             .await?;
-            serde_json::to_value(items).map_err(json_err)
+            Ok(json!({ "items": items, "total": total }))
         }
     }
 }
@@ -1971,6 +1975,25 @@ fn integer_arg(args: &Value, key: &'static str) -> Option<i64> {
     args.get(key).and_then(Value::as_i64)
 }
 
+/// Optional RFC 3339 timestamp argument; any PRESENT value that is not an RFC 3339
+/// string — wrong JSON type included — is a validation error, never silently ignored.
+fn optional_timestamp_arg(
+    args: &Value,
+    key: &'static str,
+) -> DomainResult<Option<chrono::DateTime<chrono::Utc>>> {
+    match args.get(key) {
+        None => Ok(None),
+        Some(value) => {
+            let raw = value.as_str().ok_or_else(|| {
+                DomainError::validation(format!("{key} must be an RFC 3339 string"))
+            })?;
+            chrono::DateTime::parse_from_rfc3339(raw)
+                .map(|dt| Some(dt.with_timezone(&chrono::Utc)))
+                .map_err(|e| DomainError::validation(format!("{key} is not RFC 3339: {e}")))
+        }
+    }
+}
+
 fn required_revision(args: &Value) -> DomainResult<i64> {
     integer_arg(args, "revision").ok_or_else(|| DomainError::validation("revision is required"))
 }
@@ -2038,6 +2061,31 @@ fn schema_list() -> Value {
         "type": "object",
         "properties": {
             "team": { "type": "string", "description": "Team name or UUID" },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 },
+            "offset": { "type": "integer", "minimum": 0, "default": 0 }
+        },
+        "required": ["team"],
+        "additionalProperties": false
+    })
+}
+
+fn schema_usage() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "team": { "type": "string", "description": "Team name or UUID" },
+            "since": {
+                "type": "string",
+                "format": "date-time",
+                "description": "RFC 3339 inclusive lower bound of the half-open usage \
+                                window [since, until). Omitted = all-time."
+            },
+            "until": {
+                "type": "string",
+                "format": "date-time",
+                "description": "RFC 3339 exclusive upper bound; omitted = now. With \
+                                `since` present the span is capped at 92 days."
+            },
             "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 },
             "offset": { "type": "integer", "minimum": 0, "default": 0 }
         },

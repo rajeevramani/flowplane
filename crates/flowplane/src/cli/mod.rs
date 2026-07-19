@@ -1086,6 +1086,8 @@ pub async fn run_ai(global: GlobalOptions, command: AiCommand) -> Result<()> {
             team,
             provider_id,
             route_config_id,
+            since,
+            until,
             limit,
             offset,
         } => {
@@ -1100,6 +1102,12 @@ pub async fn run_ai(global: GlobalOptions, command: AiCommand) -> Result<()> {
                     "route_config_id={}",
                     query_component(&route_config_id)
                 ));
+            }
+            if let Some(since) = since {
+                query.push(format!("since={}", query_component(&since)));
+            }
+            if let Some(until) = until {
+                query.push(format!("until={}", query_component(&until)));
             }
             client
                 .request(

@@ -1610,9 +1610,47 @@ async fn secret_values_are_write_only_over_http() {
         .expect("get AI usage");
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_of(response).await;
-    assert_eq!(body[0]["prompt_tokens"], 3);
-    assert_eq!(body[0]["completion_tokens"], 4);
-    assert_eq!(body[0]["total_tokens"], 7);
+    assert_eq!(body["items"][0]["prompt_tokens"], 3);
+    assert_eq!(body["items"][0]["completion_tokens"], 4);
+    assert_eq!(body["items"][0]["total_tokens"], 7);
+    assert_eq!(body["total"], 1);
+
+    // Windowed read spanning now still sees the row; the window is half-open [since, until).
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!(
+                "/api/v1/teams/{}/ai/usage?since={}",
+                team.name,
+                (chrono::Utc::now() - chrono::Duration::hours(1))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            ),
+            None,
+        ))
+        .await
+        .expect("get windowed AI usage");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["items"][0]["total_tokens"], 7);
+    assert_eq!(body["total"], 1);
+
+    // A span beyond the 92-day cap (since present) is rejected with 400.
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!(
+                "/api/v1/teams/{}/ai/usage?since={}",
+                team.name,
+                (chrono::Utc::now() - chrono::Duration::days(93))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            ),
+            None,
+        ))
+        .await
+        .expect("get over-cap AI usage");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     let response = app
         .clone()
@@ -1624,11 +1662,9 @@ async fn secret_values_are_write_only_over_http() {
         .await
         .expect("get other-team AI usage");
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(json_of(response)
-        .await
-        .as_array()
-        .expect("usage")
-        .is_empty());
+    let body = json_of(response).await;
+    assert!(body["items"].as_array().expect("usage items").is_empty());
+    assert_eq!(body["total"], 0);
 
     let response = app
         .clone()

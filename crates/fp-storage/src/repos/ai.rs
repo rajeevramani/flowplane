@@ -41,6 +41,10 @@ pub struct AiUsageEventInsert {
 pub struct AiUsageQuery {
     pub route_config_id: Option<RouteConfigId>,
     pub provider_id: Option<AiProviderId>,
+    /// Half-open window lower bound: only events with `created_at >= since` count.
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+    /// Half-open window upper bound: only events with `created_at < until` count.
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
     pub limit: i64,
     pub offset: i64,
 }
@@ -1012,11 +1016,34 @@ pub async fn count_budgets_for_team(pool: &PgPool, team_id: TeamId) -> DomainRes
         .map_err(|e| DomainError::internal(format!("count AI budgets: {e}")))
 }
 
+/// Windowed usage summary plus the total number of grouped `(route_config_id, provider_id)`
+/// summary rows matching the same filters (the `Page.total`, NOT the raw event count). The
+/// items and the total are two reads without a shared snapshot — acceptable drift for an
+/// observability read.
 pub async fn usage_summary(
     pool: &PgPool,
     team_id: TeamId,
     query: AiUsageQuery,
-) -> DomainResult<Vec<AiUsageSummary>> {
+) -> DomainResult<(Vec<AiUsageSummary>, i64)> {
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM ( \
+            SELECT 1 FROM ai_usage_events \
+            WHERE team_id = $1 \
+              AND ($2::UUID IS NULL OR route_config_id = $2) \
+              AND ($3::UUID IS NULL OR provider_id = $3) \
+              AND ($4::TIMESTAMPTZ IS NULL OR created_at >= $4) \
+              AND ($5::TIMESTAMPTZ IS NULL OR created_at < $5) \
+            GROUP BY route_config_id, provider_id \
+         ) grouped",
+    )
+    .bind(team_id.as_uuid())
+    .bind(query.route_config_id.map(|id| id.as_uuid()))
+    .bind(query.provider_id.map(|id| id.as_uuid()))
+    .bind(query.since)
+    .bind(query.until)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count AI usage summary groups: {e}")))?;
     let rows = sqlx::query(
         "SELECT route_config_id, provider_id, \
                 COALESCE(sum(prompt_tokens), 0)::BIGINT AS prompt_tokens, \
@@ -1027,19 +1054,24 @@ pub async fn usage_summary(
          WHERE team_id = $1 \
            AND ($2::UUID IS NULL OR route_config_id = $2) \
            AND ($3::UUID IS NULL OR provider_id = $3) \
+           AND ($4::TIMESTAMPTZ IS NULL OR created_at >= $4) \
+           AND ($5::TIMESTAMPTZ IS NULL OR created_at < $5) \
          GROUP BY route_config_id, provider_id \
          ORDER BY total_tokens DESC, route_config_id, provider_id \
-         LIMIT $4 OFFSET $5",
+         LIMIT $6 OFFSET $7",
     )
     .bind(team_id.as_uuid())
     .bind(query.route_config_id.map(|id| id.as_uuid()))
     .bind(query.provider_id.map(|id| id.as_uuid()))
+    .bind(query.since)
+    .bind(query.until)
     .bind(query.limit.clamp(1, 500))
     .bind(query.offset.max(0))
     .fetch_all(pool)
     .await
     .map_err(|e| DomainError::internal(format!("query AI usage summary: {e}")))?;
-    rows.into_iter()
+    let items: DomainResult<Vec<AiUsageSummary>> = rows
+        .into_iter()
         .map(|row| {
             Ok(AiUsageSummary {
                 route_config_id: row
@@ -1068,7 +1100,8 @@ pub async fn usage_summary(
                 })?,
             })
         })
-        .collect()
+        .collect();
+    Ok((items?, total))
 }
 
 async fn insert_route_backends(

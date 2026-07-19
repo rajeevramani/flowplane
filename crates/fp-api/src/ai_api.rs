@@ -135,6 +135,14 @@ pub struct AiUsageQuery {
     pub route_config_id: Option<uuid::Uuid>,
     #[serde(default)]
     pub provider_id: Option<uuid::Uuid>,
+    /// RFC 3339 lower bound (inclusive) of the half-open usage window `[since, until)`.
+    /// Omitted = an explicit all-time read (exempt from the span cap).
+    #[serde(default)]
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+    /// RFC 3339 upper bound (exclusive). Omitted = resolved server-side to `now`.
+    /// With `since` present the span `until - since` is capped at 92 days (400 beyond).
+    #[serde(default)]
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default = "default_usage_limit")]
     pub limit: i64,
     #[serde(default)]
@@ -752,14 +760,14 @@ pub async fn put_ai_retention(
 #[utoipa::path(get, path = "/api/v1/teams/{team}/ai/usage",
     tag = "AI",
     params(("team" = String, Path, description = "Team name or UUID"), AiUsageQuery),
-    responses((status = 200, body = Vec<AiUsageSummary>)))]
+    responses((status = 200, body = Page<AiUsageSummary>)))]
 pub async fn get_ai_usage(
     State(state): State<AppState>,
     Path(team): Path<String>,
     Query(query): Query<AiUsageQuery>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-) -> Result<Json<Vec<AiUsageSummary>>, ApiError> {
+) -> Result<Json<Page<AiUsageSummary>>, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
         ai_svc::usage_summary(
@@ -769,6 +777,8 @@ pub async fn get_ai_usage(
             fp_storage::repos::ai::AiUsageQuery {
                 route_config_id: query.route_config_id.map(fp_domain::RouteConfigId::from),
                 provider_id: query.provider_id.map(fp_domain::AiProviderId::from),
+                since: query.since,
+                until: query.until,
                 limit: query.limit,
                 offset: query.offset,
             },
@@ -776,7 +786,16 @@ pub async fn get_ai_usage(
         )
         .await
     };
-    run.await.map(Json).map_err(|e| ApiError::new(e, rid))
+    run.await
+        .map(|(items, total)| {
+            Json(Page {
+                items,
+                total,
+                limit: query.limit,
+                offset: query.offset,
+            })
+        })
+        .map_err(|e| ApiError::new(e, rid))
 }
 
 #[cfg(test)]
