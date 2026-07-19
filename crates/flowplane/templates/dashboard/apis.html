@@ -21,7 +21,7 @@
   <main id="resources">
     <details id="apis-list" open
              hx-get="/{{ nonce }}/partials/apis/list"
-             hx-trigger="toggle once"
+             hx-trigger="load once"
              hx-target="#apis-list-body"
              hx-swap="innerHTML">
       <summary>API definitions</summary>

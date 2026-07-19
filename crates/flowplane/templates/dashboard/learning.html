@@ -21,7 +21,7 @@
   <main id="resources">
     <details id="learning-sessions" open
              hx-get="/{{ nonce }}/partials/learning/sessions"
-             hx-trigger="toggle once"
+             hx-trigger="load once"
              hx-target="#learning-sessions-body"
              hx-swap="innerHTML">
       <summary>Learning sessions</summary>

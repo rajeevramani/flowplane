@@ -1161,3 +1161,33 @@ async fn two_completed_sessions_on_one_api_attribute_versions_by_provenance() {
         "a learned version without provenance is attributed to no session"
     );
 }
+
+/// Implementer regression (found live in the eval container): the sessions panel is
+/// `<details open>` — it must fetch via htmx `load`, because an already-open details
+/// never fires `toggle` and would show "Loading…" forever in a real browser.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn open_sessions_panel_fetches_on_load_not_toggle() {
+    let fixture = learning_fixture();
+    let team = fixture.team.clone();
+    let stub = start_stub(fixture.stub_state).await;
+    let home = common::unique_tempdir();
+    let dash = spawn_dashboard(home, &stub.base_url, &team);
+    let http = client();
+    let shell = fetch(&http, &dash.page_url("learning"))
+        .await
+        .text()
+        .await
+        .expect("shell");
+    assert!(
+        shell.contains("hx-trigger=\"load once\""),
+        "open sessions panel must fetch on load, not toggle"
+    );
+    let details = &shell[shell
+        .find("<details id=\"learning-sessions\"")
+        .expect("panel")..];
+    let details = details.split('>').next().expect("attrs");
+    assert!(
+        details.contains("open"),
+        "sessions panel renders open: {details}"
+    );
+}

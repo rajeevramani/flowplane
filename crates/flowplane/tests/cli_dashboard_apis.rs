@@ -1135,3 +1135,36 @@ async fn failed_join_sweeps_render_explicit_notice() {
         "names cannot come from a failed sweep"
     );
 }
+
+/// Implementer regression (found live in the eval container): the list panel is rendered
+/// `<details open>`, and an already-open details element never fires a `toggle` event —
+/// so the lazy fetch MUST be wired to htmx's `load` trigger or the panel shows
+/// "Loading…" forever in a real browser (stub tests fetch partials directly and cannot
+/// catch this).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn open_list_panel_fetches_on_load_not_toggle() {
+    let fixture = happy_fixture();
+    let team = fixture.team.clone();
+    let stub = start_stub(fixture.stub_state).await;
+    let home = common::unique_tempdir();
+    let dash = spawn_dashboard(home, &stub.base_url, &team);
+    let http = client();
+    let shell = fetch(&http, &dash.apis_shell_url())
+        .await
+        .text()
+        .await
+        .expect("shell");
+    let panel = shell
+        .split("partials/apis/list")
+        .next()
+        .expect("panel prefix");
+    let panel = &panel[panel.rfind("<details").expect("details tag")..];
+    assert!(panel.contains("open"), "list panel renders open: {panel}");
+    let after = &shell[shell.find("partials/apis/list").expect("wiring")..];
+    let attrs = after.split('>').next().expect("attrs");
+    let full = format!("{panel}{after}");
+    assert!(
+        full.contains("hx-trigger=\"load once\""),
+        "open panel must fetch on load, not toggle: {attrs}"
+    );
+}
