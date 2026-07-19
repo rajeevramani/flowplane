@@ -2,10 +2,10 @@
 
 use fp_domain::authz::TeamRef;
 use fp_domain::{
-    AiBudget, AiBudgetId, AiBudgetMode, AiBudgetSpec, AiProvider, AiProviderId, AiProviderKind,
-    AiProviderSpec, AiRoute, AiRouteBackend, AiRouteId, AiRouteMaterializedResources, AiRouteSpec,
-    AiRouteStatus, AiUsageSummary, DomainError, DomainResult, ErrorCode, OpenAiTokenUsage,
-    RouteConfigId, SecretId, TeamId,
+    AiBudget, AiBudgetId, AiBudgetMode, AiBudgetSpec, AiBudgetState, AiProvider, AiProviderId,
+    AiProviderKind, AiProviderSpec, AiRoute, AiRouteBackend, AiRouteId,
+    AiRouteMaterializedResources, AiRouteSpec, AiRouteStatus, AiUsageSummary, DomainError,
+    DomainResult, ErrorCode, OpenAiTokenUsage, RouteConfigId, SecretId, TeamId,
 };
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -1006,6 +1006,57 @@ pub async fn delete_budget(
             budget_revision_error(tx, team_id, name, expected_version, "delete AI budget").await
         }
     }
+}
+
+/// Current-window state for a set of the team's budgets, in ONE batched query: LEFT JOIN
+/// `ai_budget_counters` on the per-budget server-aligned window (the same alignment
+/// formula enforcement uses in [`exhausted_enforcing_budget`]); a missing counter row
+/// yields `used_units = 0` with the server-computed aligned `window_start`. Operator-facing
+/// derived read — never writes.
+pub async fn budget_window_states(
+    pool: &PgPool,
+    team_id: TeamId,
+    budget_ids: &[Uuid],
+) -> DomainResult<Vec<(AiBudgetId, AiBudgetState)>> {
+    let rows = sqlx::query(
+        "SELECT b.id, \
+                COALESCE(c.used_units, 0)::BIGINT AS used_units, \
+                to_timestamp(floor(extract(epoch FROM now()) / b.window_seconds) * b.window_seconds) AS window_start, \
+                b.limit_units, b.window_seconds \
+         FROM ai_budgets b \
+         LEFT JOIN ai_budget_counters c \
+           ON c.budget_id = b.id \
+          AND c.window_start = to_timestamp(floor(extract(epoch FROM now()) / b.window_seconds) * b.window_seconds) \
+         WHERE b.team_id = $1 AND b.id = ANY($2)",
+    )
+    .bind(team_id.as_uuid())
+    .bind(budget_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("read AI budget window states: {e}")))?;
+    rows.iter()
+        .map(|row| {
+            Ok((
+                AiBudgetId::from(row.get::<Uuid, _>("id")),
+                AiBudgetState {
+                    used_units: u64::try_from(row.get::<i64, _>("used_units")).map_err(|_| {
+                        DomainError::internal("AI budget used_units is outside domain range")
+                    })?,
+                    window_start: row.get("window_start"),
+                    limit_units: u64::try_from(row.get::<i64, _>("limit_units")).map_err(|_| {
+                        DomainError::internal("AI budget limit_units is outside domain range")
+                    })?,
+                    window_seconds: u32::try_from(row.get::<i32, _>("window_seconds")).map_err(
+                        |_| {
+                            DomainError::internal(
+                                "AI budget window_seconds is outside domain range",
+                            )
+                        },
+                    )?,
+                },
+            ))
+        })
+        .collect()
 }
 
 pub async fn count_budgets_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64> {

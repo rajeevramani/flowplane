@@ -244,6 +244,77 @@ async fn cp_ai_usage_windowed_parity_with_rest() {
     assert_eq!(payload["items"], rest_windowed["items"]);
 }
 
+/// Budget-state parity (slice fpv2-0t4.2): `cp_ai_budgets_list` / `cp_ai_budgets_get`
+/// carry the same `state` object REST serves, because both render the service-layer
+/// `AiBudgetWithState`.
+#[tokio::test]
+async fn cp_ai_budgets_carry_current_window_state() {
+    let Some(env) = env().await else { return };
+    let org = identity::create_org(&env.pool, &unique("org"), "")
+        .await
+        .expect("org");
+    let team = identity::create_team(&env.pool, org.id, &unique("team"), "")
+        .await
+        .expect("team");
+    let token = org_admin(&env, org.id).await;
+
+    // Create a budget through REST (no provider/route scope; nullable FKs).
+    let budget_name = unique("budget");
+    let response = env
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/teams/{}/ai/budgets", team.name))
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "name": budget_name,
+                        "spec": { "mode": "enforcing", "limit_units": 500 }
+                    })
+                    .to_string(),
+                ))
+                .expect("create budget request"),
+        )
+        .await
+        .expect("create budget response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let rest_budget = json_of(response).await;
+    assert_eq!(rest_budget["state"]["used_units"], 0);
+    assert_eq!(rest_budget["state"]["limit_units"], 500);
+
+    let session = initialize(&env, &token).await;
+    let call = env
+        .app
+        .clone()
+        .oneshot(mcp_request(
+            &token,
+            Some(&session),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "cp_ai_budgets_get",
+                    "arguments": { "team": team.name, "name": budget_name }
+                }
+            }),
+        ))
+        .await
+        .expect("cp_ai_budgets_get");
+    assert_eq!(call.status(), StatusCode::OK);
+    let call = json_of(call).await;
+    assert_eq!(call["result"]["isError"], false, "budget get: {call}");
+    let payload = tool_payload(&call);
+    assert_eq!(
+        payload["state"], rest_budget["state"],
+        "MCP/REST state parity"
+    );
+    assert_eq!(payload["spec"]["mode"], "enforcing");
+}
+
 #[tokio::test]
 async fn cp_ai_usage_rejects_malformed_and_over_cap_windows() {
     let Some(env) = env().await else { return };

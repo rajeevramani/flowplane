@@ -12,9 +12,10 @@ use fp_domain::gateway::route_config::{
 };
 use fp_domain::{
     ai_error_envelope, validate_ai_budget_name, validate_ai_provider_name, validate_ai_route_name,
-    validate_trace_ttl_days, AiBudget, AiBudgetSpec, AiProvider, AiProviderSpec, AiRetentionPolicy,
-    AiRoute, AiRouteMaterializedResources, AiRouteSpec, AiTraceEvent, AiUsageSummary, DomainError,
-    DomainResult, RequestId, AI_MODEL_HEADER, DEFAULT_AI_ROUTE_TIMEOUT_SECS,
+    validate_trace_ttl_days, AiBudget, AiBudgetSpec, AiBudgetWithState, AiProvider, AiProviderSpec,
+    AiRetentionPolicy, AiRoute, AiRouteMaterializedResources, AiRouteSpec, AiTraceEvent,
+    AiUsageSummary, DomainError, DomainResult, RequestId, AI_MODEL_HEADER,
+    DEFAULT_AI_ROUTE_TIMEOUT_SECS,
 };
 use fp_storage::repos::{ai, ai_trace, audit, clusters as cluster_repo, gateway as gateway_repo};
 use sqlx::PgPool;
@@ -421,7 +422,7 @@ pub async fn create_budget(
     name: &str,
     spec: AiBudgetSpec,
     request_id: RequestId,
-) -> DomainResult<AiBudget> {
+) -> DomainResult<AiBudgetWithState> {
     authorize(
         pool,
         ctx,
@@ -454,7 +455,48 @@ pub async fn create_budget(
     tx.commit()
         .await
         .map_err(crate::services::db_err("create AI budget: commit"))?;
-    Ok(budget)
+    attach_budget_state(pool, team.id, budget).await
+}
+
+/// Attach each budget's current-window state via ONE batched aligned-window read (no
+/// per-row N+1). Every budget id passed in exists in `ai_budgets` (they were just read
+/// or written), so a missing state row is an internal error, never silently skipped.
+async fn attach_budget_states(
+    pool: &PgPool,
+    team_id: fp_domain::TeamId,
+    budgets: Vec<AiBudget>,
+) -> DomainResult<Vec<AiBudgetWithState>> {
+    if budgets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<uuid::Uuid> = budgets.iter().map(|b| b.id.as_uuid()).collect();
+    let states: BTreeMap<_, _> = ai::budget_window_states(pool, team_id, &ids)
+        .await?
+        .into_iter()
+        .collect();
+    budgets
+        .into_iter()
+        .map(|budget| {
+            let state = states.get(&budget.id).cloned().ok_or_else(|| {
+                DomainError::internal(format!(
+                    "AI budget \"{}\" has no window-state row",
+                    budget.name
+                ))
+            })?;
+            Ok(AiBudgetWithState { budget, state })
+        })
+        .collect()
+}
+
+async fn attach_budget_state(
+    pool: &PgPool,
+    team_id: fp_domain::TeamId,
+    budget: AiBudget,
+) -> DomainResult<AiBudgetWithState> {
+    let mut with_state = attach_budget_states(pool, team_id, vec![budget]).await?;
+    with_state
+        .pop()
+        .ok_or_else(|| DomainError::internal("AI budget window-state read returned no row"))
 }
 
 pub async fn list_budgets(
@@ -464,7 +506,7 @@ pub async fn list_budgets(
     limit: i64,
     offset: i64,
     request_id: RequestId,
-) -> DomainResult<(Vec<AiBudget>, i64)> {
+) -> DomainResult<(Vec<AiBudgetWithState>, i64)> {
     authorize(
         pool,
         ctx,
@@ -474,7 +516,8 @@ pub async fn list_budgets(
         request_id,
     )
     .await?;
-    ai::list_budgets(pool, team.id, limit, offset).await
+    let (budgets, total) = ai::list_budgets(pool, team.id, limit, offset).await?;
+    Ok((attach_budget_states(pool, team.id, budgets).await?, total))
 }
 
 pub async fn get_budget(
@@ -483,7 +526,7 @@ pub async fn get_budget(
     team: TeamRef,
     name: &str,
     request_id: RequestId,
-) -> DomainResult<AiBudget> {
+) -> DomainResult<AiBudgetWithState> {
     authorize(
         pool,
         ctx,
@@ -493,9 +536,10 @@ pub async fn get_budget(
         request_id,
     )
     .await?;
-    ai::get_budget(pool, team.id, name)
+    let budget = ai::get_budget(pool, team.id, name)
         .await?
-        .ok_or_else(|| DomainError::not_found("AI budget", name))
+        .ok_or_else(|| DomainError::not_found("AI budget", name))?;
+    attach_budget_state(pool, team.id, budget).await
 }
 
 pub async fn update_budget(
@@ -506,7 +550,7 @@ pub async fn update_budget(
     spec: AiBudgetSpec,
     expected_version: i64,
     request_id: RequestId,
-) -> DomainResult<AiBudget> {
+) -> DomainResult<AiBudgetWithState> {
     authorize(
         pool,
         ctx,
@@ -537,7 +581,7 @@ pub async fn update_budget(
     tx.commit()
         .await
         .map_err(crate::services::db_err("update AI budget: commit"))?;
-    Ok(budget)
+    attach_budget_state(pool, team.id, budget).await
 }
 
 pub async fn delete_budget(

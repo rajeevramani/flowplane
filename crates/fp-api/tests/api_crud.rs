@@ -1571,6 +1571,12 @@ async fn secret_values_are_write_only_over_http() {
     let body = json_of(response).await;
     assert_eq!(body["name"], budget_name);
     assert_eq!(body["revision"], 1);
+    // A freshly created budget has no counter row: state is 0-used with the
+    // server-computed aligned window_start and the spec's limit/window echoed.
+    assert_eq!(body["state"]["used_units"], 0);
+    assert_eq!(body["state"]["limit_units"], 100);
+    assert_eq!(body["state"]["window_seconds"], 3600);
+    assert!(body["state"]["window_start"].is_string());
 
     fp_storage::repos::ai::record_usage_event_and_settle_budgets(
         &query_pool,
@@ -1598,6 +1604,18 @@ async fn secret_values_are_write_only_over_http() {
             .await
             .expect("budget counter");
     assert_eq!(used_units, 11);
+
+    // The settled counter surfaces as the budget's current-window state on GET.
+    let response = app
+        .clone()
+        .oneshot(request("GET", &format!("{budgets}/{budget_name}"), None))
+        .await
+        .expect("get AI budget with state");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["state"]["used_units"], 11);
+    assert_eq!(body["spec"]["mode"], "shadow");
+    assert!(body["state"]["window_start"].is_string());
 
     let response = app
         .clone()

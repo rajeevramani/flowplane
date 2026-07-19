@@ -10,8 +10,8 @@ use axum::Json;
 use fp_core::services::ai as ai_svc;
 use fp_core::PrincipalCtx;
 use fp_domain::{
-    AiBudget, AiBudgetSpec, AiProvider, AiProviderSpec, AiRoute, AiRouteSpec, AiTraceEvent,
-    AiUsageSummary, RequestId,
+    AiBudgetSpec, AiProvider, AiProviderSpec, AiRoute, AiRouteSpec, AiTraceEvent, AiUsageSummary,
+    RequestId,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -43,6 +43,9 @@ pub struct AiBudgetView {
     pub id: uuid::Uuid,
     pub name: String,
     pub spec: AiBudgetSpec,
+    /// Current-window consumption (used/limit + aligned window), present on every
+    /// budget-returning endpoint.
+    pub state: fp_domain::AiBudgetState,
     pub revision: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -76,15 +79,16 @@ impl From<AiRoute> for AiRouteView {
     }
 }
 
-impl From<AiBudget> for AiBudgetView {
-    fn from(value: AiBudget) -> Self {
+impl From<fp_domain::AiBudgetWithState> for AiBudgetView {
+    fn from(value: fp_domain::AiBudgetWithState) -> Self {
         Self {
-            id: value.id.as_uuid(),
-            name: value.name,
-            spec: value.spec,
-            revision: value.version,
-            created_at: value.created_at,
-            updated_at: value.updated_at,
+            id: value.budget.id.as_uuid(),
+            name: value.budget.name,
+            spec: value.budget.spec,
+            state: value.state,
+            revision: value.budget.version,
+            created_at: value.budget.created_at,
+            updated_at: value.budget.updated_at,
         }
     }
 }
