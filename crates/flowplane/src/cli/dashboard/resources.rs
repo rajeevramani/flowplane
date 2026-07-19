@@ -35,6 +35,10 @@ pub(super) const COLLECTIONS: &[&str] = &[
     "secrets",
     // Needed for secret used-by resolution (`credential_secret_id`).
     "ai/providers",
+    // AI Gateway tab (ui-f5 S4): routes, budgets (state included in the list payload),
+    // all read-only paginated GETs.
+    "ai/routes",
+    "ai/budgets",
     // API lifecycle read model (ui-f4 S7): definitions plus their per-API sub-lists
     // (specs / events / route-bindings / tools), all read-only paginated GETs.
     "api-definitions",
@@ -865,6 +869,11 @@ mod tests {
                 "rate-limit-domains",
                 "secrets",
                 "ai/providers",
+                // ui-f5 S4 (reviewed addition): AI Gateway tab. Routes and budgets are
+                // read-only team-scoped LIST endpoints; budget state arrives inside the
+                // list payload — no secret-value or content route enters the table.
+                "ai/routes",
+                "ai/budgets",
                 // ui-f4 S7 (reviewed addition): API-lifecycle read model. Definitions
                 // plus per-API metadata sub-lists (specs / events / route-bindings /
                 // tools) — all read-only metadata; the spec CONTENT endpoint is

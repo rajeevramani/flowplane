@@ -1,0 +1,99 @@
+{% if let Some(p) = panel.data() %}
+<section class="panel" id="panel-ai-cards">
+  <h2>AI gateway <span class="hint">window {{ p.window_label }}</span></h2>
+  {% for n in p.notices %}
+  {% if n.budget() %}
+  <p class="banner">Partial — first {{ n.shown }} of {{ n.total }} {{ n.collection }} (budget reached).</p>
+  {% else %}
+  <p class="banner">Partial data: the {{ n.collection }} collection is incomplete.</p>
+  {% endif %}
+  {% endfor %}
+  {% for u in p.unparsed %}
+  <p class="banner">{{ u.1 }} {{ u.0 }} row(s) could not be parsed (version skew?).</p>
+  {% endfor %}
+  {% if p.hidden_provider_kinds > 0 %}
+  <p class="banner">{{ p.hidden_provider_kinds }} provider(s) hidden: unsupported kind.</p>
+  {% endif %}
+  {% if !p.near_limit.is_empty() %}
+  <div class="banner warn" id="ai-near-limit">
+    <strong>Budget near limit (≥ 80%):</strong>
+    {% for b in p.near_limit %}<span class="chip">{{ b }}</span>{% endfor %}
+  </div>
+  {% endif %}
+  <div class="cards" id="ai-cards">
+    <div class="card"><span class="value">{{ p.provider_count }}</span><span class="label">Providers</span></div>
+    <div class="card"><span class="value">{{ p.routes_active }}</span><span class="label">Routes active</span></div>
+    <div class="card"><span class="value">{{ p.routes_stale }}</span><span class="label">Routes stale</span></div>
+    <div class="card"><span class="value">{{ p.tokens_window }}</span><span class="label">Tokens (24h)</span></div>
+  </div>
+</section>
+
+<section class="panel" id="panel-ai-budgets">
+  <h2>Budgets <span class="hint">current window</span></h2>
+  <table class="dataplanes">
+    <thead>
+      <tr><th>Budget</th><th>Mode</th><th>Used / limit</th><th>Meter</th><th>Window</th><th>Window started</th></tr>
+    </thead>
+    <tbody>
+      {% for b in p.budgets %}
+      <tr>
+        <td>{{ b.name }}</td>
+        <td><span class="pill {{ b.mode }}">{{ b.mode }}</span></td>
+        <td>{{ b.used_units }} / {{ b.limit_units }}</td>
+        <td>
+          <div class="meter{% if b.warn %} warn{% endif %}" data-pct="{{ b.pct }}">
+            <div class="meter-fill" style="width: {{ b.pct }}%"></div>
+          </div>
+          <span class="hint">{{ b.pct }}%</span>
+        </td>
+        <td>{{ b.window }}</td>
+        <td>{{ b.window_started }}</td>
+      </tr>
+      {% endfor %}
+      {% if p.budgets.is_empty() %}
+      <tr><td colspan="6" class="placeholder">No AI budgets.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel" id="panel-ai-routes">
+  <h2>Routes <span class="hint">backend chains in priority order</span></h2>
+  <table class="dataplanes">
+    <thead><tr><th>Route</th><th>Status</th><th>Backends</th></tr></thead>
+    <tbody>
+      {% for r in p.routes %}
+      <tr><td>{{ r.name }}</td><td>{{ r.status }}</td><td>{{ r.chain }}</td></tr>
+      {% endfor %}
+      {% if p.routes.is_empty() %}
+      <tr><td colspan="3" class="placeholder">No AI routes.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel" id="panel-ai-providers">
+  <h2>Providers <span class="hint">openai / openai-compatible</span></h2>
+  <table class="dataplanes">
+    <thead><tr><th>Provider</th><th>Kind</th><th>Base URL</th><th>Models</th></tr></thead>
+    <tbody>
+      {% for pr in p.providers %}
+      <tr><td>{{ pr.name }}</td><td>{{ pr.kind }}</td><td>{{ pr.base_url }}</td><td>{{ pr.models }}</td></tr>
+      {% endfor %}
+      {% if p.providers.is_empty() %}
+      <tr><td colspan="4" class="placeholder">No AI providers.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+{% else if panel.unauthorized() %}
+<section class="panel unauthorized" id="panel-ai-cards">
+  <h2>AI gateway</h2>
+  <p>Not authorized to view AI gateway resources.</p>
+</section>
+{% else %}
+<section class="panel unavailable" id="panel-ai-cards">
+  <h2>AI gateway</h2>
+  <p>AI gateway data is currently unavailable.</p>
+</section>
+{% endif %}

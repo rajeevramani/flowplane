@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Flowplane — {{ team }} — APIs</title>
+  <title>Flowplane — {{ team }} — AI gateway</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="/{{ nonce }}/assets/dashboard.css">
   <script src="/{{ nonce }}/assets/htmx.min.js" defer></script>
@@ -13,21 +13,20 @@
     <nav class="nav">
       <a href="/{{ nonce }}/">Overview</a>
       <a href="/{{ nonce }}/resources">Resources</a>
-      <span class="active">APIs</span>
+      <a href="/{{ nonce }}/apis">APIs</a>
       <a href="/{{ nonce }}/learning">Learning</a>
-      <a href="/{{ nonce }}/ai">AI</a>
+      <span class="active">AI</span>
     </nav>
     <span class="team">team: {{ team }}</span>
   </header>
   <main id="resources">
-    <details id="apis-list" open
-             hx-get="/{{ nonce }}/partials/apis/list"
-             hx-trigger="load once"
-             hx-target="#apis-list-body"
-             hx-swap="innerHTML">
-      <summary>API definitions</summary>
-      <div id="apis-list-body"><p class="placeholder">Loading…</p></div>
-    </details>
+    <div id="ai-overview"
+         hx-get="/{{ nonce }}/partials/ai/overview"
+         hx-trigger="load once"
+         hx-target="#ai-overview"
+         hx-swap="innerHTML">
+      <p class="placeholder">Loading…</p>
+    </div>
   </main>
 </body>
 </html>

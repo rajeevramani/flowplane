@@ -7,6 +7,7 @@
 //! CSP-self / no-referrer / frame-deny headers. The bearer token stays in process memory;
 //! nothing in this module writes it to a response or a log.
 
+mod ai;
 mod apis;
 mod data;
 mod filters_inventory;
@@ -66,7 +67,9 @@ pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/resources",
     "/apis",
     "/learning",
+    "/ai",
     "/partials/overview",
+    "/partials/ai/overview",
     "/partials/apis/list",
     "/partials/apis/detail",
     "/partials/learning/sessions",
@@ -310,6 +313,8 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
                 "/resources" => get(resources_page),
                 "/apis" => get(apis_page),
                 "/learning" => get(learning_page),
+                "/ai" => get(ai_page),
+                "/partials/ai/overview" => get(ai_overview_partial),
                 "/partials/apis/list" => get(apis_list_partial),
                 "/partials/apis/detail" => get(apis_detail_partial),
                 "/partials/learning/sessions" => get(learning_sessions_partial),
@@ -558,6 +563,39 @@ async fn apis_detail_partial(
     let result = apis::fetch_api_detail(&state.client, &state.team, &query.api, chrono::Utc::now())
         .await
         .map(|panel| ApiDetailPanel { panel });
+    render_resources_panel(result)
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/ai.html")]
+struct AiShell<'a> {
+    nonce: &'a str,
+    team: &'a str,
+}
+
+async fn ai_page(axum::extract::State(state): axum::extract::State<Arc<DashState>>) -> Response {
+    let shell = AiShell {
+        nonce: &state.nonce,
+        team: &state.team,
+    };
+    match askama::Template::render(&shell) {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/ai_overview.html")]
+struct AiOverviewPanel {
+    panel: data::Panel<ai::AiPanel>,
+}
+
+async fn ai_overview_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = ai::fetch_ai(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| AiOverviewPanel { panel });
     render_resources_panel(result)
 }
 

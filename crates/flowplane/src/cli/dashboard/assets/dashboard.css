@@ -80,3 +80,17 @@ body {
 .topology .chip .weight { font-weight: bold; }
 .topology .chip.hl { background: #ffef9e; outline: 2px solid #e6b800; }
 .snapshot { font-style: italic; }
+
+/* AI gateway tab (ui-f5) */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.75rem; margin-top: 0.5rem; }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.8rem; display: flex; flex-direction: column; }
+.card .value { font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+.card .label { color: var(--muted); font-size: 0.8rem; }
+.pill { padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.8rem; }
+.pill.enforcing { background: #dc262622; color: #dc2626; }
+.pill.shadow { background: #6b728022; color: var(--muted); }
+.meter { width: 120px; height: 8px; background: var(--line); border-radius: 999px; overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 0.4rem; }
+.meter-fill { height: 100%; background: var(--accent); }
+.meter.warn .meter-fill { background: #d97706; }
+.banner.warn { background: #dc262618; border-color: #dc262655; }
+.banner .chip { display: inline-block; border: 1px solid var(--line); border-radius: 4px; padding: 0 0.4rem; margin: 0 0.2rem; }
