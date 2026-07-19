@@ -1,0 +1,96 @@
+{% if let Some(d) = panel.data() %}
+<section class="panel api-detail">
+  <h3>{{ d.api }} <span class="pill">{{ d.pill }}</span></h3>
+  {% for n in d.notices %}
+  {% if n.budget() %}
+  <p class="banner">Partial — first {{ n.shown }} of {{ n.total }} {{ n.collection }} (budget reached).</p>
+  {% else %}
+  <p class="banner">Partial data: the {{ n.collection }} collection is incomplete.</p>
+  {% endif %}
+  {% endfor %}
+
+  {% if let Some(v) = d.latest_version %}
+  <h4>Review pipeline — v{{ v }} (event history, oldest first)</h4>
+  {% if let Some(events) = d.events %}
+  {% if events.is_empty() %}
+  <p class="placeholder">No review events for v{{ v }}.</p>
+  {% else %}
+  <ol class="pipeline">
+    {% for e in events %}
+    <li><span class="decision decision-{{ e.decision }}">{{ e.decision }}</span>
+        by {{ e.actor_type }}{% if !e.reason.is_empty() %} — “{{ e.reason }}”{% endif %}
+        <span class="hint">{{ e.created }}</span></li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+  {% else %}
+  <p class="banner">Review events are currently unavailable — the event history could not be fetched.</p>
+  {% endif %}
+  {% endif %}
+
+  <h4>Spec lineage</h4>
+  <table class="dataplanes">
+    <thead><tr><th>Version</th><th>Source</th><th>Hash</th><th>Latest decision</th><th>Published</th><th>Created</th></tr></thead>
+    <tbody>
+      {% for s in d.lineage %}
+      <tr>
+        <td>v{{ s.version }}</td>
+        <td>{{ s.source_kind }}</td>
+        <td><code>{{ s.hash_short }}</code></td>
+        <td>{{ s.decision }}</td>
+        <td>{% if s.published %}yes{% else %}—{% endif %}</td>
+        <td>{{ s.created }}</td>
+      </tr>
+      {% endfor %}
+      {% if d.lineage.is_empty() %}
+      <tr><td colspan="6" class="placeholder">No spec versions.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+
+  <h4>Envoy chain</h4>
+  {% if d.chain_names_unresolved %}
+  <p class="banner">Gateway resource names are currently unavailable — chain rows show raw IDs.</p>
+  {% endif %}
+  <table class="dataplanes">
+    <thead><tr><th>Binding</th><th>Route config</th><th>Scope</th><th>Listener</th></tr></thead>
+    <tbody>
+      {% for c in d.chain %}
+      <tr><td>{{ c.binding }}</td><td>{{ c.route_config }}</td><td>{{ c.scope }}</td><td>{{ c.listener }}</td></tr>
+      {% endfor %}
+      {% if d.chain.is_empty() %}
+      <tr><td colspan="4" class="placeholder">No route bindings.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+
+  <h4>Tools <span class="hint">including disabled</span></h4>
+  <table class="dataplanes">
+    <thead><tr><th>Tool</th><th>Operation</th><th>Method</th><th>Path</th><th>Enabled</th><th>Schemas</th></tr></thead>
+    <tbody>
+      {% for t in d.tools %}
+      <tr>
+        <td>{{ t.name }}</td>
+        <td>{{ t.operation_id }}</td>
+        <td>{{ t.method }}</td>
+        <td>{{ t.path }}</td>
+        <td>{% if t.enabled %}yes{% else %}<strong>disabled</strong>{% endif %}</td>
+        <td>
+          <details><summary>input / output</summary>
+            <pre>{{ t.input_schema }}</pre>
+            <pre>{{ t.output_schema }}</pre>
+          </details>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if d.tools.is_empty() %}
+      <tr><td colspan="6" class="placeholder">No generated tools.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+{% else if panel.unauthorized() %}
+<section class="panel unauthorized"><p>Not authorized to view this API.</p></section>
+{% else %}
+<section class="panel unavailable"><p>This API's details are currently unavailable.</p></section>
+{% endif %}

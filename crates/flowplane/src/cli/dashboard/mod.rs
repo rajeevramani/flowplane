@@ -7,6 +7,7 @@
 //! CSP-self / no-referrer / frame-deny headers. The bearer token stays in process memory;
 //! nothing in this module writes it to a response or a log.
 
+mod apis;
 mod data;
 mod filters_inventory;
 mod joins;
@@ -62,7 +63,10 @@ const RESOURCES_JS: &str = include_str!("assets/resources.js");
 pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/",
     "/resources",
+    "/apis",
     "/partials/overview",
+    "/partials/apis/list",
+    "/partials/apis/detail",
     "/partials/resources/topology",
     "/partials/resources/clusters",
     "/partials/resources/route-configs",
@@ -297,6 +301,9 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
             match *path {
                 "/" => get(overview),
                 "/resources" => get(resources_page),
+                "/apis" => get(apis_page),
+                "/partials/apis/list" => get(apis_list_partial),
+                "/partials/apis/detail" => get(apis_detail_partial),
                 "/partials/overview" => get(overview_partial),
                 "/partials/resources/topology" => get(resources_topology_partial),
                 "/partials/resources/clusters" => get(resources_clusters_partial),
@@ -473,6 +480,75 @@ async fn resources_page(
         Ok(html) => Html(html).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/apis.html")]
+struct ApisShell<'a> {
+    nonce: &'a str,
+    team: &'a str,
+}
+
+async fn apis_page(axum::extract::State(state): axum::extract::State<Arc<DashState>>) -> Response {
+    let shell = ApisShell {
+        nonce: &state.nonce,
+        team: &state.team,
+    };
+    match askama::Template::render(&shell) {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/apis_list.html")]
+struct ApisListPanel<'a> {
+    nonce: &'a str,
+    panel: data::Panel<resources::Table<apis::ApiRow>>,
+}
+
+async fn apis_list_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = apis::fetch_apis(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| ApisListPanel {
+            nonce: &state.nonce,
+            panel,
+        });
+    render_resources_panel(result)
+}
+
+#[derive(serde::Deserialize)]
+struct ApiDetailQuery {
+    api: String,
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/apis_detail.html")]
+struct ApiDetailPanel {
+    panel: data::Panel<apis::ApiDetail>,
+}
+
+async fn apis_detail_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+    query: Result<axum::extract::Query<ApiDetailQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    let query = match query {
+        Ok(axum::extract::Query(query)) if !query.api.is_empty() => query,
+        // No/malformed/empty ?api= — render the unavailable panel immediately (no
+        // upstream request) rather than a bare 404, so the route class behaves like
+        // every other nonced partial.
+        _ => {
+            return render_resources_panel::<ApiDetailPanel>(Ok(ApiDetailPanel {
+                panel: data::Panel::Unavailable,
+            }))
+        }
+    };
+    let result = apis::fetch_api_detail(&state.client, &state.team, &query.api, chrono::Utc::now())
+        .await
+        .map(|panel| ApiDetailPanel { panel });
+    render_resources_panel(result)
 }
 
 #[derive(askama::Template)]
