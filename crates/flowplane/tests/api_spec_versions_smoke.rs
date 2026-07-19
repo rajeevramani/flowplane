@@ -277,5 +277,34 @@ async fn spec_versions_list_smoke_over_real_cp() {
         .expect("json");
     assert_eq!(bindings["total"], 0, "API created without a route binding");
 
+    // ui-f4 S5 smoke: the definition list carries enrichment — no per-row /status needed.
+    let list: Value = http
+        .get(format!(
+            "{base_url}/api/v1/teams/{}/api-definitions",
+            team.name
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("list")
+        .error_for_status()
+        .expect("200")
+        .json()
+        .await
+        .expect("json");
+    let row = list["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|i| i["name"] == api_name.as_str())
+        .expect("created api in list");
+    assert_eq!(row["tool_count"], 1);
+    assert_eq!(row["route_binding_count"], 0);
+    assert_eq!(row["latest_version"], 1);
+    assert_eq!(
+        row["published_version"], 1,
+        "published earlier in this smoke"
+    );
+
     server.abort();
 }

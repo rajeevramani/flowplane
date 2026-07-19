@@ -168,6 +168,17 @@ pub struct SpecVersion {
     pub created_at: DateTime<Utc>,
 }
 
+/// Definition-list read model: one API row enriched with counts and version numbers so the
+/// list view needs no per-row `/status` call (measured aggregate; ui-f4 S5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApiDefinitionOverview {
+    pub api: ApiDefinition,
+    pub tool_count: i64,
+    pub route_binding_count: i64,
+    pub latest_version: Option<i64>,
+    pub published_version: Option<i64>,
+}
+
 /// Spec-version row without the `spec` JSONB body. List endpoints return this shape so a
 /// page of versions never inlines up to 512 KiB of content per row.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

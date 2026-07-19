@@ -1537,3 +1537,143 @@ async fn paged_tool_and_binding_lists_include_disabled_while_mcp_query_excludes_
     assert!(cross_bindings.is_empty());
     assert_eq!(cross_bindings_total, 0);
 }
+
+// -- ui-f4 S5: enriched definition-list aggregate — correctness + measurement --
+
+#[tokio::test]
+async fn enriched_definition_list_matches_per_api_facts() {
+    let Some(w) = world().await else { return };
+    let route = insert_route_config(&w.pool, w.team_a, &unique("rc")).await;
+    let mut tx = w.pool.begin().await.expect("tx");
+    let api =
+        api_lifecycle::create_api_definition(&mut tx, w.team_a, &unique("api"), &api_spec("A"))
+            .await
+            .expect("api");
+    api_lifecycle::create_route_binding(
+        &mut tx,
+        w.team_a,
+        api.id,
+        &unique("binding"),
+        &ApiRouteBindingSpec {
+            route_config_id: route,
+            listener_id: None,
+            virtual_host: None,
+            route: None,
+        },
+    )
+    .await
+    .expect("binding");
+    tx.commit().await.expect("commit");
+    let v1 = commit_spec_version(&w.pool, w.team_a, api.id, "v1").await;
+    let _v2 = commit_spec_version(&w.pool, w.team_a, api.id, "v2").await;
+    let mut tx = w.pool.begin().await.expect("tool tx");
+    api_lifecycle::create_api_tool(
+        &mut tx,
+        w.team_a,
+        api.id,
+        v1.id,
+        &format!("{}-t", api.name),
+        &ApiToolSpec {
+            operation_id: "op".into(),
+            method: HttpMethod::Get,
+            path: "/op".into(),
+            input_schema: serde_json::json!({}),
+            output_schema: serde_json::json!({}),
+            enabled: true,
+        },
+    )
+    .await
+    .expect("tool");
+    api_lifecycle::set_published_spec_version(&mut tx, w.team_a.id, api.id, v1.id)
+        .await
+        .expect("publish v1");
+    tx.commit().await.expect("commit tools");
+
+    let (rows, _total) = api_lifecycle::list_api_definitions_enriched(&w.pool, w.team_a.id, 500, 0)
+        .await
+        .expect("enriched");
+    let row = rows
+        .iter()
+        .find(|r| r.api.id == api.id)
+        .expect("created api present");
+    assert_eq!(row.tool_count, 1);
+    assert_eq!(row.route_binding_count, 1);
+    assert_eq!(row.latest_version, Some(2));
+    assert_eq!(
+        row.published_version,
+        Some(1),
+        "published stays v1 while latest is v2"
+    );
+
+    let (cross, cross_total) =
+        api_lifecycle::list_api_definitions_enriched(&w.pool, w.team_b.id, 500, 0)
+            .await
+            .expect("cross");
+    assert!(cross.iter().all(|r| r.api.id != api.id));
+    assert_eq!(
+        cross_total,
+        cross.len() as i64,
+        "total is team-scoped (uses only rows this test can see: none of team_a's)"
+    );
+}
+
+#[tokio::test]
+async fn enriched_definition_list_aggregate_meets_p95_budget_on_design_fixture() {
+    // Design measurement gate (10-design.md "All:" paragraph): one aggregate query must
+    // serve a 100-API/500-version fixture at p95 < 50 ms, else the dashboard lazy-loads.
+    let Some(w) = world().await else { return };
+    let mut tx = w.pool.begin().await.expect("tx");
+    let mut api_ids = Vec::new();
+    for i in 0..100 {
+        let api = api_lifecycle::create_api_definition(
+            &mut tx,
+            w.team_a,
+            &unique(&format!("bench-{i}")),
+            &api_spec("bench"),
+        )
+        .await
+        .expect("api");
+        api_ids.push(api.id);
+    }
+    tx.commit().await.expect("commit apis");
+    for (i, api_id) in api_ids.iter().enumerate() {
+        for v in 0..5 {
+            commit_spec_version(&w.pool, w.team_a, *api_id, &format!("bench-{i}-v{v}")).await;
+        }
+    }
+
+    let mut samples_ms: Vec<f64> = Vec::with_capacity(50);
+    for _ in 0..50 {
+        let start = std::time::Instant::now();
+        let (rows, total) =
+            api_lifecycle::list_api_definitions_enriched(&w.pool, w.team_a.id, 100, 0)
+                .await
+                .expect("enriched");
+        samples_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+        assert!(rows.len() >= 100);
+        assert!(total >= 100);
+    }
+    samples_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let p95 = samples_ms[(samples_ms.len() as f64 * 0.95) as usize - 1];
+    let p50 = samples_ms[samples_ms.len() / 2];
+    eprintln!("enriched-list measurement: p50={p50:.2}ms p95={p95:.2}ms (100 APIs, 500 versions)");
+    assert!(
+        p95 < 50.0,
+        "design gate: aggregate must serve the fixture at p95 < 50ms, got {p95:.2}ms"
+    );
+
+    // Design evidence contract is "EXPLAIN + timing test": run EXPLAIN ANALYZE over the
+    // exact production SQL on the same fixture and record the plan in the test output.
+    let plan = api_lifecycle::explain_list_api_definitions_enriched(&w.pool, w.team_a.id, 100, 0)
+        .await
+        .expect("explain");
+    assert!(!plan.is_empty(), "EXPLAIN produced a plan");
+    assert!(
+        plan.iter().any(|line| line.contains("Execution Time")),
+        "EXPLAIN ANALYZE ran to completion (has Execution Time)"
+    );
+    eprintln!("enriched-list EXPLAIN ANALYZE plan:");
+    for line in &plan {
+        eprintln!("  {line}");
+    }
+}

@@ -259,6 +259,20 @@ pub async fn list_apis(
     api_lifecycle::list_api_definitions(pool, team.id, limit, offset).await
 }
 
+/// Enriched definition list (counts + latest/published version numbers) via the single
+/// measured aggregate query — the list view needs no per-row `/status` call.
+pub async fn list_apis_overview(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    limit: i64,
+    offset: i64,
+    request_id: RequestId,
+) -> DomainResult<(Vec<fp_domain::api_lifecycle::ApiDefinitionOverview>, i64)> {
+    authorize(pool, ctx, Action::Read, team, request_id).await?;
+    api_lifecycle::list_api_definitions_enriched(pool, team.id, limit, offset).await
+}
+
 #[derive(Debug, Clone)]
 pub struct SpecVersionListItem {
     pub meta: SpecVersionMeta,

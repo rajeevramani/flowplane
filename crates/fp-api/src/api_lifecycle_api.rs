@@ -42,6 +42,46 @@ impl From<ApiDefinition> for ApiDefinitionView {
     }
 }
 
+/// One row of the definition list: the API plus enrichment (counts + latest/published
+/// version numbers) served by a single aggregate query — no per-row `/status` call.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApiDefinitionListItemView {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub display_name: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published_spec_version_id: Option<uuid::Uuid>,
+    pub revision: i64,
+    pub tool_count: i64,
+    pub route_binding_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published_version: Option<i64>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<fp_domain::api_lifecycle::ApiDefinitionOverview> for ApiDefinitionListItemView {
+    fn from(value: fp_domain::api_lifecycle::ApiDefinitionOverview) -> Self {
+        Self {
+            id: value.api.id.as_uuid(),
+            name: value.api.name,
+            display_name: value.api.display_name,
+            description: value.api.description,
+            published_spec_version_id: value.api.published_spec_version_id.map(|id| id.as_uuid()),
+            revision: value.api.version,
+            tool_count: value.tool_count,
+            route_binding_count: value.route_binding_count,
+            latest_version: value.latest_version,
+            published_version: value.published_version,
+            created_at: value.api.created_at,
+            updated_at: value.api.updated_at,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApiStatusView {
     pub api: ApiDefinitionView,
@@ -293,7 +333,7 @@ impl CreateApiBody {
     tag = "ApiDefinitions",
     params(("team" = String, Path, description = "Team name or UUID"), ListQuery),
     responses(
-        (status = 200, body = Page<ApiDefinitionView>),
+        (status = 200, body = Page<ApiDefinitionListItemView>),
         (status = 401, body = crate::error::ErrorBody),
         (status = 404, body = crate::error::ErrorBody),
     ))]
@@ -303,14 +343,17 @@ pub async fn list_apis(
     Query(query): Query<ListQuery>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-) -> Result<Json<Page<ApiDefinitionView>>, ApiError> {
+) -> Result<Json<Page<ApiDefinitionListItemView>>, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
-        svc::list_apis(&state.pool, &ctx, team, query.limit, query.offset, rid).await
+        svc::list_apis_overview(&state.pool, &ctx, team, query.limit, query.offset, rid).await
     };
     let (items, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
     Ok(Json(Page {
-        items: items.into_iter().map(ApiDefinitionView::from).collect(),
+        items: items
+            .into_iter()
+            .map(ApiDefinitionListItemView::from)
+            .collect(),
         total,
         limit: query.limit.clamp(1, 500),
         offset: query.offset.max(0),

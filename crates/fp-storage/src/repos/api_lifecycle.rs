@@ -594,6 +594,75 @@ pub async fn list_api_definitions(
     Ok((rows.iter().map(api_from_row).collect(), total))
 }
 
+const API_ENRICHED_SQL: &str = "SELECT a.id, a.team_id, a.name, a.display_name, a.description, \
+            a.published_spec_version_id, a.version, a.created_at, a.updated_at, \
+            coalesce(tc.n, 0) AS tool_count, \
+            coalesce(bc.n, 0) AS route_binding_count, \
+            lv.version AS latest_version, \
+            pv.version AS published_version \
+     FROM api_definitions a \
+     LEFT JOIN (SELECT api_definition_id, count(*) AS n FROM api_tools \
+                WHERE team_id = $1 GROUP BY api_definition_id) tc \
+            ON tc.api_definition_id = a.id \
+     LEFT JOIN (SELECT api_definition_id, count(*) AS n FROM api_route_bindings \
+                WHERE team_id = $1 GROUP BY api_definition_id) bc \
+            ON bc.api_definition_id = a.id \
+     LEFT JOIN LATERAL (SELECT version FROM spec_versions v \
+                WHERE v.team_id = a.team_id AND v.api_definition_id = a.id \
+                ORDER BY version DESC LIMIT 1) lv ON true \
+     LEFT JOIN spec_versions pv ON pv.id = a.published_spec_version_id \
+     WHERE a.team_id = $1 ORDER BY a.name LIMIT $2 OFFSET $3";
+
+/// Paginated definition list enriched with tool/binding counts and latest/published version
+/// numbers in ONE aggregate query (ui-f4 S5 measured decision — see the feature's
+/// implement log for the EXPLAIN + p95 evidence). Group-by subqueries are team-scoped;
+/// the published version resolves through `published_spec_version_id`.
+pub async fn list_api_definitions_enriched(
+    pool: &PgPool,
+    team_id: TeamId,
+    limit: i64,
+    offset: i64,
+) -> DomainResult<(Vec<fp_domain::api_lifecycle::ApiDefinitionOverview>, i64)> {
+    let rows = sqlx::query(API_ENRICHED_SQL)
+        .bind(team_id.as_uuid())
+        .bind(limit.clamp(1, 500))
+        .bind(offset.max(0))
+        .fetch_all(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("list apis enriched: {e}")))?;
+    let total = count_api_definitions_for_team(pool, team_id).await?;
+    Ok((
+        rows.iter()
+            .map(|row| fp_domain::api_lifecycle::ApiDefinitionOverview {
+                api: api_from_row(row),
+                tool_count: row.get("tool_count"),
+                route_binding_count: row.get("route_binding_count"),
+                latest_version: row.get("latest_version"),
+                published_version: row.get("published_version"),
+            })
+            .collect(),
+        total,
+    ))
+}
+
+/// `EXPLAIN (ANALYZE)` of the enriched-list aggregate, over the exact same SQL the
+/// production path executes. Diagnostic read-only helper backing the design's
+/// "EXPLAIN + timing test" measurement gate (ui-f4 S5).
+pub async fn explain_list_api_definitions_enriched(
+    pool: &PgPool,
+    team_id: TeamId,
+    limit: i64,
+    offset: i64,
+) -> DomainResult<Vec<String>> {
+    sqlx::query_scalar(&format!("EXPLAIN (ANALYZE, SUMMARY) {API_ENRICHED_SQL}"))
+        .bind(team_id.as_uuid())
+        .bind(limit.clamp(1, 500))
+        .bind(offset.max(0))
+        .fetch_all(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("explain apis enriched: {e}")))
+}
+
 pub async fn count_api_definitions_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64> {
     sqlx::query_scalar("SELECT count(*) FROM api_definitions WHERE team_id = $1")
         .bind(team_id.as_uuid())
