@@ -282,6 +282,78 @@ pub async fn connections(
     run.await.map(Json).map_err(|e| ApiError::new(e, rid))
 }
 
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct McpToolCatalogRowView {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
+    pub resource: String,
+    pub action: String,
+    pub risk: String,
+    /// "static" (cp_*/ops_* registry declaration) or "dynamic" (generated api_* tool).
+    pub kind: String,
+    pub enabled: bool,
+    /// Authorization AND every serving gate execution enforces for this caller on the path
+    /// team; a disabled dynamic tool is never executable regardless of grants.
+    pub executable_by_caller: bool,
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+pub struct ToolCatalogQuery {
+    /// Include disabled dynamic tools. Requires `mcp-tools:update` (the pair gating tool
+    /// enable/disable); fails closed with 403 without it — never a silent downgrade.
+    #[serde(default)]
+    pub include_disabled: bool,
+}
+
+/// The team's declared MCP tool catalog: every static registry entry plus dynamic `api_*`
+/// tools of currently published spec versions, each annotated with per-caller
+/// executability. A catalog row is a declaration, not MCP exposure.
+#[utoipa::path(get, path = "/api/v1/teams/{team}/mcp/tools",
+    tag = "McpTools",
+    params(("team" = String, Path, description = "Team name or UUID"), ToolCatalogQuery),
+    responses(
+        (status = 200, body = [McpToolCatalogRowView]),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    ))]
+pub async fn tool_catalog(
+    State(state): State<AppState>,
+    Path(team): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ToolCatalogQuery>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<Vec<McpToolCatalogRowView>>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        let rows = fp_core::services::mcp::tool_catalog(
+            &state.pool,
+            &ctx,
+            team,
+            query.include_disabled,
+            rid,
+        )
+        .await?;
+        Ok::<_, DomainError>(
+            rows.into_iter()
+                .map(|row| McpToolCatalogRowView {
+                    name: row.name,
+                    description: row.description,
+                    input_schema: row.input_schema,
+                    resource: row.resource.to_string(),
+                    action: row.action.to_string(),
+                    risk: row.risk.to_string(),
+                    kind: row.kind.as_str().to_string(),
+                    enabled: row.enabled,
+                    executable_by_caller: row.executable_by_caller,
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+    run.await.map(Json).map_err(|e| ApiError::new(e, rid))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolExecutor {
     ClusterList,
@@ -1380,13 +1452,16 @@ fn visible_sessions(ctx: &PrincipalCtx, team: TeamRef) -> Vec<McpConnectionView>
 
 fn dynamic_tool_view(tool: ApiTool) -> Value {
     json!({
-        "name": format!("api_{}", tool.name),
-        "description": format!("{} {}", tool.method.as_str(), tool.path),
-        "inputSchema": dynamic_input_schema(&tool.input_schema),
+        "name": fp_core::mcp_declarations::dynamic_tool_name(&tool.name),
+        "description": fp_core::mcp_declarations::dynamic_tool_description(
+            tool.method.as_str(),
+            &tool.path,
+        ),
+        "inputSchema": fp_core::mcp_declarations::dynamic_input_schema(&tool.input_schema),
         "annotations": {
             "resource": Resource::McpTools.as_str(),
             "action": Action::Execute.as_str(),
-            "risk": "mutate",
+            "risk": fp_core::mcp_declarations::DYNAMIC_TOOL_RISK,
             "apiToolId": tool.id.as_uuid(),
             "apiDefinitionId": tool.api_definition_id.as_uuid(),
             "specVersionId": tool.spec_version_id.as_uuid(),
@@ -1395,39 +1470,6 @@ fn dynamic_tool_view(tool: ApiTool) -> Value {
             "path": tool.path,
         }
     })
-}
-
-fn dynamic_input_schema(schema: &Value) -> Value {
-    let mut schema = schema.as_object().cloned().unwrap_or_default();
-    schema.insert("type".into(), json!("object"));
-    let mut properties = schema
-        .remove("properties")
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default();
-    properties.insert(
-        "team".into(),
-        json!({ "type": "string", "description": "Team name or UUID" }),
-    );
-    properties
-        .entry("pathParams")
-        .or_insert_with(|| json!({ "type": "object" }));
-    properties
-        .entry("query")
-        .or_insert_with(|| json!({ "type": "object" }));
-    properties
-        .entry("headers")
-        .or_insert_with(|| json!({ "type": "object" }));
-    properties.entry("body").or_insert_with(|| json!({}));
-    schema.insert("properties".into(), Value::Object(properties));
-    let mut required = schema
-        .remove("required")
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default();
-    if !required.iter().any(|v| v.as_str() == Some("team")) {
-        required.push(json!("team"));
-    }
-    schema.insert("required".into(), Value::Array(required));
-    Value::Object(schema)
 }
 
 fn dynamic_tool_descriptor(
@@ -2457,7 +2499,7 @@ mod tests {
 
     #[test]
     fn dynamic_input_schema_keeps_spec_required_fields() {
-        let schema = dynamic_input_schema(&json!({
+        let schema = fp_core::mcp_declarations::dynamic_input_schema(&json!({
             "properties": { "pathParams": { "type": "object" } },
             "required": ["pathParams"]
         }));

@@ -323,6 +323,56 @@ pub const STATIC_TOOL_DECLS: &[StaticToolDecl] = &[
     },
 ];
 
+/// Wire name of a dynamic (generated) tool: the `api_` prefix distinguishes generated
+/// `api_tools` rows from static `cp_*`/`ops_*` declarations in every listing surface.
+pub fn dynamic_tool_name(tool_name: &str) -> String {
+    format!("api_{tool_name}")
+}
+
+/// Wire description of a dynamic tool ("METHOD /path"), shared by MCP `tools/list` and the
+/// REST catalog so the two views cannot drift.
+pub fn dynamic_tool_description(method: &str, path: &str) -> String {
+    format!("{method} {path}")
+}
+
+/// Risk tier every dynamic tool advertises: execution proxies an arbitrary HTTP operation.
+pub const DYNAMIC_TOOL_RISK: &str = "mutate";
+
+/// Input schema a dynamic tool advertises: the stored per-operation schema augmented with
+/// the invocation envelope (`team` required; `pathParams`/`query`/`headers`/`body` present).
+pub fn dynamic_input_schema(schema: &Value) -> Value {
+    let mut schema = schema.as_object().cloned().unwrap_or_default();
+    schema.insert("type".into(), json!("object"));
+    let mut properties = schema
+        .remove("properties")
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    properties.insert(
+        "team".into(),
+        json!({ "type": "string", "description": "Team name or UUID" }),
+    );
+    properties
+        .entry("pathParams")
+        .or_insert_with(|| json!({ "type": "object" }));
+    properties
+        .entry("query")
+        .or_insert_with(|| json!({ "type": "object" }));
+    properties
+        .entry("headers")
+        .or_insert_with(|| json!({ "type": "object" }));
+    properties.entry("body").or_insert_with(|| json!({}));
+    schema.insert("properties".into(), Value::Object(properties));
+    let mut required = schema
+        .remove("required")
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    if !required.iter().any(|v| v.as_str() == Some("team")) {
+        required.push(json!("team"));
+    }
+    schema.insert("required".into(), Value::Array(required));
+    Value::Object(schema)
+}
+
 fn schema_team() -> Value {
     json!({
         "type": "object",

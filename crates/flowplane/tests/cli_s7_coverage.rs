@@ -128,6 +128,7 @@ const SHARED_LAYER_COVERED: &[&str] = &[
     // mcp
     "mcp status",
     "mcp connections",
+    "mcp tools",
     "mcp enable",
     "mcp disable",
     // ai providers

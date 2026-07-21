@@ -1695,6 +1695,18 @@ pub async fn run_mcp(global: GlobalOptions, command: McpCommand) -> Result<()> {
                 )
                 .await?;
         }
+        McpCommand::Tools {
+            team,
+            include_disabled,
+        } => {
+            let team = client.team(team)?;
+            let path = if include_disabled {
+                format!("/api/v1/teams/{team}/mcp/tools?include_disabled=true")
+            } else {
+                format!("/api/v1/teams/{team}/mcp/tools")
+            };
+            client.request(reqwest::Method::GET, &path, None).await?;
+        }
         McpCommand::Enable { api, team } => update_mcp_tool(client, team, api, true).await?,
         McpCommand::Disable { api, team } => update_mcp_tool(client, team, api, false).await?,
     };
@@ -2808,6 +2820,7 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/publish",
         "/api/v1/teams/{team}/mcp/status",
         "/api/v1/teams/{team}/mcp/connections",
+        "/api/v1/teams/{team}/mcp/tools",
         "/api/v1/teams/{team}/mcp/tools/{name}",
         "/api/v1/teams/{team}/ai/providers",
         "/api/v1/teams/{team}/ai/providers/{name}",
