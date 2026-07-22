@@ -360,7 +360,18 @@ pub async fn remove_grant(
         .begin()
         .await
         .map_err(crate::services::db_err("remove grant: begin"))?;
-    if !identity::delete_grant_in_tx(&mut tx, team.id, grant_id).await? {
+    // Since 0033 a grant id names a row in one of two tables. The API still takes a single
+    // opaque id (the wire contract is unchanged), so resolve across both.
+    //
+    // Both deletes ALWAYS run — deliberately not short-circuited with `||`. `user_grants.id`
+    // and `agent_grants.id` are independent primary keys, so the database permits the same
+    // UUID in both tables. Random generation makes that astronomically unlikely, but "unlikely"
+    // is not a revocation guarantee: short-circuiting would delete the user row, report success,
+    // and leave an agent grant with the same id still conferring authority. Revoking both is
+    // the only behavior that is correct by construction rather than by probability.
+    let user_removed = identity::delete_user_grant_in_tx(&mut tx, team.id, grant_id).await?;
+    let agent_removed = identity::delete_agent_grant_in_tx(&mut tx, team.id, grant_id).await?;
+    if !(user_removed || agent_removed) {
         return Err(DomainError::new(ErrorCode::NotFound, "grant not found"));
     }
     audit::record_in_tx(

@@ -259,7 +259,14 @@ const SOLE_CALLERS: &[(&str, &str)] = &[
         "crates/fp-core/src/services/orgs.rs",
     ),
     ("delete_team_tx", "crates/fp-core/src/services/teams.rs"),
-    ("delete_grant_in_tx", "crates/fp-core/src/services/teams.rs"),
+    (
+        "delete_user_grant_in_tx",
+        "crates/fp-core/src/services/teams.rs",
+    ),
+    (
+        "delete_agent_grant_in_tx",
+        "crates/fp-core/src/services/teams.rs",
+    ),
 ];
 
 #[test]
@@ -287,7 +294,12 @@ fn guarded_deletes_have_exactly_one_audited_caller_each() {
                 if is_definition_line(line, func) {
                     continue;
                 }
-                if line_references_ident(line, func) {
+                // Comment text is not a call path — a doc comment cross-referencing a sibling
+                // function (`see [\`delete_agent_grant_in_tx\`]`) must not read as a second
+                // caller. Only the code part of the line is considered. This narrows the
+                // false-alarm surface without weakening the guard: anything that can actually
+                // invoke the function is still code.
+                if line_references_ident(code_part(line), func) {
                     references.push(format!("{rel}:{}", idx + 1));
                 }
             }
@@ -346,6 +358,21 @@ fn line_references_ident(line: &str, ident: &str) -> bool {
 
 fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// The code portion of a line: everything before a `//` line comment, and nothing at all for a
+/// block-comment continuation (`* ...`). Deliberately simple — it only has to stop doc-comment
+/// prose from reading as a call, and anything it misclassifies as code merely raises a false
+/// alarm a human resolves.
+fn code_part(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") || trimmed.starts_with('*') {
+        return "";
+    }
+    match line.find("//") {
+        Some(i) => &line[..i],
+        None => line,
+    }
 }
 
 /// True if `line` is the `fn` declaration for `ident` — the one occurrence that is a
@@ -485,5 +512,20 @@ fn scanner_mechanics_behave_as_documented() {
     assert!(
         !is_definition_line("pub async fn delete_team(", "delete_team_tx"),
         "a different function whose name is a prefix must not be mistaken for the definition"
+    );
+
+    // Comment text is not a call path, but real code on the line still is.
+    assert_eq!(code_part("/// see [`delete_team_tx`] for the tx form"), "");
+    assert_eq!(code_part("    // delete_team_tx(&mut tx, id);"), "");
+    assert!(!line_references_ident(
+        code_part("/// see [`delete_team_tx`]"),
+        "delete_team_tx"
+    ));
+    assert!(
+        line_references_ident(
+            code_part("    delete_team_tx(&mut tx, id).await?; // revoke"),
+            "delete_team_tx"
+        ),
+        "a trailing comment must not hide the call before it"
     );
 }

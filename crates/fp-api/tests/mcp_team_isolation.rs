@@ -832,8 +832,8 @@ async fn grant_revocation_denies_next_call_on_same_session() {
     // holds its only clusters:read grant, so the row is unambiguous. (Direct row lookup
     // mirrors tests/agent_auth.rs; revocation itself goes through the product surface.)
     let grant_id: Uuid = sqlx::query_scalar(
-        "SELECT id FROM grants \
-         WHERE principal_type = 'agent' AND team_id = $1 \
+        "SELECT id FROM agent_grants \
+         WHERE team_id = $1 \
            AND resource = 'clusters' AND action = 'read'",
     )
     .bind(fx.team_a_id.as_uuid())

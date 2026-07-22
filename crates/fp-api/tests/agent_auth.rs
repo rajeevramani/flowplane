@@ -358,8 +358,8 @@ async fn mcp_session_reauth_removes_grants_on_next_request() {
     )
     .await;
     let grant_id: uuid::Uuid = sqlx::query(
-        "SELECT id FROM grants \
-         WHERE principal_type = 'agent' AND principal_id = $1 AND team_id = $2 \
+        "SELECT id FROM agent_grants \
+         WHERE agent_id = $1 AND team_id = $2 \
            AND resource = 'clusters' AND action = 'read'",
     )
     .bind(agent_id)
