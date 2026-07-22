@@ -25,7 +25,10 @@ pub struct LoadedPrincipal {
     /// The platform org id (from `instance_meta`), so callers can exclude it from tenant
     /// context resolution. `None` on an uninitialized instance.
     pub platform_org_id: Option<OrgId>,
-    pub grants: Vec<(Resource, Action, TeamId)>,
+    /// Grant rows as `(resource, action, team, ORG)`. The org is carried so the engine's
+    /// any-team check can be scoped to the active org: a multi-org user's grant in org B must
+    /// not satisfy a request made with org A active.
+    pub grants: Vec<(Resource, Action, TeamId, OrgId)>,
 }
 
 #[derive(Debug, Clone)]
@@ -33,7 +36,10 @@ pub struct LoadedAgentPrincipal {
     pub agent_id: AgentId,
     pub org_id: OrgId,
     pub kind: AgentKind,
-    pub grants: Vec<(Resource, Action, TeamId)>,
+    /// Same four-tuple as [`LoadedPrincipal::grants`]. An agent belongs to exactly one org, so
+    /// this set is single-org by construction — the org is carried anyway so both principal
+    /// kinds feed the engine the same shape.
+    pub grants: Vec<(Resource, Action, TeamId, OrgId)>,
 }
 
 pub fn hash_agent_token(token: &str) -> String {
@@ -119,8 +125,11 @@ pub async fn load_principal(pool: &PgPool, subject: &str) -> DomainResult<Option
         None => false,
     };
 
+    // One un-joined SELECT against one table, as before — `org_id` is already a column on the
+    // row, so carrying it costs one extra returned column and no extra round trip. This runs on
+    // every authenticated request.
     let grant_rows = sqlx::query(
-        "SELECT resource, action, team_id FROM user_grants \
+        "SELECT resource, action, team_id, org_id FROM user_grants \
          WHERE user_id = $1",
     )
     .bind(user_id.as_uuid())
@@ -135,7 +144,12 @@ pub async fn load_principal(pool: &PgPool, subject: &str) -> DomainResult<Option
         let resource = Resource::parse(&row.get::<String, _>("resource"));
         let action = Action::parse(&row.get::<String, _>("action"));
         match (resource, action) {
-            (Ok(r), Ok(a)) => grants.push((r, a, TeamId::from(row.get::<Uuid, _>("team_id")))),
+            (Ok(r), Ok(a)) => grants.push((
+                r,
+                a,
+                TeamId::from(row.get::<Uuid, _>("team_id")),
+                OrgId::from(row.get::<Uuid, _>("org_id")),
+            )),
             _ => tracing::warn!(user = %user_id, "skipping grant with unknown resource/action"),
         }
     }
@@ -177,7 +191,7 @@ pub async fn load_agent_principal_by_token_hash(
     let kind = AgentKind::parse(&agent_row.get::<String, _>("kind"))?;
 
     let grant_rows = sqlx::query(
-        "SELECT resource, action, team_id FROM agent_grants \
+        "SELECT resource, action, team_id, org_id FROM agent_grants \
          WHERE agent_id = $1",
     )
     .bind(agent_id.as_uuid())
@@ -190,7 +204,12 @@ pub async fn load_agent_principal_by_token_hash(
         let resource = Resource::parse(&row.get::<String, _>("resource"));
         let action = Action::parse(&row.get::<String, _>("action"));
         match (resource, action) {
-            (Ok(r), Ok(a)) => grants.push((r, a, TeamId::from(row.get::<Uuid, _>("team_id")))),
+            (Ok(r), Ok(a)) => grants.push((
+                r,
+                a,
+                TeamId::from(row.get::<Uuid, _>("team_id")),
+                OrgId::from(row.get::<Uuid, _>("org_id")),
+            )),
             _ => tracing::warn!(agent = %agent_id, "skipping grant with unknown resource/action"),
         }
     }
