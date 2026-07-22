@@ -651,20 +651,6 @@ pub async fn delete_team_tx(
     Ok(())
 }
 
-/// Standalone delete (own transaction). Kept for tests/fixtures; production goes through
-/// [`delete_team_tx`] so the event + audit share the transaction.
-pub async fn delete_team(pool: &PgPool, team_id: TeamId) -> DomainResult<()> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| DomainError::internal(format!("delete team: begin: {e}")))?;
-    delete_team_tx(&mut tx, team_id).await?;
-    tx.commit()
-        .await
-        .map_err(|e| DomainError::internal(format!("delete team: commit: {e}")))?;
-    Ok(())
-}
-
 pub async fn add_team_membership(
     pool: &PgPool,
     user_id: UserId,
@@ -783,18 +769,6 @@ pub async fn list_grants_for_team(
             )
         })
         .collect())
-}
-
-pub async fn delete_grant(pool: &PgPool, team_id: TeamId, grant_id: Uuid) -> DomainResult<bool> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| DomainError::internal(format!("delete grant: begin: {e}")))?;
-    let deleted = delete_grant_in_tx(&mut tx, team_id, grant_id).await?;
-    tx.commit()
-        .await
-        .map_err(|e| DomainError::internal(format!("delete grant: commit: {e}")))?;
-    Ok(deleted)
 }
 
 pub async fn delete_grant_in_tx(
@@ -1007,22 +981,6 @@ pub async fn list_org_members(
             )
         })
         .collect())
-}
-
-pub async fn remove_org_membership(
-    pool: &PgPool,
-    user_id: UserId,
-    org_id: OrgId,
-) -> DomainResult<bool> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| DomainError::internal(format!("remove org membership: begin: {e}")))?;
-    let deleted = remove_org_membership_in_tx(&mut tx, user_id, org_id).await?;
-    tx.commit()
-        .await
-        .map_err(|e| DomainError::internal(format!("remove org membership: commit: {e}")))?;
-    Ok(deleted)
 }
 
 pub async fn remove_org_membership_in_tx(
