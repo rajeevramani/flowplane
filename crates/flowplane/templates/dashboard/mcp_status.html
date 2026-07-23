@@ -1,0 +1,63 @@
+{% if let Some(p) = panel.data() %}
+<section class="panel" id="panel-mcp-status">
+  <h2>MCP server <span class="hint">node-local status</span></h2>
+  <div class="cards" id="mcp-cards">
+    <div class="card"><span class="value">{{ p.transport }}</span><span class="label">Transport</span></div>
+    <div class="card"><span class="value">{{ p.preferred_protocol_version }}</span><span class="label">Protocol</span></div>
+    <div class="card"><span class="value">{{ p.active_sessions }}</span><span class="label">Active sessions</span></div>
+    <div class="card"><span class="value">{{ p.static_tool_count }}</span><span class="label">CP tools</span></div>
+    <div class="card"><span class="value">{{ p.dynamic_enabled_tool_count }}</span><span class="label">API tools (enabled)</span></div>
+  </div>
+  <table class="dataplanes">
+    <thead><tr><th>Capability</th><th>State</th></tr></thead>
+    <tbody>
+      <tr><td>Supported protocols</td><td>{{ p.supported_protocol_versions }}</td></tr>
+      <tr><td>Session TTL</td><td>{{ p.session_ttl_seconds }}s</td></tr>
+      <tr><td>API invocation mode</td><td>{{ p.api_invocation_mode }}</td></tr>
+      <tr><td>SSE (GET stream)</td><td><span class="pill {% if p.sse_enabled %}enforcing{% else %}shadow{% endif %}">{% if p.sse_enabled %}enabled{% else %}disabled{% endif %}</span></td></tr>
+      <tr><td>Resources</td><td><span class="pill {% if p.resources_enabled %}enforcing{% else %}shadow{% endif %}">{% if p.resources_enabled %}enabled{% else %}disabled{% endif %}</span></td></tr>
+      <tr><td>Prompts</td><td><span class="pill {% if p.prompts_enabled %}enforcing{% else %}shadow{% endif %}">{% if p.prompts_enabled %}enabled{% else %}disabled{% endif %}</span></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="panel" id="panel-mcp-connections">
+  <h2>Connections <span class="hint">attributed to this control-plane node only</span></h2>
+  {% if let Some(conns) = p.connections.data() %}
+  <table class="dataplanes">
+    <thead>
+      <tr><th>Connection</th><th>Principal</th><th>Transport</th><th>SSE</th><th>Age</th><th>Idle</th></tr>
+    </thead>
+    <tbody>
+      {% for c in conns %}
+      <tr>
+        <td>{{ c.connection_id }}</td>
+        <td>{{ c.principal_kind }}</td>
+        <td>{{ c.transport }}</td>
+        <td>{% if c.sse %}yes{% else %}no{% endif %}</td>
+        <td>{{ c.age }}</td>
+        <td>{{ c.idle }}</td>
+      </tr>
+      {% endfor %}
+      {% if conns.is_empty() %}
+      <tr><td colspan="6" class="placeholder">No active connections on this node.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  {% else if p.connections.unauthorized() %}
+  <p class="placeholder">Not authorized to view connections.</p>
+  {% else %}
+  <p class="placeholder">Connection data is currently unavailable.</p>
+  {% endif %}
+</section>
+{% else if panel.unauthorized() %}
+<section class="panel unauthorized" id="panel-mcp-status">
+  <h2>MCP server</h2>
+  <p>Not authorized to view MCP resources.</p>
+</section>
+{% else %}
+<section class="panel unavailable" id="panel-mcp-status">
+  <h2>MCP server</h2>
+  <p>MCP status is currently unavailable.</p>
+</section>
+{% endif %}

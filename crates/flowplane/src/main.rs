@@ -650,7 +650,7 @@ mod tests {
             "apply",
         ];
 
-        // 78 EXEMPT leaves (space-joined paths) — no example required.
+        // 79 EXEMPT leaves (space-joined paths) — no example required.
         const EXEMPT: &[&str] = &[
             "ai budgets delete",
             "dashboard",
@@ -697,6 +697,7 @@ mod tests {
             "listener list",
             "mcp connections",
             "mcp status",
+            "mcp tools",
             "openapi",
             "ops trace",
             "ops xds nacks",

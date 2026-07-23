@@ -1,0 +1,61 @@
+{% if let Some(p) = panel.data() %}
+<section class="panel" id="panel-mcp-cp-tools">
+  <h2>CP tools <span class="hint">static cp_* / ops_* control-plane tools</span></h2>
+  {% if !p.include_disabled %}
+  <p class="banner">Showing enabled tools only — grant <code>mcp-tools:update</code> to see disabled generated tools.</p>
+  {% endif %}
+  <table class="dataplanes">
+    <thead>
+      <tr><th>Tool</th><th>Resource</th><th>Action</th><th>Risk</th><th>Executable</th></tr>
+    </thead>
+    <tbody>
+      {% for t in p.cp_tools %}
+      <tr>
+        <td><code>{{ t.name }}</code><br><span class="hint">{{ t.description }}</span></td>
+        <td>{{ t.resource }}</td>
+        <td>{{ t.action }}</td>
+        <td><span class="pill {{ t.risk }}">{{ t.risk }}</span></td>
+        <td>{% if t.executable_by_caller %}<span class="pill enforcing">yes</span>{% else %}<span class="pill shadow">no</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+      {% if p.cp_tools.is_empty() %}
+      <tr><td colspan="5" class="placeholder">No CP tools.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel" id="panel-mcp-api-tools">
+  <h2>API tools
+    <span class="hint">generated api_* tools for published specs{% if p.include_disabled %} · {{ p.disabled_count }} disabled{% endif %}</span>
+  </h2>
+  <table class="dataplanes">
+    <thead>
+      <tr><th>Tool</th><th>Enabled</th><th>Risk</th><th>Executable</th></tr>
+    </thead>
+    <tbody>
+      {% for t in p.api_tools %}
+      <tr{% if !t.enabled %} class="disabled"{% endif %}>
+        <td><code>{{ t.name }}</code><br><span class="hint">{{ t.description }}</span></td>
+        <td>{% if t.enabled %}<span class="pill enforcing">enabled</span>{% else %}<span class="pill shadow">disabled</span>{% endif %}</td>
+        <td><span class="pill {{ t.risk }}">{{ t.risk }}</span></td>
+        <td>{% if t.executable_by_caller %}<span class="pill enforcing">yes</span>{% else %}<span class="pill shadow">no</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+      {% if p.api_tools.is_empty() %}
+      <tr><td colspan="4" class="placeholder">No generated API tools for published specs.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</section>
+{% else if panel.unauthorized() %}
+<section class="panel unauthorized" id="panel-mcp-cp-tools">
+  <h2>Tool catalog</h2>
+  <p>Not authorized to view the MCP tool catalog.</p>
+</section>
+{% else %}
+<section class="panel unavailable" id="panel-mcp-cp-tools">
+  <h2>Tool catalog</h2>
+  <p>MCP tool catalog is currently unavailable.</p>
+</section>
+{% endif %}

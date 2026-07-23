@@ -13,6 +13,7 @@ mod data;
 mod filters_inventory;
 mod joins;
 mod learning;
+mod mcp;
 mod orphans;
 mod ratelimits;
 mod resources;
@@ -68,9 +69,12 @@ pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/apis",
     "/learning",
     "/ai",
+    "/mcp",
     "/partials/overview",
     "/partials/ai/overview",
     "/partials/ai/traces",
+    "/partials/mcp/status",
+    "/partials/mcp/tools",
     "/partials/apis/list",
     "/partials/apis/detail",
     "/partials/learning/sessions",
@@ -315,8 +319,11 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
                 "/apis" => get(apis_page),
                 "/learning" => get(learning_page),
                 "/ai" => get(ai_page),
+                "/mcp" => get(mcp_page),
                 "/partials/ai/overview" => get(ai_overview_partial),
                 "/partials/ai/traces" => get(ai_traces_partial),
+                "/partials/mcp/status" => get(mcp_status_partial),
+                "/partials/mcp/tools" => get(mcp_tools_partial),
                 "/partials/apis/list" => get(apis_list_partial),
                 "/partials/apis/detail" => get(apis_detail_partial),
                 "/partials/learning/sessions" => get(learning_sessions_partial),
@@ -629,6 +636,54 @@ async fn ai_traces_partial(
         nonce: &state.nonce,
         panel,
     });
+    render_resources_panel(result)
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/mcp.html")]
+struct McpShell<'a> {
+    nonce: &'a str,
+    team: &'a str,
+}
+
+async fn mcp_page(axum::extract::State(state): axum::extract::State<Arc<DashState>>) -> Response {
+    let shell = McpShell {
+        nonce: &state.nonce,
+        team: &state.team,
+    };
+    match askama::Template::render(&shell) {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/mcp_status.html")]
+struct McpStatusPanel {
+    panel: data::Panel<mcp::StatusPanel>,
+}
+
+async fn mcp_status_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = mcp::fetch_status(&state.client, &state.team, chrono::Utc::now())
+        .await
+        .map(|panel| McpStatusPanel { panel });
+    render_resources_panel(result)
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/mcp_tools.html")]
+struct McpToolsPanel {
+    panel: data::Panel<mcp::ToolsPanel>,
+}
+
+async fn mcp_tools_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = mcp::fetch_tools(&state.client, &state.team)
+        .await
+        .map(|panel| McpToolsPanel { panel });
     render_resources_panel(result)
 }
 

@@ -805,6 +805,15 @@ pub enum McpCommand {
         #[arg(long)]
         team: Option<String>,
     },
+    /// List the team's MCP tool catalog (static cp_*/ops_* tools plus generated api_* tools).
+    Tools {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Include disabled generated tools (requires the mcp-tools:update grant).
+        #[arg(long)]
+        include_disabled: bool,
+    },
     /// Expose an API as an MCP tool.
     #[command(after_help = "Example:\n  flowplane mcp enable --api catalog --team payments")]
     Enable {

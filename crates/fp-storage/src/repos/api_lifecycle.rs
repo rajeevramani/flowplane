@@ -1287,6 +1287,30 @@ pub async fn list_enabled_published_api_tools(
     rows.iter().map(tool_from_row).collect()
 }
 
+/// Team-wide catalog query: ALL api_tools rows (enabled and disabled alike) whose spec
+/// version is their API's currently published version — the same version scope as
+/// `list_enabled_published_api_tools`, differing only in the enabled predicate. Serves the
+/// REST tool catalog's `include_disabled` view; MCP serving keeps using the enabled-only
+/// query.
+pub async fn list_published_api_tools(
+    pool: &PgPool,
+    team_id: TeamId,
+) -> DomainResult<Vec<ApiTool>> {
+    let columns = TOOL_COLUMNS.replace(", ", ", t.");
+    let rows = sqlx::query(&format!(
+        "SELECT t.{columns} FROM api_tools t \
+         JOIN api_definitions a ON a.id = t.api_definition_id AND a.team_id = t.team_id \
+         WHERE t.team_id = $1 \
+           AND a.published_spec_version_id = t.spec_version_id \
+         ORDER BY t.name"
+    ))
+    .bind(team_id.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list published api tools (all): {e}")))?;
+    rows.iter().map(tool_from_row).collect()
+}
+
 pub async fn get_enabled_published_api_tool(
     pool: &PgPool,
     team_id: TeamId,

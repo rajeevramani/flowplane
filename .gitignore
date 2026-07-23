@@ -40,3 +40,6 @@ internal/review-issue-prompt.md
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Playwright MCP run artifacts (local UI E2E)
+.playwright-mcp/
