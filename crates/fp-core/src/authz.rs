@@ -18,27 +18,40 @@ use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::{AgentId, AgentKind, OrgId, OrgRole, TeamId, UserId};
 use std::collections::HashSet;
 
-/// The principal's grant rows, keyed exactly like the `grants` table.
+/// The principal's grant rows, keyed exactly like the `user_grants` / `agent_grants` tables.
+///
+/// The org is part of the key because a grant is only meaningful inside the org it was issued
+/// in. A user may belong to several orgs; a grant held in org B must not answer a question
+/// asked with org A active.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GrantSet {
-    grants: HashSet<(Resource, Action, TeamId)>,
+    grants: HashSet<(Resource, Action, TeamId, OrgId)>,
 }
 
 impl GrantSet {
-    pub fn new(grants: impl IntoIterator<Item = (Resource, Action, TeamId)>) -> Self {
+    pub fn new(grants: impl IntoIterator<Item = (Resource, Action, TeamId, OrgId)>) -> Self {
         Self {
             grants: grants.into_iter().collect(),
         }
     }
 
+    /// Exact team match. The team argument already carries its org at every call site
+    /// ([`TeamRef`]), and the cross-org check runs before this is consulted, so matching on
+    /// `(resource, action, team)` here is sufficient — a team id belongs to exactly one org.
     pub fn has(&self, resource: Resource, action: Action, team: TeamId) -> bool {
-        self.grants.contains(&(resource, action, team))
-    }
-
-    pub fn has_any_team(&self, resource: Resource, action: Action) -> bool {
         self.grants
             .iter()
-            .any(|(r, a, _)| *r == resource && *a == action)
+            .any(|(r, a, t, _)| *r == resource && *a == action && *t == team)
+    }
+
+    /// "Does this principal hold `(resource, action)` on ANY team **within `org`**?"
+    ///
+    /// The org parameter is the whole point: without it a grant in any org the caller belongs
+    /// to would satisfy a team-less request made under a different active org.
+    pub fn has_any_team_in_org(&self, resource: Resource, action: Action, org: OrgId) -> bool {
+        self.grants
+            .iter()
+            .any(|(r, a, _, o)| *r == resource && *a == action && *o == org)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -183,7 +196,10 @@ pub fn check_resource_access(
                             }
                         }
                         None => {
-                            if grants.has_any_team(resource, action) {
+                            // An agent belongs to exactly one org, so its grant set is
+                            // single-org by construction; scoping to `org_id` is a no-op today
+                            // and stays correct if that ever changes.
+                            if grants.has_any_team_in_org(resource, action, *org_id) {
                                 Decision::Allow(Reason::AnyTeamGrant)
                             } else {
                                 Decision::Deny(Reason::NoMatchingGrant)
@@ -210,7 +226,7 @@ pub fn check_resource_access(
                         }
                     }
                     None => {
-                        if grants.has_any_team(resource, action) {
+                        if grants.has_any_team_in_org(resource, action, *org_id) {
                             Decision::Allow(Reason::AnyTeamGrant)
                         } else {
                             Decision::Deny(Reason::NoMatchingGrant)
@@ -268,19 +284,30 @@ pub fn check_resource_access(
             }
         }
         None => {
-            // Step 3a — any-team grant lets list endpoints through; rows are then filtered
-            // to the principal's teams by the storage layer (TeamScope).
-            if grants.has_any_team(resource, action) {
-                return Decision::Allow(Reason::AnyTeamGrant);
-            }
+            // Evaluation order here is deliberate and load-bearing (see the feature design's
+            // "an any-team decision requires a resolved active org").
+            //
+            // Step 3a — GOVERNANCE first, unchanged. Governance resources cannot carry team
+            // grants at all (the service refuses them), so consulting the grant set for them
+            // could only ever match a row written by direct SQL. Keeping this branch ahead of
+            // the any-team check also means governance gains no new active-org precondition,
+            // and the platform-admin arm already returned at step 1.
             if resource.is_governance() {
-                // Step 3b — governance reads for any org-scoped caller; writes never via
-                // org roles (only step 1).
                 return if action == Action::Read && principal_org.is_some() {
                     Decision::Allow(Reason::GovernanceRead)
                 } else {
                     Decision::Deny(Reason::GovernanceWriteRequiresPlatformAdmin)
                 };
+            }
+            // Step 3b — a TENANT resource with no team requires a RESOLVED ACTIVE ORG before
+            // any-team is consulted, and the grant must live in that org. Previously any grant
+            // in any org the caller belonged to satisfied this, so a grant held in org B
+            // answered a request made with org A active. With no active org at all (multi-org
+            // caller, no selector) this falls through to the deny arms below — fail closed.
+            if let Some((active_org, _)) = principal_org {
+                if grants.has_any_team_in_org(resource, action, active_org) {
+                    return Decision::Allow(Reason::AnyTeamGrant);
+                }
             }
             // Step 3c — tenant resource without a team: org admins only.
             match principal_org {
@@ -407,8 +434,12 @@ mod tests {
             id: TeamId::generate(),
             org_id: other_org,
         };
-        // Hostile setup: a grant row somehow names the foreign team.
-        let grants = GrantSet::new([(Resource::Clusters, Action::Read, foreign_team.id)]);
+        // Hostile setup: a grant row somehow names the foreign team. The row carries the
+        // foreign team's OWN org, which is the only org it could legally have — that is
+        // exactly the shape that must still be denied, since the caller's active org is
+        // `my_org` and cross-org is decided before grants are consulted at all.
+        let grants =
+            GrantSet::new([(Resource::Clusters, Action::Read, foreign_team.id, other_org)]);
         let ctx = user(false, Some((my_org, OrgRole::Owner)), grants);
         let decision =
             check_resource_access(&ctx, Resource::Clusters, Action::Read, Some(foreign_team));
@@ -455,7 +486,7 @@ mod tests {
         let ctx = agent(
             AgentKind::GatewayTool,
             org,
-            GrantSet::new([(Resource::McpTools, Action::Execute, team.id)]),
+            GrantSet::new([(Resource::McpTools, Action::Execute, team.id, org)]),
         );
         assert_eq!(
             check_resource_access(&ctx, Resource::McpTools, Action::Execute, Some(team)),
@@ -481,7 +512,7 @@ mod tests {
         let ctx = agent(
             AgentKind::ApiConsumer,
             org,
-            GrantSet::new([(Resource::McpTools, Action::Execute, team.id)]),
+            GrantSet::new([(Resource::McpTools, Action::Execute, team.id, org)]),
         );
         for resource in ALL_RESOURCES {
             for action in ALL_ACTIONS {
@@ -501,7 +532,7 @@ mod tests {
         let granted = agent(
             AgentKind::CpTool,
             org,
-            GrantSet::new([(Resource::Clusters, Action::Create, team.id)]),
+            GrantSet::new([(Resource::Clusters, Action::Create, team.id, org)]),
         );
         assert!(
             check_resource_access(&granted, Resource::Clusters, Action::Create, Some(team))
@@ -540,7 +571,7 @@ mod tests {
         let ctx = user(
             false,
             Some((org, OrgRole::Member)),
-            GrantSet::new([(Resource::Secrets, Action::Update, team.id)]),
+            GrantSet::new([(Resource::Secrets, Action::Update, team.id, org)]),
         );
         assert_eq!(
             check_resource_access(&ctx, Resource::Secrets, Action::Update, Some(team)),
@@ -560,7 +591,7 @@ mod tests {
         let ctx = user(
             false,
             Some((org, OrgRole::Member)),
-            GrantSet::new([(Resource::Clusters, Action::Read, team_id)]),
+            GrantSet::new([(Resource::Clusters, Action::Read, team_id, org)]),
         );
         assert_eq!(
             check_resource_access(&ctx, Resource::Clusters, Action::Read, None),
@@ -623,5 +654,106 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- The any-team decision is scoped to the ACTIVE org ----
+    //
+    // A grant is authority *inside the org that issued it*. Before the org joined the grant
+    // tuple, the `team: None` branch matched a grant from ANY org the caller belonged to, so a
+    // multi-org user's grant in org B answered a request made with org A active.
+
+    /// Acceptance criterion 5: same grant, same user, different active org → different verdict.
+    #[test]
+    fn any_team_grant_does_not_reach_outside_the_active_org() {
+        let org_a = OrgId::generate();
+        let org_b = OrgId::generate();
+        let team_in_b = TeamId::generate();
+
+        // The user belongs to both orgs but holds `agents:read` only on a team in B.
+        let grants = GrantSet::new([(Resource::Agents, Action::Read, team_in_b, org_b)]);
+
+        let acting_as_a = user(false, Some((org_a, OrgRole::Member)), grants.clone());
+        assert_eq!(
+            check_resource_access(&acting_as_a, Resource::Agents, Action::Read, None),
+            Decision::Deny(Reason::NoMatchingGrant),
+            "a grant held in org B must not authorize a team-less read taken with org A active"
+        );
+
+        let acting_as_b = user(false, Some((org_b, OrgRole::Member)), grants);
+        assert_eq!(
+            check_resource_access(&acting_as_b, Resource::Agents, Action::Read, None),
+            Decision::Allow(Reason::AnyTeamGrant),
+            "the same grant must still authorize the same read with org B active"
+        );
+    }
+
+    /// Acceptance criterion 6: no resolved active org → denied regardless of grants held.
+    /// This is the multi-org-caller-without-a-selector case (D-014), which must fail closed.
+    #[test]
+    fn no_resolved_active_org_denies_every_tenant_any_team_read() {
+        let org = OrgId::generate();
+        let team = TeamId::generate();
+
+        for (resource, action) in [
+            (Resource::Agents, Action::Read),
+            (Resource::Clusters, Action::Read),
+            (Resource::Secrets, Action::Update),
+            (Resource::McpTools, Action::Execute),
+        ] {
+            let ctx = PrincipalCtx::User {
+                user_id: UserId::generate(),
+                platform_admin: false,
+                // Multi-org caller sent no selector, so the middleware resolved no active org.
+                org: None,
+                org_selector_required: true,
+                grants: GrantSet::new([(resource, action, team, org)]),
+            };
+            assert_eq!(
+                check_resource_access(&ctx, resource, action, None),
+                Decision::Deny(Reason::NoMatchingGrant),
+                "holding {resource:?}/{action:?} must not authorize a team-less read when no \
+                 active org is resolved"
+            );
+        }
+    }
+
+    /// Governance keeps its existing behavior and gains NO active-org precondition from the
+    /// reorder — the branch runs before the any-team check, exactly as it did before.
+    #[test]
+    fn governance_reads_are_unaffected_by_the_active_org_scoping() {
+        let org = OrgId::generate();
+        let member = user(false, Some((org, OrgRole::Member)), GrantSet::default());
+        assert_eq!(
+            check_resource_access(&member, Resource::Users, Action::Read, None),
+            Decision::Allow(Reason::GovernanceRead),
+            "an org-scoped caller still reads governance resources without any grant"
+        );
+
+        // ...and a governance WRITE still requires platform admin, not an org role.
+        assert_eq!(
+            check_resource_access(&member, Resource::Users, Action::Create, None),
+            Decision::Deny(Reason::GovernanceWriteRequiresPlatformAdmin)
+        );
+    }
+
+    /// An agent's grant set is single-org by construction, so scoping the agent branch to its
+    /// own org changes nothing for a legitimate agent — pinned so the no-op stays a no-op.
+    #[test]
+    fn agent_any_team_decisions_are_unchanged_by_org_scoping() {
+        let org = OrgId::generate();
+        let team = TeamId::generate();
+        let ctx = agent(
+            AgentKind::CpTool,
+            org,
+            GrantSet::new([(Resource::Clusters, Action::Read, team, org)]),
+        );
+        assert_eq!(
+            check_resource_access(&ctx, Resource::Clusters, Action::Read, None),
+            Decision::Allow(Reason::AnyTeamGrant)
+        );
+        assert_eq!(
+            check_resource_access(&ctx, Resource::Secrets, Action::Read, None),
+            Decision::Deny(Reason::NoMatchingGrant)
+        );
     }
 }
