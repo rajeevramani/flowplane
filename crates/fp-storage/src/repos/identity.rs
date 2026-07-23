@@ -25,7 +25,10 @@ pub struct LoadedPrincipal {
     /// The platform org id (from `instance_meta`), so callers can exclude it from tenant
     /// context resolution. `None` on an uninitialized instance.
     pub platform_org_id: Option<OrgId>,
-    pub grants: Vec<(Resource, Action, TeamId)>,
+    /// Grant rows as `(resource, action, team, ORG)`. The org is carried so the engine's
+    /// any-team check can be scoped to the active org: a multi-org user's grant in org B must
+    /// not satisfy a request made with org A active.
+    pub grants: Vec<(Resource, Action, TeamId, OrgId)>,
 }
 
 #[derive(Debug, Clone)]
@@ -33,7 +36,10 @@ pub struct LoadedAgentPrincipal {
     pub agent_id: AgentId,
     pub org_id: OrgId,
     pub kind: AgentKind,
-    pub grants: Vec<(Resource, Action, TeamId)>,
+    /// Same four-tuple as [`LoadedPrincipal::grants`]. An agent belongs to exactly one org, so
+    /// this set is single-org by construction — the org is carried anyway so both principal
+    /// kinds feed the engine the same shape.
+    pub grants: Vec<(Resource, Action, TeamId, OrgId)>,
 }
 
 pub fn hash_agent_token(token: &str) -> String {
@@ -119,9 +125,12 @@ pub async fn load_principal(pool: &PgPool, subject: &str) -> DomainResult<Option
         None => false,
     };
 
+    // One un-joined SELECT against one table, as before — `org_id` is already a column on the
+    // row, so carrying it costs one extra returned column and no extra round trip. This runs on
+    // every authenticated request.
     let grant_rows = sqlx::query(
-        "SELECT resource, action, team_id FROM grants \
-         WHERE principal_type = 'user' AND principal_id = $1",
+        "SELECT resource, action, team_id, org_id FROM user_grants \
+         WHERE user_id = $1",
     )
     .bind(user_id.as_uuid())
     .fetch_all(pool)
@@ -135,7 +144,12 @@ pub async fn load_principal(pool: &PgPool, subject: &str) -> DomainResult<Option
         let resource = Resource::parse(&row.get::<String, _>("resource"));
         let action = Action::parse(&row.get::<String, _>("action"));
         match (resource, action) {
-            (Ok(r), Ok(a)) => grants.push((r, a, TeamId::from(row.get::<Uuid, _>("team_id")))),
+            (Ok(r), Ok(a)) => grants.push((
+                r,
+                a,
+                TeamId::from(row.get::<Uuid, _>("team_id")),
+                OrgId::from(row.get::<Uuid, _>("org_id")),
+            )),
             _ => tracing::warn!(user = %user_id, "skipping grant with unknown resource/action"),
         }
     }
@@ -177,8 +191,8 @@ pub async fn load_agent_principal_by_token_hash(
     let kind = AgentKind::parse(&agent_row.get::<String, _>("kind"))?;
 
     let grant_rows = sqlx::query(
-        "SELECT resource, action, team_id FROM grants \
-         WHERE principal_type = 'agent' AND principal_id = $1",
+        "SELECT resource, action, team_id, org_id FROM agent_grants \
+         WHERE agent_id = $1",
     )
     .bind(agent_id.as_uuid())
     .fetch_all(pool)
@@ -190,7 +204,12 @@ pub async fn load_agent_principal_by_token_hash(
         let resource = Resource::parse(&row.get::<String, _>("resource"));
         let action = Action::parse(&row.get::<String, _>("action"));
         match (resource, action) {
-            (Ok(r), Ok(a)) => grants.push((r, a, TeamId::from(row.get::<Uuid, _>("team_id")))),
+            (Ok(r), Ok(a)) => grants.push((
+                r,
+                a,
+                TeamId::from(row.get::<Uuid, _>("team_id")),
+                OrgId::from(row.get::<Uuid, _>("org_id")),
+            )),
             _ => tracing::warn!(agent = %agent_id, "skipping grant with unknown resource/action"),
         }
     }
@@ -520,9 +539,9 @@ pub async fn add_grant_in_tx(
     created_by: Option<UserId>,
 ) -> DomainResult<()> {
     sqlx::query(
-        "INSERT INTO grants (id, principal_type, principal_id, org_id, team_id, resource, action, created_by) \
-         VALUES (gen_random_uuid(), 'user', $1, $2, $3, $4, $5, $6) \
-         ON CONFLICT (principal_type, principal_id, team_id, resource, action) DO NOTHING",
+        "INSERT INTO user_grants (id, user_id, org_id, team_id, resource, action, created_by) \
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6) \
+         ON CONFLICT (user_id, team_id, resource, action) DO NOTHING",
     )
     .bind(principal_user.as_uuid())
     .bind(org_id.as_uuid())
@@ -532,15 +551,38 @@ pub async fn add_grant_in_tx(
     .bind(created_by.map(|u| u.as_uuid()))
     .execute(&mut **tx)
     .await
-    .map_err(|e| {
-        // The composite (team_id, org_id) FK rejects cross-org grants by construction.
-        if is_fk_violation(&e) {
-            DomainError::validation("grant references a team outside the given organization")
-        } else {
-            DomainError::internal(format!("add grant: {e}"))
-        }
-    })?;
+    .map_err(|e| map_grant_fk_violation(e, "add grant"))?;
     Ok(())
+}
+
+/// `user_grants` / `agent_grants` each carry TWO composite foreign keys, so a violation no
+/// longer implies the cross-org team case it used to. Blaming the team for a missing org
+/// membership would send the caller looking in the wrong place, so the constraint name picks
+/// the message and an unrecognised one stays deliberately neutral rather than guessing.
+fn map_grant_fk_violation(e: sqlx::Error, context: &str) -> DomainError {
+    if !is_fk_violation(&e) {
+        return DomainError::internal(format!("{context}: {e}"));
+    }
+    let constraint = match &e {
+        sqlx::Error::Database(db) => db.constraint().unwrap_or_default().to_string(),
+        _ => String::new(),
+    };
+    if constraint.contains("team_id") || constraint.contains("teams") {
+        DomainError::validation("grant references a team outside the given organization")
+    } else if constraint.contains("user_id") || constraint.contains("org_memberships") {
+        DomainError::validation(
+            "grant references a user who is not a member of the given organization",
+        )
+        .with_hint("add the user to this organization before granting team access")
+    } else if constraint.contains("agent_id") || constraint.contains("agents") {
+        DomainError::validation(
+            "grant references an agent that does not belong to the given organization",
+        )
+    } else {
+        DomainError::validation(
+            "grant references a principal or team that does not exist in the given organization",
+        )
+    }
 }
 
 pub async fn add_agent_grant_in_tx(
@@ -553,9 +595,9 @@ pub async fn add_agent_grant_in_tx(
     created_by: Option<UserId>,
 ) -> DomainResult<()> {
     sqlx::query(
-        "INSERT INTO grants (id, principal_type, principal_id, org_id, team_id, resource, action, created_by) \
-         VALUES (gen_random_uuid(), 'agent', $1, $2, $3, $4, $5, $6) \
-         ON CONFLICT (principal_type, principal_id, team_id, resource, action) DO NOTHING",
+        "INSERT INTO agent_grants (id, agent_id, org_id, team_id, resource, action, created_by) \
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6) \
+         ON CONFLICT (agent_id, team_id, resource, action) DO NOTHING",
     )
     .bind(principal_agent.as_uuid())
     .bind(org_id.as_uuid())
@@ -565,13 +607,7 @@ pub async fn add_agent_grant_in_tx(
     .bind(created_by.map(|u| u.as_uuid()))
     .execute(&mut **tx)
     .await
-    .map_err(|e| {
-        if is_fk_violation(&e) {
-            DomainError::validation("grant references a team outside the given organization")
-        } else {
-            DomainError::internal(format!("add agent grant: {e}"))
-        }
-    })?;
+    .map_err(|e| map_grant_fk_violation(e, "add agent grant"))?;
     Ok(())
 }
 
@@ -648,20 +684,6 @@ pub async fn delete_team_tx(
             "team not found",
         ));
     }
-    Ok(())
-}
-
-/// Standalone delete (own transaction). Kept for tests/fixtures; production goes through
-/// [`delete_team_tx`] so the event + audit share the transaction.
-pub async fn delete_team(pool: &PgPool, team_id: TeamId) -> DomainResult<()> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| DomainError::internal(format!("delete team: begin: {e}")))?;
-    delete_team_tx(&mut tx, team_id).await?;
-    tx.commit()
-        .await
-        .map_err(|e| DomainError::internal(format!("delete team: commit: {e}")))?;
     Ok(())
 }
 
@@ -765,8 +787,8 @@ pub async fn list_grants_for_team(
     team_id: TeamId,
 ) -> DomainResult<Vec<(Uuid, Uuid, String, String)>> {
     let rows = sqlx::query(
-        "SELECT id, principal_id, resource, action FROM grants \
-         WHERE team_id = $1 AND principal_type = 'user' ORDER BY resource, action",
+        "SELECT id, user_id AS principal_id, resource, action FROM user_grants \
+         WHERE team_id = $1 ORDER BY resource, action",
     )
     .bind(team_id.as_uuid())
     .fetch_all(pool)
@@ -785,29 +807,43 @@ pub async fn list_grants_for_team(
         .collect())
 }
 
-pub async fn delete_grant(pool: &PgPool, team_id: TeamId, grant_id: Uuid) -> DomainResult<bool> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| DomainError::internal(format!("delete grant: begin: {e}")))?;
-    let deleted = delete_grant_in_tx(&mut tx, team_id, grant_id).await?;
-    tx.commit()
-        .await
-        .map_err(|e| DomainError::internal(format!("delete grant: commit: {e}")))?;
-    Ok(deleted)
-}
-
-pub async fn delete_grant_in_tx(
+/// Delete a USER grant. Typed rather than generic because a bare grant id no longer identifies
+/// which relation it lives in: `user_grants` and `agent_grants` are separate id spaces since
+/// 0033. See [`delete_agent_grant_in_tx`] for the agent counterpart and
+/// `services::teams::remove_grant` for how a single API-level grant id resolves across both.
+pub async fn delete_user_grant_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     team_id: TeamId,
     grant_id: Uuid,
 ) -> DomainResult<bool> {
-    let deleted = sqlx::query("DELETE FROM grants WHERE id = $1 AND team_id = $2")
+    let deleted = sqlx::query("DELETE FROM user_grants WHERE id = $1 AND team_id = $2")
         .bind(grant_id)
         .bind(team_id.as_uuid())
         .execute(&mut **tx)
         .await
-        .map_err(|e| DomainError::internal(format!("delete grant: {e}")))?;
+        .map_err(|e| DomainError::internal(format!("delete user grant: {e}")))?;
+    Ok(deleted.rows_affected() > 0)
+}
+
+/// Delete an AGENT grant.
+///
+/// Exists because revoking an agent's grant was always reachable through
+/// `DELETE /teams/{team}/grants/{id}` — the pre-0033 `grants` table held both principal kinds,
+/// so deleting by id revoked either. Splitting the table would have silently removed that
+/// capability from a security surface, which a feature about making revocation *sound* must
+/// not do. This is not the deferred agent-grant *management* surface (no list, no create);
+/// it is the existing revoke path kept working across the split.
+pub async fn delete_agent_grant_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    grant_id: Uuid,
+) -> DomainResult<bool> {
+    let deleted = sqlx::query("DELETE FROM agent_grants WHERE id = $1 AND team_id = $2")
+        .bind(grant_id)
+        .bind(team_id.as_uuid())
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| DomainError::internal(format!("delete agent grant: {e}")))?;
     Ok(deleted.rows_affected() > 0)
 }
 
@@ -1007,22 +1043,6 @@ pub async fn list_org_members(
             )
         })
         .collect())
-}
-
-pub async fn remove_org_membership(
-    pool: &PgPool,
-    user_id: UserId,
-    org_id: OrgId,
-) -> DomainResult<bool> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| DomainError::internal(format!("remove org membership: begin: {e}")))?;
-    let deleted = remove_org_membership_in_tx(&mut tx, user_id, org_id).await?;
-    tx.commit()
-        .await
-        .map_err(|e| DomainError::internal(format!("remove org membership: commit: {e}")))?;
-    Ok(deleted)
 }
 
 pub async fn remove_org_membership_in_tx(

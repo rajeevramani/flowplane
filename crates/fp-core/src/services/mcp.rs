@@ -150,6 +150,7 @@ async fn authorize(
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::authz::GrantSet;
@@ -163,7 +164,7 @@ mod tests {
             platform_admin: false,
             org: Some((org_id, OrgRole::Member)),
             org_selector_required: false,
-            grants: GrantSet::new(grants),
+            grants: GrantSet::new(grants.into_iter().map(|(r, a, t)| (r, a, t, org_id))),
         }
     }
 

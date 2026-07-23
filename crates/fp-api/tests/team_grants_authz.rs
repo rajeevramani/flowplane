@@ -603,9 +603,12 @@ async fn gateway_agent_is_denied_even_with_rogue_grants_read_row() {
     .await;
     // The API refuses non-mcp-tools grants for gateway agents, so plant the rogue
     // grants:read row directly: kind must dominate even over a present grant row.
+    // Stays direct SQL after 0033 rather than moving to the service layer — the row is
+    // deliberately one the service will not create, so routing it through the service
+    // would destroy exactly what this test proves.
     sqlx::query(
-        "INSERT INTO grants (id, principal_type, principal_id, org_id, team_id, resource, action) \
-         VALUES (gen_random_uuid(), 'agent', $1, $2, $3, 'grants', 'read')",
+        "INSERT INTO agent_grants (id, agent_id, org_id, team_id, resource, action) \
+         VALUES (gen_random_uuid(), $1, $2, $3, 'grants', 'read')",
     )
     .bind(agent_id)
     .bind(fx.org_id.as_uuid())
@@ -633,9 +636,10 @@ async fn api_consumer_agent_is_denied_even_with_rogue_grants_read_row() {
     let (agent_id, token) = create_agent(&env, &admin_token, "api-consumer", vec![]).await;
     // Plant an exact grants:read row for the api-consumer directly: structural
     // (kind-based) denial must dominate even over a persisted matching grant.
+    // Direct SQL is intentional here for the same reason as above.
     sqlx::query(
-        "INSERT INTO grants (id, principal_type, principal_id, org_id, team_id, resource, action) \
-         VALUES (gen_random_uuid(), 'agent', $1, $2, $3, 'grants', 'read')",
+        "INSERT INTO agent_grants (id, agent_id, org_id, team_id, resource, action) \
+         VALUES (gen_random_uuid(), $1, $2, $3, 'grants', 'read')",
     )
     .bind(agent_id)
     .bind(fx.org_id.as_uuid())
