@@ -384,6 +384,71 @@ pub async fn get_agent(
     row.as_ref().map(agent_from_row).transpose()
 }
 
+/// Row-scoped agent list for the read surface. `team_scope`:
+/// * `None` — the caller reads every agent in the org (org admin).
+/// * `Some(teams)` — the caller reads only agents holding at least one `agent_grants` row on
+///   one of `teams` (a non-admin's visible set). An empty slice yields no agents.
+pub async fn list_agents_for_org_scoped(
+    pool: &PgPool,
+    org_id: OrgId,
+    team_scope: Option<&[TeamId]>,
+) -> DomainResult<Vec<Agent>> {
+    match team_scope {
+        None => list_agents_for_org(pool, org_id).await,
+        Some([]) => Ok(Vec::new()),
+        Some(teams) => {
+            let team_uuids: Vec<uuid::Uuid> = teams.iter().map(|t| t.as_uuid()).collect();
+            let rows = sqlx::query(
+                "SELECT DISTINCT a.id, a.org_id, a.name, a.kind, a.status, a.created_at, a.updated_at \
+                 FROM agents a \
+                 JOIN agent_grants g ON g.agent_id = a.id AND g.org_id = a.org_id \
+                 WHERE a.org_id = $1 AND g.team_id = ANY($2) \
+                 ORDER BY a.name",
+            )
+            .bind(org_id.as_uuid())
+            .bind(&team_uuids)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("list agents scoped: {e}")))?;
+            rows.iter().map(agent_from_row).collect()
+        }
+    }
+}
+
+/// Row-scoped single-agent fetch. `team_scope` follows [`list_agents_for_org_scoped`]:
+/// `None` = org admin; `Some(teams)` = visible only if the agent holds a grant on one of
+/// `teams`. Returns `None` when the agent is out of org or out of the caller's scope — the
+/// service renders that as `404`, so the two are indistinguishable (anti-enumeration).
+pub async fn get_agent_scoped(
+    pool: &PgPool,
+    org_id: OrgId,
+    agent_id: AgentId,
+    team_scope: Option<&[TeamId]>,
+) -> DomainResult<Option<Agent>> {
+    match team_scope {
+        None => get_agent(pool, org_id, agent_id).await,
+        Some([]) => Ok(None),
+        Some(teams) => {
+            let team_uuids: Vec<uuid::Uuid> = teams.iter().map(|t| t.as_uuid()).collect();
+            let row = sqlx::query(
+                "SELECT a.id, a.org_id, a.name, a.kind, a.status, a.created_at, a.updated_at \
+                 FROM agents a \
+                 WHERE a.org_id = $1 AND a.id = $2 \
+                 AND EXISTS (SELECT 1 FROM agent_grants g \
+                             WHERE g.agent_id = a.id AND g.org_id = a.org_id \
+                             AND g.team_id = ANY($3))",
+            )
+            .bind(org_id.as_uuid())
+            .bind(agent_id.as_uuid())
+            .bind(&team_uuids)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("get agent scoped: {e}")))?;
+            row.as_ref().map(agent_from_row).transpose()
+        }
+    }
+}
+
 pub async fn rotate_agent_token_tx(
     tx: &mut Transaction<'_, Postgres>,
     org_id: OrgId,

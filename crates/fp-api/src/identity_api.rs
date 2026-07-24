@@ -330,7 +330,7 @@ pub async fn list_agents(
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
 ) -> Result<Json<Vec<AgentView>>, ApiError> {
-    let agents = fp_core::services::agents::list_agents(&state.pool, &ctx)
+    let agents = fp_core::services::agents::list_agents(&state.pool, &ctx, rid)
         .await
         .map_err(|e| ApiError::new(e, rid))?;
     Ok(Json(agents.into_iter().map(agent_view).collect()))
@@ -372,7 +372,7 @@ pub async fn get_agent(
 ) -> Result<Json<AgentView>, ApiError> {
     let run = async {
         let agent_id = parse_agent_id(&agent_id)?;
-        fp_core::services::agents::get_agent(&state.pool, &ctx, agent_id).await
+        fp_core::services::agents::get_agent(&state.pool, &ctx, agent_id, rid).await
     };
     run.await
         .map(|agent| Json(agent_view(agent)))
