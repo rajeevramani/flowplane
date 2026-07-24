@@ -2,7 +2,7 @@
 
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
 use crate::services::{actor_of, deny_to_error, record_authz_denial};
-use fp_domain::authz::{Action, Resource};
+use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::{
     Agent, AgentId, AgentKind, DomainError, DomainResult, ErrorCode, OrgId, RequestId, TeamId,
     UserId,
@@ -265,13 +265,48 @@ async fn authorize_agent_read(
     Ok(scope)
 }
 
+/// Paged agent list, row-scoped and optionally filtered to one team. Returns `(page, total)`.
+///
+/// `team_filter` is a resolved [`TeamRef`] (the handler resolves `?team=` by name or UUID). The
+/// UUID resolver is **global** — it discloses no org and never runs the engine's cross-org branch
+/// because this endpoint authorizes at `team: None` — so the cross-org check is made explicit
+/// here: a filter team outside the caller's active org renders `404` (same as an unresolvable
+/// value), before any row query. `total` is the post-scope, post-filter authorized count.
 pub async fn list_agents(
     pool: &PgPool,
     ctx: &PrincipalCtx,
+    team_filter: Option<TeamRef>,
+    limit: i64,
+    offset: i64,
     request_id: RequestId,
-) -> DomainResult<Vec<Agent>> {
+) -> DomainResult<(Vec<Agent>, i64)> {
     let scope = authorize_agent_read(pool, ctx, request_id).await?;
-    identity::list_agents_for_org_scoped(pool, scope.org_id, scope.team_scope.as_deref()).await
+
+    let filter_team_id = match team_filter {
+        Some(team) => {
+            if team.org_id != scope.org_id {
+                return Err(DomainError::not_found("team", &team.id.to_string()));
+            }
+            Some(team.id)
+        }
+        None => None,
+    };
+
+    let (is_admin, caller_teams) = match scope.team_scope {
+        None => (true, Vec::new()),
+        Some(teams) => (false, teams),
+    };
+
+    identity::list_agents_paged(
+        pool,
+        scope.org_id,
+        is_admin,
+        &caller_teams,
+        filter_team_id,
+        limit,
+        offset,
+    )
+    .await
 }
 
 pub async fn get_agent(

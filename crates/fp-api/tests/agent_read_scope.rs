@@ -1,11 +1,26 @@
 //! Black-box read-scoping + authz contract tests for the agent READ endpoints
-//! (slice fpv2-5kn.1 — agent reads on the shared authz engine with row scoping).
+//! (slice fpv2-5kn.1 row scoping, updated for fpv2-5kn.2 / S2 list contract).
 //!
 //! Endpoints under test:
-//!   * `GET /api/v1/agents`            → bare JSON array of agent views (NOT paged).
+//!   * `GET /api/v1/agents`            → the uniform Page envelope
+//!     `{ items: [<agent views>], total, limit, offset }` (S2 breaking change from
+//!     the S1 bare array). `limit` defaults to 50, clamped 1..=500; `offset` floored
+//!     at 0 (a negative offset is treated as 0, not an error). `items` are ordered by
+//!     agent name ASC then id ASC, and `total` is the caller-authorized count AFTER
+//!     row-scoping and the optional `?team=` filter (not the page length). The
+//!     optional `?team=<name|uuid>` filter narrows the list to agents holding at least
+//!     one grant on that team; a `?team=` naming a team in ANOTHER org, or an
+//!     unresolvable value, is 404; a multi-org caller with no selector using a `?team=`
+//!     NAME is 400 `org_selector_required`.
 //!   * `GET /api/v1/agents/{agent_id}` → single agent view, or an error (404).
+//!     UNCHANGED by S2.
 //!
-//! Contract asserted purely from acceptance criteria (fpv2-5kn.1 AC4/AC5/AC6):
+//! Contract asserted purely from acceptance criteria (fpv2-5kn AC3/AC4/AC5/AC6):
+//!   * AC3 — the list returns the Page envelope: `items`/`total`/`limit`/`offset`
+//!     present, `total` is the authorized count, `items` ordered name-ASC, `limit`
+//!     caps and `offset` skips while `total` stays the full authorized count; the
+//!     `?team=` filter narrows by team name or UUID, cross-org / unresolvable team
+//!     values 404, and a multi-org `?team=<name>` with no selector is 400.
 //!   * AC4 — org admin reads EVERY agent in the active org (and any one by id); an
 //!     org admin who ALSO holds an explicit matching grant is not narrowed. A
 //!     non-admin holding `agents:read` on team-a lists ONLY agents holding at least
@@ -16,7 +31,8 @@
 //!     audited `no_matching_grant`; a multi-org caller with no org selector (even
 //!     holding `agents:read` grants) → 400 `org_selector_required` with NO
 //!     authz-denial audit row (org resolution precedes authorization).
-//!   * AC6 — no token/hash/credential field appears in any agent response body.
+//!   * AC6 — no token/hash/credential field appears in any agent response body
+//!     (scanned over the Page `items` for the list).
 //!
 //! Parallel-safe (constitution invariant 18): every org/team/user/agent is
 //! uuid-suffixed and unique per test; assertions are set-membership over rows each
@@ -220,11 +236,73 @@ async fn agent_granted_on(env: &Env, admin_token: &str, team_id: TeamId) -> Uuid
     .await
 }
 
-fn list_contains(body: &serde_json::Value, agent_id: Uuid) -> bool {
-    body.as_array()
-        .expect("agent list is a JSON array")
+/// A cp-tool agent with an explicit `name`, holding one `clusters:read` grant on
+/// `team_id`. Used to force a predictable name-ASC ordering.
+async fn agent_named_granted_on(env: &Env, admin_token: &str, name: &str, team_id: TeamId) -> Uuid {
+    let response = env
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            AGENTS_URI,
+            admin_token,
+            None,
+            Some(serde_json::json!({
+                "name": name,
+                "kind": "cp-tool",
+                "grants": [{
+                    "team_id": team_id.as_uuid(),
+                    "resource": "clusters",
+                    "action": "read"
+                }],
+            })),
+        ))
+        .await
+        .expect("create named agent");
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "create named agent must succeed"
+    );
+    let body = json_of(response).await;
+    Uuid::parse_str(body["agent"]["id"].as_str().expect("agent id")).expect("uuid")
+}
+
+/// The `items` array of a list Page envelope. Fails loudly if the body is a bare
+/// array (the pre-S2 shape) or otherwise lacks `items`.
+fn items(body: &serde_json::Value) -> &Vec<serde_json::Value> {
+    assert!(
+        !body.is_array(),
+        "list must be the Page envelope object, not a bare array (S2 breaking change): {body}"
+    );
+    body["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("list Page must carry an `items` array: {body}"))
+}
+
+/// Assert the list body is a well-formed Page envelope and return `(items, total)`.
+fn page(body: &serde_json::Value) -> (&Vec<serde_json::Value>, i64) {
+    let its = items(body);
+    for field in ["total", "limit", "offset"] {
+        assert!(
+            body[field].is_i64() || body[field].is_u64(),
+            "Page envelope must carry integer `{field}`: {body}"
+        );
+    }
+    (its, body["total"].as_i64().expect("total i64"))
+}
+
+/// The subset of `items` whose ids are in `ours`, in returned order.
+fn ordered_ids_among(body: &serde_json::Value, ours: &[Uuid]) -> Vec<Uuid> {
+    items(body)
         .iter()
-        .any(|a| a["id"] == agent_id.to_string())
+        .filter_map(|a| a["id"].as_str().and_then(|s| Uuid::parse_str(s).ok()))
+        .filter(|id| ours.contains(id))
+        .collect()
+}
+
+fn list_contains(body: &serde_json::Value, agent_id: Uuid) -> bool {
+    items(body).iter().any(|a| a["id"] == agent_id.to_string())
 }
 
 /// Assert an error body is the standard envelope object (never a leaked agent array),
@@ -274,7 +352,9 @@ async fn any_denials(pool: &PgPool, rid: Uuid) -> i64 {
 struct OrgFixture {
     org_id: OrgId,
     team_a_id: TeamId,
+    team_a_name: String,
     team_b_id: TeamId,
+    team_b_name: String,
     admin_token: String,
 }
 
@@ -283,17 +363,21 @@ async fn org_with_two_teams(env: &Env) -> OrgFixture {
     let org = identity::create_org(&env.pool, &unique("org"), "")
         .await
         .expect("org");
-    let team_a = identity::create_team(&env.pool, org.id, &unique("team-a"), "")
+    let team_a_name = unique("team-a");
+    let team_a = identity::create_team(&env.pool, org.id, &team_a_name, "")
         .await
         .expect("team a");
-    let team_b = identity::create_team(&env.pool, org.id, &unique("team-b"), "")
+    let team_b_name = unique("team-b");
+    let team_b = identity::create_team(&env.pool, org.id, &team_b_name, "")
         .await
         .expect("team b");
     let (_, admin_token) = user_with_org_role(env, org.id, OrgRole::Admin).await;
     OrgFixture {
         org_id: org.id,
         team_a_id: team_a.id,
+        team_a_name,
         team_b_id: team_b.id,
+        team_b_name,
         admin_token,
     }
 }
@@ -648,14 +732,294 @@ async fn agent_bodies_carry_no_credential_material() {
         }
     };
 
-    // List body (org admin — contains real agents).
+    // List body (org admin — contains real agents). Scan the Page `items` so the
+    // anti-leak assertion is over the agent views themselves.
     let (status, _, body) = get(&env, AGENTS_URI, &fx.admin_token, None).await;
     assert_eq!(status, StatusCode::OK, "list ok: {body}");
-    assert!(body.is_array(), "list is a bare array: {body}");
-    scan("agent list", &body);
+    let its = items(&body);
+    assert!(
+        its.iter().any(|a| a["id"] == agent_a.to_string()),
+        "admin list must contain the created agent to make the scan meaningful: {body}"
+    );
+    scan("agent list items", &serde_json::Value::Array(its.clone()));
 
     // Detail body.
     let (status, _, body) = get(&env, &agent_uri(agent_a), &fx.admin_token, None).await;
     assert_eq!(status, StatusCode::OK, "detail ok: {body}");
     scan("agent detail", &body);
+}
+
+// --- AC3 (S2): the list endpoint returns the uniform Page envelope --------------------
+
+/// The list URI with a raw query string appended.
+fn agents_query(query: &str) -> String {
+    format!("{AGENTS_URI}?{query}")
+}
+
+#[tokio::test]
+async fn list_returns_page_envelope_with_authorized_total() {
+    let Some(env) = env().await else { return };
+    let fx = org_with_two_teams(&env).await;
+    let agent_a = agent_granted_on(&env, &fx.admin_token, fx.team_a_id).await;
+    let agent_b = agent_granted_on(&env, &fx.admin_token, fx.team_b_id).await;
+
+    // A foreign org's agent must not be counted in this org's `total`.
+    let other = org_with_two_teams(&env).await;
+    let _foreign = agent_granted_on(&env, &other.admin_token, other.team_a_id).await;
+
+    let (status, _, body) = get(&env, AGENTS_URI, &fx.admin_token, None).await;
+    assert_eq!(status, StatusCode::OK, "list ok: {body}");
+
+    // Shape: an object with items/total/limit/offset (NOT a bare array).
+    let (its, total) = page(&body);
+    assert_eq!(
+        body["limit"].as_i64(),
+        Some(50),
+        "limit defaults to 50: {body}"
+    );
+    assert_eq!(
+        body["offset"].as_i64(),
+        Some(0),
+        "offset defaults to 0: {body}"
+    );
+
+    // The active org holds exactly the two agents this test created; `total` is the
+    // authorized count (the foreign-org agent is excluded), and with a fresh org it
+    // equals the page length here.
+    assert_eq!(
+        total, 2,
+        "total is the authorized count for this org: {body}"
+    );
+    assert_eq!(
+        its.len(),
+        2,
+        "both org agents fit on the default page: {body}"
+    );
+    assert!(
+        list_contains(&body, agent_a),
+        "team-a agent present: {body}"
+    );
+    assert!(
+        list_contains(&body, agent_b),
+        "team-b agent present: {body}"
+    );
+}
+
+#[tokio::test]
+async fn list_items_ordered_by_name_asc() {
+    let Some(env) = env().await else { return };
+    let fx = org_with_two_teams(&env).await;
+
+    // Three agents whose names sort a < b < c, created OUT of that order.
+    let prefix = unique("ord");
+    let name_a = format!("{prefix}-a");
+    let name_b = format!("{prefix}-b");
+    let name_c = format!("{prefix}-c");
+    let id_c = agent_named_granted_on(&env, &fx.admin_token, &name_c, fx.team_a_id).await;
+    let id_a = agent_named_granted_on(&env, &fx.admin_token, &name_a, fx.team_a_id).await;
+    let id_b = agent_named_granted_on(&env, &fx.admin_token, &name_b, fx.team_a_id).await;
+
+    let (status, _, body) = get(&env, AGENTS_URI, &fx.admin_token, None).await;
+    assert_eq!(status, StatusCode::OK, "list ok: {body}");
+
+    let ordered = ordered_ids_among(&body, &[id_a, id_b, id_c]);
+    assert_eq!(
+        ordered,
+        vec![id_a, id_b, id_c],
+        "items must come back sorted by agent name ASC (created c,a,b): {body}"
+    );
+}
+
+#[tokio::test]
+async fn team_filter_by_name_narrows_to_that_team() {
+    let Some(env) = env().await else { return };
+    let fx = org_with_two_teams(&env).await;
+    let agent_a = agent_granted_on(&env, &fx.admin_token, fx.team_a_id).await;
+    let agent_b = agent_granted_on(&env, &fx.admin_token, fx.team_b_id).await;
+
+    // ?team=<team-a name>: only the team-a agent.
+    let uri = agents_query(&format!("team={}", fx.team_a_name));
+    let (status, _, body) = get(&env, &uri, &fx.admin_token, None).await;
+    assert_eq!(status, StatusCode::OK, "team-a filter ok: {body}");
+    let (_, total) = page(&body);
+    assert_eq!(total, 1, "team-a filter narrows total to one agent: {body}");
+    assert!(
+        list_contains(&body, agent_a),
+        "team-a agent present: {body}"
+    );
+    assert!(
+        !list_contains(&body, agent_b),
+        "team-b agent must be filtered out by ?team=<team-a>: {body}"
+    );
+
+    // ?team=<team-b name>: only the team-b agent (exercises the other team name).
+    let uri = agents_query(&format!("team={}", fx.team_b_name));
+    let (status, _, body) = get(&env, &uri, &fx.admin_token, None).await;
+    assert_eq!(status, StatusCode::OK, "team-b filter ok: {body}");
+    let (_, total) = page(&body);
+    assert_eq!(total, 1, "team-b filter narrows total to one agent: {body}");
+    assert!(
+        list_contains(&body, agent_b),
+        "team-b agent present: {body}"
+    );
+    assert!(
+        !list_contains(&body, agent_a),
+        "team-a agent must be filtered out by ?team=<team-b>: {body}"
+    );
+}
+
+#[tokio::test]
+async fn team_filter_by_uuid_matches_by_name() {
+    let Some(env) = env().await else { return };
+    let fx = org_with_two_teams(&env).await;
+    let agent_a = agent_granted_on(&env, &fx.admin_token, fx.team_a_id).await;
+    let agent_b = agent_granted_on(&env, &fx.admin_token, fx.team_b_id).await;
+
+    // ?team=<team-a UUID> behaves exactly like ?team=<team-a name>.
+    let uri = agents_query(&format!("team={}", fx.team_a_id.as_uuid()));
+    let (status, _, body) = get(&env, &uri, &fx.admin_token, None).await;
+    assert_eq!(status, StatusCode::OK, "team uuid filter ok: {body}");
+    let (_, total) = page(&body);
+    assert_eq!(
+        total, 1,
+        "team uuid filter narrows total to one agent: {body}"
+    );
+    assert!(
+        list_contains(&body, agent_a),
+        "team-a agent present: {body}"
+    );
+    assert!(
+        !list_contains(&body, agent_b),
+        "team-b agent filtered out by ?team=<team-a uuid>: {body}"
+    );
+}
+
+#[tokio::test]
+async fn team_filter_cross_org_uuid_is_404() {
+    let Some(env) = env().await else { return };
+    let fx = org_with_two_teams(&env).await;
+    let _agent_a = agent_granted_on(&env, &fx.admin_token, fx.team_a_id).await;
+
+    // A real team that lives in a DIFFERENT org.
+    let other = org_with_two_teams(&env).await;
+
+    // org-1 admin filtering by org-2's team UUID: the resolver is global but the
+    // endpoint must reject cross-org with 404 (never leak org-2 rows).
+    let uri = agents_query(&format!("team={}", other.team_a_id.as_uuid()));
+    let (status, rid, body) = get(&env, &uri, &fx.admin_token, None).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "filtering by a team UUID in another org must be 404, got {status}: {body}"
+    );
+    assert_error_envelope(&body, "not_found", rid);
+}
+
+#[tokio::test]
+async fn team_filter_unresolvable_is_404() {
+    let Some(env) = env().await else { return };
+    let fx = org_with_two_teams(&env).await;
+    let _agent_a = agent_granted_on(&env, &fx.admin_token, fx.team_a_id).await;
+
+    // Unknown UUID → 404.
+    let uri = agents_query(&format!("team={}", Uuid::now_v7()));
+    let (status, rid, body) = get(&env, &uri, &fx.admin_token, None).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "an unknown team UUID must be 404, got {status}: {body}"
+    );
+    assert_error_envelope(&body, "not_found", rid);
+
+    // Bogus name → 404.
+    let uri = agents_query(&format!("team={}", unique("no-such-team")));
+    let (status, rid, body) = get(&env, &uri, &fx.admin_token, None).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "an unresolvable team name must be 404, got {status}: {body}"
+    );
+    assert_error_envelope(&body, "not_found", rid);
+}
+
+#[tokio::test]
+async fn multi_org_team_name_no_selector_is_400() {
+    let Some(env) = env().await else { return };
+    let fx = org_with_two_teams(&env).await;
+    let _agent_a = agent_granted_on(&env, &fx.admin_token, fx.team_a_id).await;
+    let org_b = org_with_two_teams(&env).await;
+
+    // Member of BOTH orgs holding agents:read on org_a/team_a. Resolving a ?team=
+    // NAME needs an active org, so with no selector it must be 400 org_selector_required.
+    let (user, token) = user_with_org_role(&env, fx.org_id, OrgRole::Member).await;
+    identity::add_org_membership(&env.pool, user, org_b.org_id, OrgRole::Member)
+        .await
+        .expect("second org membership");
+    identity::add_grant(
+        &env.pool,
+        user,
+        fx.org_id,
+        fx.team_a_id,
+        Resource::Agents,
+        Action::Read,
+        None,
+    )
+    .await
+    .expect("agents:read on org_a team A");
+
+    let uri = agents_query(&format!("team={}", fx.team_a_name));
+    let (status, rid, body) = get(&env, &uri, &token, None).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "multi-org ?team=<name> with no selector must be 400, got {status}: {body}"
+    );
+    assert_error_envelope(&body, "org_selector_required", rid);
+}
+
+#[tokio::test]
+async fn list_paging_limit_and_offset() {
+    let Some(env) = env().await else { return };
+    let fx = org_with_two_teams(&env).await;
+
+    // Three agents with a known name order a < b < c.
+    let prefix = unique("page");
+    let id_a =
+        agent_named_granted_on(&env, &fx.admin_token, &format!("{prefix}-a"), fx.team_a_id).await;
+    let id_b =
+        agent_named_granted_on(&env, &fx.admin_token, &format!("{prefix}-b"), fx.team_a_id).await;
+    let id_c =
+        agent_named_granted_on(&env, &fx.admin_token, &format!("{prefix}-c"), fx.team_a_id).await;
+
+    // Page 1: limit=2 caps items to 2; total is the full authorized count (3).
+    let (status, _, body) = get(&env, &agents_query("limit=2"), &fx.admin_token, None).await;
+    assert_eq!(status, StatusCode::OK, "page 1 ok: {body}");
+    let (its, total) = page(&body);
+    assert_eq!(body["limit"].as_i64(), Some(2), "limit echoed: {body}");
+    assert_eq!(its.len(), 2, "limit=2 caps items to 2: {body}");
+    assert_eq!(total, 3, "total stays the full authorized count: {body}");
+    assert_eq!(
+        ordered_ids_among(&body, &[id_a, id_b, id_c]),
+        vec![id_a, id_b],
+        "page 1 holds the first two by name ASC: {body}"
+    );
+
+    // Page 2: offset=2 skips the first two; total unchanged.
+    let (status, _, body) = get(
+        &env,
+        &agents_query("limit=2&offset=2"),
+        &fx.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "page 2 ok: {body}");
+    let (its, total) = page(&body);
+    assert_eq!(body["offset"].as_i64(), Some(2), "offset echoed: {body}");
+    assert_eq!(its.len(), 1, "one agent remains after offset=2: {body}");
+    assert_eq!(total, 3, "total is stable across pages: {body}");
+    assert_eq!(
+        ordered_ids_among(&body, &[id_a, id_b, id_c]),
+        vec![id_c],
+        "page 2 holds the last agent by name ASC: {body}"
+    );
 }
