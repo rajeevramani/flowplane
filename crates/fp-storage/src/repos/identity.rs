@@ -483,6 +483,75 @@ pub async fn get_agent_scoped(
     }
 }
 
+/// A single row of an agent's grant listing, joined to its team for the display name.
+#[derive(Debug, Clone)]
+pub struct AgentGrantRow {
+    pub id: Uuid,
+    pub team_id: Uuid,
+    pub team_name: String,
+    pub resource: String,
+    pub action: String,
+}
+
+/// Paged listing of one agent's grant rows (from `agent_grants`, joined to `teams` for the name),
+/// row-scoped and returning `(page, total)`. The caller is expected to have already confirmed the
+/// agent is in `org_id` (a cross-org agent renders `404` at the service before this runs).
+///
+/// `is_admin` true ⇒ every grant row of the agent; false ⇒ only rows on a team in `caller_teams`
+/// (the teams the caller holds `grants:read` on; an empty slice ⇒ no rows). `limit` clamped to
+/// `1..=500`; `offset` is bound as given (the service rejects a negative offset for this endpoint).
+pub async fn list_agent_grants_paged(
+    pool: &PgPool,
+    org_id: OrgId,
+    agent_id: AgentId,
+    is_admin: bool,
+    caller_teams: &[TeamId],
+    limit: i64,
+    offset: i64,
+) -> DomainResult<(Vec<AgentGrantRow>, i64)> {
+    let team_uuids: Vec<uuid::Uuid> = caller_teams.iter().map(|t| t.as_uuid()).collect();
+    // $1 org, $2 agent, $3 is_admin, $4 caller_teams (uuid[]).
+    let where_clause = "g.org_id = $1 AND g.agent_id = $2 AND ($3 OR g.team_id = ANY($4))";
+
+    let total: i64 = sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM agent_grants g WHERE {where_clause}"
+    ))
+    .bind(org_id.as_uuid())
+    .bind(agent_id.as_uuid())
+    .bind(is_admin)
+    .bind(&team_uuids)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count agent grants: {e}")))?;
+
+    let rows = sqlx::query(&format!(
+        "SELECT g.id, g.team_id, t.name AS team_name, g.resource, g.action \
+         FROM agent_grants g JOIN teams t ON t.id = g.team_id AND t.org_id = g.org_id \
+         WHERE {where_clause} ORDER BY t.name, g.resource, g.action, g.id LIMIT $5 OFFSET $6"
+    ))
+    .bind(org_id.as_uuid())
+    .bind(agent_id.as_uuid())
+    .bind(is_admin)
+    .bind(&team_uuids)
+    .bind(limit.clamp(1, 500))
+    .bind(offset.max(0))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list agent grants: {e}")))?;
+
+    let grants = rows
+        .iter()
+        .map(|r| AgentGrantRow {
+            id: r.get("id"),
+            team_id: r.get("team_id"),
+            team_name: r.get("team_name"),
+            resource: r.get("resource"),
+            action: r.get("action"),
+        })
+        .collect();
+    Ok((grants, total))
+}
+
 pub async fn rotate_agent_token_tx(
     tx: &mut Transaction<'_, Postgres>,
     org_id: OrgId,

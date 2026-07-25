@@ -181,9 +181,11 @@ struct AgentReadScope {
     team_scope: Option<Vec<TeamId>>,
 }
 
-/// Shared read gate for the agent read surface (`list_agents`, `get_agent`, and — in a later
-/// slice — `list_agent_grants`). Unlike the grant surface's `teams::authorize`, this authorizes
-/// at `team: None` and returns the caller's row scope instead of unit.
+/// Shared read gate for the agent read surface (`list_agents`, `get_agent`, `list_agent_grants`).
+/// Unlike the grant surface's `teams::authorize`, this authorizes at `team: None` and returns the
+/// caller's row scope instead of unit. `resource` is `Resource::Agents` for the agent reads and
+/// `Resource::Grants` for the grants read — it drives both the engine call and the team scope, so
+/// a non-admin's visible rows are exactly the teams it holds `<resource>:read` on.
 ///
 /// Order is load-bearing (see the ui-f6b design §3): the `org_selector_required` short-circuit
 /// runs **before** the engine so a multi-org caller with no selector gets a client-correctable
@@ -191,9 +193,10 @@ struct AgentReadScope {
 /// `require_org_admin` matcher that produced that `400` no longer runs for these reads. After the
 /// engine allows, the caller has a resolved active org (the engine denies team-less tenant reads
 /// with `org: None`), so row scope comes from the active org role, org-admin first.
-async fn authorize_agent_read(
+async fn authorize_read(
     pool: &PgPool,
     ctx: &PrincipalCtx,
+    resource: Resource,
     request_id: RequestId,
 ) -> DomainResult<AgentReadScope> {
     if let PrincipalCtx::User {
@@ -205,20 +208,11 @@ async fn authorize_agent_read(
         return Err(DomainError::org_selector_required());
     }
 
-    match check_resource_access(ctx, Resource::Agents, Action::Read, None) {
+    match check_resource_access(ctx, resource, Action::Read, None) {
         Decision::Allow(_) => {}
         Decision::Deny(reason) => {
-            record_authz_denial(
-                pool,
-                ctx,
-                request_id,
-                Resource::Agents,
-                Action::Read,
-                None,
-                reason,
-            )
-            .await;
-            return Err(deny_to_error(Resource::Agents, Action::Read, reason));
+            record_authz_denial(pool, ctx, request_id, resource, Action::Read, None, reason).await;
+            return Err(deny_to_error(resource, Action::Read, reason));
         }
     }
 
@@ -238,7 +232,7 @@ async fn authorize_agent_read(
                     org_id: *org_id,
                     team_scope: Some(
                         grants
-                            .teams_for_in_org(Resource::Agents, Action::Read, *org_id)
+                            .teams_for_in_org(resource, Action::Read, *org_id)
                             .into_iter()
                             .collect(),
                     ),
@@ -249,7 +243,7 @@ async fn authorize_agent_read(
             org_id: *org_id,
             team_scope: Some(
                 grants
-                    .teams_for_in_org(Resource::Agents, Action::Read, *org_id)
+                    .teams_for_in_org(resource, Action::Read, *org_id)
                     .into_iter()
                     .collect(),
             ),
@@ -280,7 +274,7 @@ pub async fn list_agents(
     offset: i64,
     request_id: RequestId,
 ) -> DomainResult<(Vec<Agent>, i64)> {
-    let scope = authorize_agent_read(pool, ctx, request_id).await?;
+    let scope = authorize_read(pool, ctx, Resource::Agents, request_id).await?;
 
     let filter_team_id = match team_filter {
         Some(team) => {
@@ -315,10 +309,55 @@ pub async fn get_agent(
     agent_id: AgentId,
     request_id: RequestId,
 ) -> DomainResult<Agent> {
-    let scope = authorize_agent_read(pool, ctx, request_id).await?;
+    let scope = authorize_read(pool, ctx, Resource::Agents, request_id).await?;
     identity::get_agent_scoped(pool, scope.org_id, agent_id, scope.team_scope.as_deref())
         .await?
         .ok_or_else(|| DomainError::not_found("agent", &agent_id.to_string()))
+}
+
+/// Paged listing of one agent's grant rows, authorized on `Resource::Grants` and row-scoped to the
+/// caller's `grants:read` teams. Returns `(page, total)`.
+///
+/// Authorization is the shared read gate on `Resource::Grants` — a caller holding `agents:read`
+/// but no `grants:read` is denied `403` here even though it can list agents. The addressed agent
+/// must be in the caller's active org (a cross-org or unknown id renders `404`, anti-enumeration),
+/// checked before the grant query. Unlike the agents list, this endpoint **rejects a negative
+/// `offset` with `400`** (design §1), rather than flooring it.
+pub async fn list_agent_grants(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    agent_id: AgentId,
+    limit: i64,
+    offset: i64,
+    request_id: RequestId,
+) -> DomainResult<(Vec<identity::AgentGrantRow>, i64)> {
+    let scope = authorize_read(pool, ctx, Resource::Grants, request_id).await?;
+
+    if offset < 0 {
+        return Err(DomainError::validation("offset must not be negative"));
+    }
+
+    // The agent must exist in the caller's active org; otherwise 404 (same for cross-org and
+    // unknown — no existence oracle). This runs before the grant query.
+    identity::get_agent(pool, scope.org_id, agent_id)
+        .await?
+        .ok_or_else(|| DomainError::not_found("agent", &agent_id.to_string()))?;
+
+    let (is_admin, caller_teams) = match scope.team_scope {
+        None => (true, Vec::new()),
+        Some(teams) => (false, teams),
+    };
+
+    identity::list_agent_grants_paged(
+        pool,
+        scope.org_id,
+        agent_id,
+        is_admin,
+        &caller_teams,
+        limit,
+        offset,
+    )
+    .await
 }
 
 pub async fn rotate_agent_token(

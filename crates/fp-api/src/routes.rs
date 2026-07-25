@@ -73,6 +73,7 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             identity_api::create_agent
         ))
         .routes(routes!(identity_api::get_agent))
+        .routes(routes!(identity_api::list_agent_grants))
         .routes(routes!(identity_api::rotate_agent_token))
         .routes(routes!(identity_api::disable_agent))
         .routes(routes!(

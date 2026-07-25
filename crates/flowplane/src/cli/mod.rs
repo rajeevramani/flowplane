@@ -2790,6 +2790,7 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/orgs/{org}/members/{user_id}",
         "/api/v1/agents",
         "/api/v1/agents/{agent_id}",
+        "/api/v1/agents/{agent_id}/grants",
         "/api/v1/agents/{agent_id}/disable",
         "/api/v1/agents/{agent_id}/rotate-token",
         "/api/v1/teams",
