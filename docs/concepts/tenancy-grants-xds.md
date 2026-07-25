@@ -16,7 +16,7 @@ One refinement to keep in mind: a human can belong to more than one org. When th
 
 ## 2. Grants and authorization: one pure decision over a grant set
 
-Access in Flowplane is **grant-based**. A grant is a row keyed by the triple `(resource, action, team)` — for example "read clusters in team T." `Resource` and `Action` are a small, closed vocabulary: every surface (REST route, MCP tool, CLI command) declares the `(resource, action)` pair it requires, and the grant table stores the same pairs, so there is one shared vocabulary and no phantom permissions that nothing can ever satisfy.
+Access in Flowplane is **grant-based**. A grant is a row keyed by the triple `(resource, action, team)` — for example "read clusters in team T." `Resource` and `Action` are a small, closed vocabulary: every surface (REST route, MCP tool, CLI command) declares the `(resource, action)` pair it requires, and the grant tables (`user_grants` and `agent_grants`, split by principal kind with real composite foreign keys) store the same pairs, so there is one shared vocabulary and no phantom permissions that nothing can ever satisfy.
 
 Two things make this tractable to reason about:
 

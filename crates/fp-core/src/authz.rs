@@ -54,6 +54,24 @@ impl GrantSet {
             .any(|(r, a, _, o)| *r == resource && *a == action && *o == org)
     }
 
+    /// The teams for which the principal holds `(resource, action)` **within `org`**.
+    ///
+    /// This is the row-scoping input for a non-admin list read: the caller may read only the
+    /// resources whose team appears here. Returned as a `BTreeSet` so the scope — and any query
+    /// built from it — is deterministic (a `HashSet` would order non-reproducibly).
+    pub fn teams_for_in_org(
+        &self,
+        resource: Resource,
+        action: Action,
+        org: OrgId,
+    ) -> std::collections::BTreeSet<TeamId> {
+        self.grants
+            .iter()
+            .filter(|(r, a, _, o)| *r == resource && *a == action && *o == org)
+            .map(|(_, _, t, _)| *t)
+            .collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.grants.is_empty()
     }
@@ -349,6 +367,49 @@ mod tests {
             org_id,
             grants,
         }
+    }
+
+    // ---- GrantSet::teams_for_in_org (row-scope input for non-admin agent reads) ----
+
+    #[test]
+    fn teams_for_in_org_returns_only_matching_resource_action_and_org() {
+        let org_a = OrgId::generate();
+        let org_b = OrgId::generate();
+        let team1 = TeamId::generate();
+        let team2 = TeamId::generate();
+        let team3 = TeamId::generate();
+        let grants = GrantSet::new([
+            // two agents:read teams in org A — both should be returned
+            (Resource::Agents, Action::Read, team1, org_a),
+            (Resource::Agents, Action::Read, team2, org_a),
+            // right resource/action but a DIFFERENT org — excluded
+            (Resource::Agents, Action::Read, team3, org_b),
+            // right team/org but a different action — excluded
+            (Resource::Agents, Action::Create, team1, org_a),
+            // a different resource entirely — excluded
+            (Resource::Grants, Action::Read, team1, org_a),
+        ]);
+
+        let teams = grants.teams_for_in_org(Resource::Agents, Action::Read, org_a);
+
+        assert_eq!(
+            teams,
+            std::collections::BTreeSet::from([team1, team2]),
+            "only agents:read grants within org A, deduplicated across resource/action/org"
+        );
+    }
+
+    #[test]
+    fn teams_for_in_org_is_empty_when_no_grant_matches() {
+        let org = OrgId::generate();
+        let team = TeamId::generate();
+        let grants = GrantSet::new([(Resource::Clusters, Action::Read, team, org)]);
+        assert!(grants
+            .teams_for_in_org(Resource::Agents, Action::Read, org)
+            .is_empty());
+        assert!(GrantSet::default()
+            .teams_for_in_org(Resource::Agents, Action::Read, org)
+            .is_empty());
     }
 
     // ---- PrincipalCtx accessors (org read-scoping branches on these) ----

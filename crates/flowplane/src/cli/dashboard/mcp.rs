@@ -13,6 +13,7 @@ use serde::Deserialize;
 
 use super::super::client::{ReadError, RestClient};
 use super::data::{humanize_age, AuthExpired, Panel};
+use super::resources::encode_segment;
 
 // =============================================================================================
 // Upstream item shapes (typed decode; a decode failure surfaces as Unavailable, never a
@@ -57,6 +58,28 @@ struct CatalogItem {
     executable_by_caller: bool,
 }
 
+/// A `Page<T>` envelope from the org-scoped identity reads; only `items` is decoded (the
+/// `total`/`limit`/`offset` fields are ignored). A decode failure surfaces as Unavailable.
+#[derive(Debug, Deserialize)]
+struct Page<T> {
+    items: Vec<T>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentItem {
+    id: String,
+    name: String,
+    kind: String,
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentGrantItem {
+    team_name: String,
+    resource: String,
+    action: String,
+}
+
 // =============================================================================================
 // Rendered rows.
 // =============================================================================================
@@ -80,6 +103,24 @@ pub(super) struct ToolRow {
     pub(super) risk: String,
     pub(super) enabled: bool,
     pub(super) executable_by_caller: bool,
+}
+
+/// One row of the org-scoped agents panel. `id` is kept only to build the lazy
+/// grants-expand link (`?id=<agent_id>`); no credential material exists on this row.
+#[derive(Debug)]
+pub(super) struct AgentRow {
+    pub(super) id: String,
+    pub(super) name: String,
+    pub(super) kind: String,
+    pub(super) status: String,
+}
+
+/// One row of an agent's grants (fetched lazily on row expand). No credential material.
+#[derive(Debug)]
+pub(super) struct AgentGrantRow {
+    pub(super) team_name: String,
+    pub(super) resource: String,
+    pub(super) action: String,
 }
 
 pub(super) struct StatusPanel {
@@ -254,6 +295,76 @@ pub(super) async fn fetch_tools(
         include_disabled,
         disabled_count,
     }))
+}
+
+/// Fetch the org-scoped agents list. This is an org-wide read — a caller without org
+/// authority gets a 403, which the panel renders as `Unauthorized` with an org-authority
+/// note (never a silently empty table). Same 401 → AuthExpired / decode-fail → Unavailable
+/// discipline as the sibling MCP panels.
+pub(super) async fn fetch_agents(client: &RestClient) -> Result<Panel<Vec<AgentRow>>, AuthExpired> {
+    let result = client.get_json("/api/v1/agents").await;
+    if is_unauthorized(&result) {
+        return Err(AuthExpired);
+    }
+    let page: Page<AgentItem> = match result {
+        Ok(value) => match serde_json::from_value(value) {
+            Ok(parsed) => parsed,
+            Err(_) => return Ok(Panel::Unavailable),
+        },
+        Err(ReadError::Status { status, .. }) if status == reqwest::StatusCode::FORBIDDEN => {
+            return Ok(Panel::Unauthorized)
+        }
+        Err(_) => return Ok(Panel::Unavailable),
+    };
+    Ok(Panel::Data(
+        page.items
+            .into_iter()
+            .map(|a| AgentRow {
+                id: a.id,
+                name: a.name,
+                kind: a.kind,
+                status: a.status,
+            })
+            .collect(),
+    ))
+}
+
+/// Fetch one agent's grants (lazily, on row expand). A 403 → `Unauthorized`; a 404
+/// (unknown or cross-org agent) or any other failure → `Unavailable`, matching the
+/// catch-all convention of the sibling reads (only an explicit 403 is `Unauthorized`).
+pub(super) async fn fetch_agent_grants(
+    client: &RestClient,
+    agent_id: &str,
+) -> Result<Panel<Vec<AgentGrantRow>>, AuthExpired> {
+    // The agent id arrives as a user-supplied query value; percent-encode it so a hostile
+    // value (`/`, `?`, `#`, `%`, dot-segments) cannot alter which upstream path is requested.
+    let seg = encode_segment(agent_id);
+    let result = client
+        .get_json(&format!("/api/v1/agents/{seg}/grants"))
+        .await;
+    if is_unauthorized(&result) {
+        return Err(AuthExpired);
+    }
+    let page: Page<AgentGrantItem> = match result {
+        Ok(value) => match serde_json::from_value(value) {
+            Ok(parsed) => parsed,
+            Err(_) => return Ok(Panel::Unavailable),
+        },
+        Err(ReadError::Status { status, .. }) if status == reqwest::StatusCode::FORBIDDEN => {
+            return Ok(Panel::Unauthorized)
+        }
+        Err(_) => return Ok(Panel::Unavailable),
+    };
+    Ok(Panel::Data(
+        page.items
+            .into_iter()
+            .map(|g| AgentGrantRow {
+                team_name: g.team_name,
+                resource: g.resource,
+                action: g.action,
+            })
+            .collect(),
+    ))
 }
 
 fn is_unauthorized(result: &Result<serde_json::Value, ReadError>) -> bool {

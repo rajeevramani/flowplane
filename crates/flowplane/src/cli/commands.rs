@@ -206,6 +206,38 @@ pub enum TeamMemberCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum AgentCommand {
+    /// List agents in the active org (org admins see all; others see agents on teams they can read).
+    List {
+        /// Filter to agents holding a grant on this team (name or UUID).
+        #[arg(long)]
+        team: Option<String>,
+        /// Max items (default 50, cap 500).
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Items to skip.
+        #[arg(long)]
+        offset: Option<i64>,
+    },
+    /// Show one agent.
+    Show {
+        /// Agent id (UUID).
+        id: String,
+    },
+    /// List an agent's grants.
+    Grants {
+        /// Agent id (UUID).
+        id: String,
+        /// Max items (default 50, cap 500).
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Items to skip.
+        #[arg(long)]
+        offset: Option<i64>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum GrantCommand {
     /// List a team's grants.
     List {

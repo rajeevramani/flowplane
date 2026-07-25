@@ -105,6 +105,11 @@ enum Command {
         #[command(subcommand)]
         command: cli::SecretCommand,
     },
+    /// Agent identities (read-only): list agents and view an agent's grants.
+    Agent {
+        #[command(subcommand)]
+        command: cli::AgentCommand,
+    },
     /// Dataplane registration and certificates.
     Dataplane {
         #[command(subcommand)]
@@ -237,6 +242,7 @@ fn run() -> anyhow::Result<()> {
         }
         Command::Learn { command } => runtime.block_on(cli::run_learn(cli.client, command)),
         Command::Secret { command } => runtime.block_on(cli::run_secret(cli.client, command)),
+        Command::Agent { command } => runtime.block_on(cli::run_agent(cli.client, command)),
         Command::Dataplane { command } => runtime.block_on(cli::run_dataplane(cli.client, command)),
         Command::Expose { command } => runtime.block_on(cli::run_expose(cli.client, command)),
         Command::Unexpose { command } => runtime.block_on(cli::run_unexpose(cli.client, command)),
@@ -650,8 +656,11 @@ mod tests {
             "apply",
         ];
 
-        // 79 EXEMPT leaves (space-joined paths) — no example required.
+        // 82 EXEMPT leaves (space-joined paths) — no example required.
         const EXEMPT: &[&str] = &[
+            "agent grants",
+            "agent list",
+            "agent show",
             "ai budgets delete",
             "dashboard",
             "ai budgets get",

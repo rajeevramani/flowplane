@@ -61,7 +61,7 @@ Most paged collection endpoints (clusters, listeners, route-configs, api-definit
 | `limit`   | `50`    | Clamped to `1..=500`. |
 | `offset`  | `0`     | Floored at `0`. |
 
-Not every collection uses this. Some endpoints return a plain JSON array or a custom query/response shape instead — for example `GET /api/v1/teams`, `GET /api/v1/orgs`, `GET /api/v1/agents`, `GET /api/v1/teams/{team}/proxy-certificates`, `GET /api/v1/teams/{team}/xds/nacks`, and `GET /api/v1/teams/{team}/ai/usage`. The generated OpenAPI document is authoritative for each endpoint's exact request/response shape.
+Not every collection uses this. Some endpoints return a plain JSON array or a custom query/response shape instead — for example `GET /api/v1/teams`, `GET /api/v1/orgs`, `GET /api/v1/teams/{team}/proxy-certificates`, `GET /api/v1/teams/{team}/xds/nacks`, and `GET /api/v1/teams/{team}/ai/usage`. The generated OpenAPI document is authoritative for each endpoint's exact request/response shape.
 
 Endpoints that use `ListQuery` return the uniform `Page<T>` envelope:
 

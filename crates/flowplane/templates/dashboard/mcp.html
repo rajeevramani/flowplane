@@ -35,6 +35,13 @@
          hx-swap="innerHTML">
       <p class="placeholder">Loading…</p>
     </div>
+    <div id="mcp-agents"
+         hx-get="/{{ nonce }}/partials/mcp/agents"
+         hx-trigger="load once"
+         hx-target="#mcp-agents"
+         hx-swap="innerHTML">
+      <p class="placeholder">Loading…</p>
+    </div>
   </main>
 </body>
 </html>

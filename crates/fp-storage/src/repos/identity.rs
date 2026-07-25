@@ -384,6 +384,174 @@ pub async fn get_agent(
     row.as_ref().map(agent_from_row).transpose()
 }
 
+/// Paged, row-scoped agent list with an optional team filter, returning `(page, total)` where
+/// `total` is the count of rows the caller is authorized to see (after both the row scope and
+/// the filter), not the page length.
+///
+/// The row scope and the filter are expressed as two independent predicates so one static query
+/// serves every shape:
+/// * `is_admin` — when true the row-scope predicate is a no-op (the caller reads every agent in
+///   the org); when false the caller may read only agents holding a grant on one of
+///   `caller_teams` (an empty slice ⇒ no agents, since `= ANY('{}')` never matches).
+/// * `team_filter` — when `Some`, additionally require a grant on that team (an org-scoped
+///   caller filtering to one team); when `None`, no extra constraint.
+///
+/// `limit` is clamped to `1..=500` and `offset` floored at `0`, matching every list surface.
+pub async fn list_agents_paged(
+    pool: &PgPool,
+    org_id: OrgId,
+    is_admin: bool,
+    caller_teams: &[TeamId],
+    team_filter: Option<TeamId>,
+    limit: i64,
+    offset: i64,
+) -> DomainResult<(Vec<Agent>, i64)> {
+    let team_uuids: Vec<uuid::Uuid> = caller_teams.iter().map(|t| t.as_uuid()).collect();
+    let filter_uuid: Option<uuid::Uuid> = team_filter.map(|t| t.as_uuid());
+    // $1 org, $2 is_admin, $3 caller_teams (uuid[]), $4 team_filter (uuid or NULL).
+    let where_clause = "a.org_id = $1 \
+        AND ($2 OR EXISTS (SELECT 1 FROM agent_grants g \
+                           WHERE g.agent_id = a.id AND g.org_id = a.org_id \
+                           AND g.team_id = ANY($3))) \
+        AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM agent_grants gf \
+                                         WHERE gf.agent_id = a.id AND gf.org_id = a.org_id \
+                                         AND gf.team_id = $4))";
+
+    let total: i64 = sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM agents a WHERE {where_clause}"
+    ))
+    .bind(org_id.as_uuid())
+    .bind(is_admin)
+    .bind(&team_uuids)
+    .bind(filter_uuid)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count agents: {e}")))?;
+
+    let rows = sqlx::query(&format!(
+        "SELECT a.id, a.org_id, a.name, a.kind, a.status, a.created_at, a.updated_at \
+         FROM agents a WHERE {where_clause} ORDER BY a.name, a.id LIMIT $5 OFFSET $6"
+    ))
+    .bind(org_id.as_uuid())
+    .bind(is_admin)
+    .bind(&team_uuids)
+    .bind(filter_uuid)
+    .bind(limit.clamp(1, 500))
+    .bind(offset.max(0))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list agents paged: {e}")))?;
+
+    let agents = rows
+        .iter()
+        .map(agent_from_row)
+        .collect::<DomainResult<Vec<_>>>()?;
+    Ok((agents, total))
+}
+
+/// Row-scoped single-agent fetch. `team_scope`: `None` = org admin (any agent in the org);
+/// `Some(teams)` = visible only if the agent holds a grant on one of `teams` (an empty slice ⇒
+/// never visible). Returns `None` when the agent is out of org or out of the caller's scope —
+/// the service renders that as `404`, so the two are indistinguishable (anti-enumeration).
+pub async fn get_agent_scoped(
+    pool: &PgPool,
+    org_id: OrgId,
+    agent_id: AgentId,
+    team_scope: Option<&[TeamId]>,
+) -> DomainResult<Option<Agent>> {
+    match team_scope {
+        None => get_agent(pool, org_id, agent_id).await,
+        Some([]) => Ok(None),
+        Some(teams) => {
+            let team_uuids: Vec<uuid::Uuid> = teams.iter().map(|t| t.as_uuid()).collect();
+            let row = sqlx::query(
+                "SELECT a.id, a.org_id, a.name, a.kind, a.status, a.created_at, a.updated_at \
+                 FROM agents a \
+                 WHERE a.org_id = $1 AND a.id = $2 \
+                 AND EXISTS (SELECT 1 FROM agent_grants g \
+                             WHERE g.agent_id = a.id AND g.org_id = a.org_id \
+                             AND g.team_id = ANY($3))",
+            )
+            .bind(org_id.as_uuid())
+            .bind(agent_id.as_uuid())
+            .bind(&team_uuids)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| DomainError::internal(format!("get agent scoped: {e}")))?;
+            row.as_ref().map(agent_from_row).transpose()
+        }
+    }
+}
+
+/// A single row of an agent's grant listing, joined to its team for the display name.
+#[derive(Debug, Clone)]
+pub struct AgentGrantRow {
+    pub id: Uuid,
+    pub team_id: Uuid,
+    pub team_name: String,
+    pub resource: String,
+    pub action: String,
+}
+
+/// Paged listing of one agent's grant rows (from `agent_grants`, joined to `teams` for the name),
+/// row-scoped and returning `(page, total)`. The caller is expected to have already confirmed the
+/// agent is in `org_id` (a cross-org agent renders `404` at the service before this runs).
+///
+/// `is_admin` true ⇒ every grant row of the agent; false ⇒ only rows on a team in `caller_teams`
+/// (the teams the caller holds `grants:read` on; an empty slice ⇒ no rows). `limit` clamped to
+/// `1..=500`; `offset` is bound as given (the service rejects a negative offset for this endpoint).
+pub async fn list_agent_grants_paged(
+    pool: &PgPool,
+    org_id: OrgId,
+    agent_id: AgentId,
+    is_admin: bool,
+    caller_teams: &[TeamId],
+    limit: i64,
+    offset: i64,
+) -> DomainResult<(Vec<AgentGrantRow>, i64)> {
+    let team_uuids: Vec<uuid::Uuid> = caller_teams.iter().map(|t| t.as_uuid()).collect();
+    // $1 org, $2 agent, $3 is_admin, $4 caller_teams (uuid[]).
+    let where_clause = "g.org_id = $1 AND g.agent_id = $2 AND ($3 OR g.team_id = ANY($4))";
+
+    let total: i64 = sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM agent_grants g WHERE {where_clause}"
+    ))
+    .bind(org_id.as_uuid())
+    .bind(agent_id.as_uuid())
+    .bind(is_admin)
+    .bind(&team_uuids)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count agent grants: {e}")))?;
+
+    let rows = sqlx::query(&format!(
+        "SELECT g.id, g.team_id, t.name AS team_name, g.resource, g.action \
+         FROM agent_grants g JOIN teams t ON t.id = g.team_id AND t.org_id = g.org_id \
+         WHERE {where_clause} ORDER BY t.name, g.resource, g.action, g.id LIMIT $5 OFFSET $6"
+    ))
+    .bind(org_id.as_uuid())
+    .bind(agent_id.as_uuid())
+    .bind(is_admin)
+    .bind(&team_uuids)
+    .bind(limit.clamp(1, 500))
+    .bind(offset.max(0))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("list agent grants: {e}")))?;
+
+    let grants = rows
+        .iter()
+        .map(|r| AgentGrantRow {
+            id: r.get("id"),
+            team_id: r.get("team_id"),
+            team_name: r.get("team_name"),
+            resource: r.get("resource"),
+            action: r.get("action"),
+        })
+        .collect();
+    Ok((grants, total))
+}
+
 pub async fn rotate_agent_token_tx(
     tx: &mut Transaction<'_, Postgres>,
     org_id: OrgId,

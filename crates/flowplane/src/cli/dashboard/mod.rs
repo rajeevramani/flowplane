@@ -75,6 +75,8 @@ pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/partials/ai/traces",
     "/partials/mcp/status",
     "/partials/mcp/tools",
+    "/partials/mcp/agents",
+    "/partials/mcp/agent-grants",
     "/partials/apis/list",
     "/partials/apis/detail",
     "/partials/learning/sessions",
@@ -324,6 +326,8 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
                 "/partials/ai/traces" => get(ai_traces_partial),
                 "/partials/mcp/status" => get(mcp_status_partial),
                 "/partials/mcp/tools" => get(mcp_tools_partial),
+                "/partials/mcp/agents" => get(mcp_agents_partial),
+                "/partials/mcp/agent-grants" => get(mcp_agent_grants_partial),
                 "/partials/apis/list" => get(apis_list_partial),
                 "/partials/apis/detail" => get(apis_detail_partial),
                 "/partials/learning/sessions" => get(learning_sessions_partial),
@@ -684,6 +688,59 @@ async fn mcp_tools_partial(
     let result = mcp::fetch_tools(&state.client, &state.team)
         .await
         .map(|panel| McpToolsPanel { panel });
+    render_resources_panel(result)
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/mcp_agents.html")]
+struct McpAgentsPanel<'a> {
+    nonce: &'a str,
+    panel: data::Panel<Vec<mcp::AgentRow>>,
+}
+
+/// Org-scoped agents panel (ui-f6b S5): a 403 renders as `Unauthorized` with an
+/// org-authority note, since this is an org-wide read a team member cannot make.
+async fn mcp_agents_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let result = mcp::fetch_agents(&state.client)
+        .await
+        .map(|panel| McpAgentsPanel {
+            nonce: &state.nonce,
+            panel,
+        });
+    render_resources_panel(result)
+}
+
+#[derive(serde::Deserialize)]
+struct AgentGrantsQuery {
+    id: String,
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/mcp_agent_grants.html")]
+struct McpAgentGrantsPanel {
+    panel: data::Panel<Vec<mcp::AgentGrantRow>>,
+}
+
+/// One agent's grants, fetched lazily on row expand. The agent id arrives as a `?id=`
+/// query value; a missing/empty id renders the unavailable panel immediately (no upstream
+/// request), so the route class behaves like every other nonced partial (200 on the sweep).
+async fn mcp_agent_grants_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+    query: Result<axum::extract::Query<AgentGrantsQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    let query = match query {
+        Ok(axum::extract::Query(query)) if !query.id.is_empty() => query,
+        _ => {
+            return render_resources_panel::<McpAgentGrantsPanel>(Ok(McpAgentGrantsPanel {
+                panel: data::Panel::Unavailable,
+            }))
+        }
+    };
+    let result = mcp::fetch_agent_grants(&state.client, &query.id)
+        .await
+        .map(|panel| McpAgentGrantsPanel { panel });
     render_resources_panel(result)
 }
 
