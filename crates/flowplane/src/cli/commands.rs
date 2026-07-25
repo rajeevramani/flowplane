@@ -1307,11 +1307,23 @@ pub enum XdsCommand {
         #[arg(long)]
         team: Option<String>,
     },
-    /// Show recent xDS NACKs.
+    /// Show a team's xDS NACK history over a filtered `[since, until)` window, newest first.
     Nacks {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
         team: Option<String>,
+        /// Inclusive lower bound (RFC 3339, e.g. 2026-07-25T00:00:00Z). Rows at/after this time.
+        #[arg(long)]
+        since: Option<String>,
+        /// Exclusive upper bound (RFC 3339). Rows strictly before this time.
+        #[arg(long)]
+        until: Option<String>,
+        /// Page size (default 50, max 200).
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Opaque cursor from a prior response's `next_cursor` to fetch the next (older) page.
+        #[arg(long)]
+        before: Option<String>,
     },
 }
 
