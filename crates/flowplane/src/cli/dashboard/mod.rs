@@ -14,6 +14,7 @@ mod filters_inventory;
 mod joins;
 mod learning;
 mod mcp;
+mod operations;
 mod orphans;
 mod ratelimits;
 mod resources;
@@ -70,7 +71,9 @@ pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/learning",
     "/ai",
     "/mcp",
+    "/operations",
     "/partials/overview",
+    "/partials/operations/nacks",
     "/partials/ai/overview",
     "/partials/ai/traces",
     "/partials/mcp/status",
@@ -322,6 +325,8 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
                 "/learning" => get(learning_page),
                 "/ai" => get(ai_page),
                 "/mcp" => get(mcp_page),
+                "/operations" => get(operations_page),
+                "/partials/operations/nacks" => get(operations_nacks_partial),
                 "/partials/ai/overview" => get(ai_overview_partial),
                 "/partials/ai/traces" => get(ai_traces_partial),
                 "/partials/mcp/status" => get(mcp_status_partial),
@@ -659,6 +664,59 @@ async fn mcp_page(axum::extract::State(state): axum::extract::State<Arc<DashStat
         Ok(html) => Html(html).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/operations.html")]
+struct OperationsShell<'a> {
+    nonce: &'a str,
+    team: &'a str,
+}
+
+/// The Operations page shell (fpv2-55x.4): nav + one htmx-lazy NACK-history panel. The shell
+/// itself performs NO upstream fetch.
+async fn operations_page(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let shell = OperationsShell {
+        nonce: &state.nonce,
+        team: &state.team,
+    };
+    match askama::Template::render(&shell) {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/operations_nacks.html")]
+struct OperationsNacksPanel<'a> {
+    nonce: &'a str,
+    panel: data::Panel<operations::OperationsPanel>,
+}
+
+/// Query for the NACK partial: an optional `before` cursor for the next page.
+#[derive(serde::Deserialize)]
+struct NackPartialQuery {
+    before: Option<String>,
+}
+
+async fn operations_nacks_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+    axum::extract::Query(query): axum::extract::Query<NackPartialQuery>,
+) -> Response {
+    let result = operations::fetch(
+        &state.client,
+        &state.team,
+        chrono::Utc::now(),
+        query.before.as_deref(),
+    )
+    .await
+    .map(|panel| OperationsNacksPanel {
+        nonce: &state.nonce,
+        panel,
+    });
+    render_resources_panel(result)
 }
 
 #[derive(askama::Template)]
