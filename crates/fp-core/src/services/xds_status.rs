@@ -75,32 +75,6 @@ pub struct OpsTrace {
     pub events: Vec<EventTraceRow>,
 }
 
-pub async fn list_nack_events(
-    pool: &PgPool,
-    ctx: &PrincipalCtx,
-    team: TeamRef,
-    limit: i64,
-    request_id: RequestId,
-) -> DomainResult<Vec<NackEvent>> {
-    match check_resource_access(ctx, Resource::Stats, Action::Read, Some(team)) {
-        Decision::Allow(_) => {}
-        Decision::Deny(reason) => {
-            record_authz_denial(
-                pool,
-                ctx,
-                request_id,
-                Resource::Stats,
-                Action::Read,
-                Some(team),
-                reason,
-            )
-            .await;
-            return Err(deny_to_error(Resource::Stats, Action::Read, reason));
-        }
-    }
-    fp_storage::repos::xds_nacks::list(pool, team.id, limit).await
-}
-
 /// A filtered/paged NACK-window query (fpv2-55x.1). `limit` is the caller-requested page size
 /// (`None` → [`DEFAULT_NACK_LIMIT`], clamped to [`MAX_NACK_LIMIT`]); `before` is the total-order
 /// cursor `(created_at, id)` of the last row of the previous page.

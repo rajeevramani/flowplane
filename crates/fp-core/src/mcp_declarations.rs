@@ -225,11 +225,11 @@ pub const STATIC_TOOL_DECLS: &[StaticToolDecl] = &[
     },
     StaticToolDecl {
         name: "ops_xds_nacks",
-        description: "List recent xDS NACK events for one team.",
+        description: "List a team's xDS NACK history over a filtered [since, until) window with cursor paging.",
         resource: Resource::Stats,
         action: Action::Read,
         risk: ToolRisk::Read,
-        input_schema: schema_list,
+        input_schema: schema_nack_list,
     },
     StaticToolDecl {
         name: "ops_xds_trace",
@@ -397,6 +397,37 @@ fn schema_list() -> Value {
     })
 }
 
+/// Input schema for `ops_xds_nacks` (fpv2-55x.3). Mirrors the REST NACK-window contract: a
+/// half-open `[since, until)` time filter and an opaque `before` cursor — NOT the shared
+/// `schema_list` (which exposes `limit`/`offset`); this tool pages by cursor, not offset.
+fn schema_nack_list() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "team": { "type": "string", "description": "Team name or UUID" },
+            "since": {
+                "type": "string",
+                "format": "date-time",
+                "description": "RFC 3339 inclusive lower bound of the half-open window \
+                                [since, until). Omitted = no lower bound."
+            },
+            "until": {
+                "type": "string",
+                "format": "date-time",
+                "description": "RFC 3339 exclusive upper bound. Omitted = no upper bound."
+            },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 },
+            "before": {
+                "type": "string",
+                "description": "Opaque cursor from a prior response's `next_cursor` \
+                                (`<created_at>,<id>`) to fetch the next (older) page."
+            }
+        },
+        "required": ["team"],
+        "additionalProperties": false
+    })
+}
+
 fn schema_usage() -> Value {
     json!({
         "type": "object",
@@ -532,5 +563,27 @@ mod tests {
                 tool.name
             );
         }
+    }
+
+    #[test]
+    fn ops_xds_nacks_advertises_the_cursor_window_contract_not_offset() {
+        // fpv2-55x.3: ops_xds_nacks must use the NACK-specific window schema (since/until/limit/
+        // before), NOT the shared list schema (which pages by offset). A drift here would let a
+        // caller pass `offset` the endpoint ignores, or hide the cursor params.
+        let decl = STATIC_TOOL_DECLS
+            .iter()
+            .find(|t| t.name == "ops_xds_nacks")
+            .expect("ops_xds_nacks declared");
+        let schema = (decl.input_schema)();
+        let props = schema["properties"].as_object().expect("properties object");
+        for key in ["team", "since", "until", "limit", "before"] {
+            assert!(props.contains_key(key), "ops_xds_nacks must expose `{key}`");
+        }
+        assert!(
+            !props.contains_key("offset"),
+            "ops_xds_nacks pages by cursor, must NOT expose `offset`"
+        );
+        assert_eq!(decl.resource, Resource::Stats);
+        assert_eq!(decl.action, Action::Read);
     }
 }

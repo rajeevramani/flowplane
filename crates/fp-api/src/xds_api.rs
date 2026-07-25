@@ -137,7 +137,11 @@ pub struct NackPage {
 
 /// Encode a `(created_at, id)` cursor as `<rfc3339-nanos>,<uuid>`. Nanosecond precision preserves
 /// the full stored `TIMESTAMPTZ` so the continuation predicate identifies the exact boundary row.
-fn encode_nack_cursor(created_at: chrono::DateTime<chrono::Utc>, id: uuid::Uuid) -> String {
+/// Shared with the MCP `ops_xds_nacks` tool so REST and MCP emit an identical cursor format.
+pub(crate) fn encode_nack_cursor(
+    created_at: chrono::DateTime<chrono::Utc>,
+    id: uuid::Uuid,
+) -> String {
     format!(
         "{},{}",
         created_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
@@ -146,7 +150,8 @@ fn encode_nack_cursor(created_at: chrono::DateTime<chrono::Utc>, id: uuid::Uuid)
 }
 
 /// Parse a `before` cursor back into `(created_at, id)`. A malformed cursor is a client error.
-fn decode_nack_cursor(
+/// Shared with the MCP `ops_xds_nacks` tool so REST and MCP parse an identical cursor format.
+pub(crate) fn decode_nack_cursor(
     raw: &str,
 ) -> Result<(chrono::DateTime<chrono::Utc>, uuid::Uuid), fp_domain::DomainError> {
     let (ts, id) = raw.split_once(',').ok_or_else(|| {
