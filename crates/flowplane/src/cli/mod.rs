@@ -18,12 +18,12 @@ use std::time::{Duration, Instant};
 
 use client::RestClient;
 pub use commands::{
-    AiCommand, AiRetentionCommand, ApiCommand, ApplyCommand, AuthCommand, CertCommand,
-    ConfigCommand, DataplaneBootstrapMode, DataplaneCommand, ExposeCommand, GrantCommand,
-    LearnCommand, LearnDiscoverCommand, McpCommand, OpsCommand, OrgCommand, OrgMemberCommand,
-    RateLimitCommand, RateLimitOverrideCommand, RateLimitPolicyCommand, ResourceCommand,
-    RouteCommand, SecretCommand, StatsCommand, TeamCommand, TeamMemberCommand, UnexposeCommand,
-    XdsCommand,
+    AgentCommand, AiCommand, AiRetentionCommand, ApiCommand, ApplyCommand, AuthCommand,
+    CertCommand, ConfigCommand, DataplaneBootstrapMode, DataplaneCommand, ExposeCommand,
+    GrantCommand, LearnCommand, LearnDiscoverCommand, McpCommand, OpsCommand, OrgCommand,
+    OrgMemberCommand, RateLimitCommand, RateLimitOverrideCommand, RateLimitPolicyCommand,
+    ResourceCommand, RouteCommand, SecretCommand, StatsCommand, TeamCommand, TeamMemberCommand,
+    UnexposeCommand, XdsCommand,
 };
 pub use config::GlobalOptions;
 use config::{
@@ -760,6 +760,71 @@ async fn run_org_member(client: RestClient, command: OrgMemberCommand) -> Result
         }
     };
     Ok(())
+}
+
+pub async fn run_agent(global: GlobalOptions, command: AgentCommand) -> Result<()> {
+    let client = RestClient::new(global)?;
+    match command {
+        AgentCommand::List {
+            team,
+            limit,
+            offset,
+        } => {
+            let mut query: Vec<(&str, String)> = Vec::new();
+            if let Some(team) = team {
+                query.push(("team", team));
+            }
+            if let Some(limit) = limit {
+                query.push(("limit", limit.to_string()));
+            }
+            if let Some(offset) = offset {
+                query.push(("offset", offset.to_string()));
+            }
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &with_query("/api/v1/agents", query),
+                    None,
+                )
+                .await?
+        }
+        AgentCommand::Show { id } => {
+            client
+                .request(reqwest::Method::GET, &format!("/api/v1/agents/{id}"), None)
+                .await?
+        }
+        AgentCommand::Grants { id, limit, offset } => {
+            let mut query: Vec<(&str, String)> = Vec::new();
+            if let Some(limit) = limit {
+                query.push(("limit", limit.to_string()));
+            }
+            if let Some(offset) = offset {
+                query.push(("offset", offset.to_string()));
+            }
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &with_query(&format!("/api/v1/agents/{id}/grants"), query),
+                    None,
+                )
+                .await?
+        }
+    };
+    Ok(())
+}
+
+/// Append a `?key=value&...` query string (URL-encoded) to `path`, or return `path` unchanged
+/// when there are no params.
+fn with_query(path: &str, query: Vec<(&str, String)>) -> String {
+    if query.is_empty() {
+        return path.to_string();
+    }
+    let q = query
+        .into_iter()
+        .map(|(key, value)| format!("{key}={}", query_component(&value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{path}?{q}")
 }
 
 pub async fn run_team(global: GlobalOptions, command: TeamCommand) -> Result<()> {
