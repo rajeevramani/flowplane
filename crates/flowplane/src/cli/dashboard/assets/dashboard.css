@@ -242,3 +242,28 @@ td.wrap { white-space: normal; min-width: 260px; }
 }
 .banner code { font-family: var(--mono); font-size: 12.5px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
 .banner.hidden { display: none; }
+
+/* Slice 3 (fpv2-80z.3): resources — topology chains, cluster chips, warn variants */
+.flow { padding: 10px 16px; display: grid; gap: 8px; }
+.flow + .flow { border-top: 1px solid var(--border); }
+.flow .lst { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.flow .lst::before { content: "▾"; color: var(--text-faint); font-size: 11px; align-self: center; }
+.flow .lst .name { font-family: var(--mono); font-weight: 650; font-size: 13.5px; }
+.flow .lst .bind { font-family: var(--mono); font-size: 12.5px; color: var(--text-dim); }
+.chain { display: grid; gap: 4px; padding-left: 14px; border-left: 2px solid var(--border); margin-left: 4px; }
+.chain .rc { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+.chain .rc.unresolved { color: var(--warn); }
+.chain .vh { padding-left: 16px; font-family: var(--mono); font-size: 12.5px; color: var(--text-dim); }
+.routes-grid { display: grid; gap: 3px; padding-left: 32px; }
+.rt { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-family: var(--mono); font-size: 12.5px; }
+.rt .m { color: var(--text-dim); min-width: 210px; }
+.rt .arrow { color: var(--text-faint); }
+.cchip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 1px 8px; font-size: 12px; cursor: default;
+}
+.cchip .cname { font-weight: 600; }
+.cchip .meta { color: var(--text-faint); font-size: 11px; }
+.cchip.hl { border-color: var(--accent); background: var(--accent-soft); }
+.cchip.unresolved { background: var(--warn-soft); color: var(--warn); border-color: transparent; }

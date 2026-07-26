@@ -10,18 +10,22 @@
 </head>
 <body>
   <header class="topbar">
-    <h1>Flowplane</h1>
-    <nav class="nav">
-      <a href="/{{ nonce }}/">Overview</a>
-      <span class="active">Resources</span>
-      <a href="/{{ nonce }}/apis">APIs</a>
-      <a href="/{{ nonce }}/learning">Learning</a>
-      <a href="/{{ nonce }}/ai">AI</a>
-      <a href="/{{ nonce }}/mcp">MCP</a>
-      <a href="/{{ nonce }}/operations">Operations</a>
-    </nav>
-    <span class="team">team: {{ team }}</span>
+    <div class="brand">flow<span>plane</span> dashboard</div>
+    <div class="ctx">
+      <span class="chip">team <b>{{ team }}</b></span>
+      <span class="chip">read-only</span>
+    </div>
+    <div class="spacer"></div>
   </header>
+  <nav class="tabs">
+    <a href="/{{ nonce }}/">Overview</a>
+    <a href="/{{ nonce }}/resources" class="active">Resources</a>
+    <a href="/{{ nonce }}/apis">APIs</a>
+    <a href="/{{ nonce }}/learning">Learning</a>
+    <a href="/{{ nonce }}/ai">AI</a>
+    <a href="/{{ nonce }}/mcp">MCP</a>
+    <a href="/{{ nonce }}/operations">Operations</a>
+  </nav>
   <main id="resources">
     <!-- First-open lazy loading: each panel fetches its partial only on the FIRST
          native `toggle` (details opened); an unopened panel issues no requests. -->

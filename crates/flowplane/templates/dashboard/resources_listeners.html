@@ -1,6 +1,6 @@
 {% if let Some(t) = panel.data() %}
 <section class="panel" id="panel-res-listeners">
-  <h2>Listeners <span class="hint">{{ t.rows.len() }} of {{ t.total }}</span></h2>
+  <h2>Listeners <span class="count">{{ t.rows.len() }} of {{ t.total }}</span></h2>
   {% if let Some(p) = t.partial %}
   {% if p.budget() %}
   <p class="banner">Partial — first {{ p.shown }} of {{ p.total }} (budget reached). Remaining pages were not fetched.</p>
@@ -8,7 +8,8 @@
   <p class="banner">Partial data: the {{ p.collection }} collection is incomplete — an upstream fetch failed mid-sweep.</p>
   {% endif %}
   {% endif %}
-  <table class="dataplanes">
+  <div class="tablewrap">
+  <table>
     <thead>
       <tr><th>Listener</th><th>Bind</th><th>Protocol</th><th>Route config</th><th>Filters</th><th>TLS</th><th>Revision</th><th>Updated</th></tr>
     </thead>
@@ -21,7 +22,7 @@
         {% else %}
         <td>{{ row.bind }}</td>
         <td>{{ row.protocol }}</td>
-        <td>{% if let Some(rc) = row.route_config %}{{ rc }}{% else %}<span class="placeholder">unbound</span>{% endif %}</td>
+        <td>{% if let Some(rc) = row.route_config %}{{ rc }}{% else %}<span class="pill warn">unbound</span>{% endif %}</td>
         <td>{{ row.filters }}</td>
         <td>{% if row.tls %}yes{% else %}no{% endif %}</td>
         <td>{{ row.revision }}</td>
@@ -34,6 +35,7 @@
       {% endif %}
     </tbody>
   </table>
+  </div>
 </section>
 {% else if panel.unauthorized() %}
 <section class="panel unauthorized" id="panel-res-listeners">
