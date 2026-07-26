@@ -753,7 +753,7 @@ async fn mcp_tools_partial(
 #[template(path = "dashboard/mcp_agents.html")]
 struct McpAgentsPanel<'a> {
     nonce: &'a str,
-    panel: data::Panel<Vec<mcp::AgentRow>>,
+    panel: data::Panel<mcp::AgentsPanel>,
 }
 
 /// Org-scoped agents panel (ui-f6b S5): a 403 renders as `Unauthorized` with an
@@ -778,7 +778,7 @@ struct AgentGrantsQuery {
 #[derive(askama::Template)]
 #[template(path = "dashboard/mcp_agent_grants.html")]
 struct McpAgentGrantsPanel {
-    panel: data::Panel<Vec<mcp::AgentGrantRow>>,
+    panel: data::Panel<mcp::AgentGrantsPanel>,
 }
 
 /// One agent's grants, fetched lazily on row expand. The agent id arrives as a `?id=`

@@ -58,11 +58,24 @@ struct CatalogItem {
     executable_by_caller: bool,
 }
 
-/// A `Page<T>` envelope from the org-scoped identity reads; only `items` is decoded (the
-/// `total`/`limit`/`offset` fields are ignored). A decode failure surfaces as Unavailable.
+/// A `Page<T>` envelope from the org-scoped identity reads. `items` is the current page and
+/// `total` the full row count — used to surface a truncation notice when the fetch cap hides
+/// rows. The `limit`/`offset` fields are ignored. A decode failure surfaces as Unavailable.
 #[derive(Debug, Deserialize)]
 struct Page<T> {
     items: Vec<T>,
+    total: i64,
+}
+
+/// The org-scoped agents panel is fetched with an explicit `?limit=` cap; the CP still bounds it
+/// (max 500), so an org with more agents than the cap would silently show only the first page.
+/// Request the max and, whenever `total` exceeds what is shown, carry a truncation notice so the
+/// dashboard says so out loud instead of implying it listed everyone. Mirrors the dataplane
+/// panel's `Truncation` annotation (see `super::data`).
+const AGENTS_FETCH_LIMIT: usize = 500;
+
+fn truncation(shown: usize, total: i64) -> Option<super::data::Truncation> {
+    (total > shown as i64).then_some(super::data::Truncation { shown, total })
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,6 +134,21 @@ pub(super) struct AgentGrantRow {
     pub(super) team_name: String,
     pub(super) resource: String,
     pub(super) action: String,
+}
+
+/// The agents panel payload: the (capped) rows plus an optional truncation notice when the org
+/// holds more agents than the fetch cap surfaced.
+#[derive(Debug)]
+pub(super) struct AgentsPanel {
+    pub(super) rows: Vec<AgentRow>,
+    pub(super) truncated: Option<super::data::Truncation>,
+}
+
+/// One agent's grants panel payload: the (capped) rows plus an optional truncation notice.
+#[derive(Debug)]
+pub(super) struct AgentGrantsPanel {
+    pub(super) rows: Vec<AgentGrantRow>,
+    pub(super) truncated: Option<super::data::Truncation>,
 }
 
 pub(super) struct StatusPanel {
@@ -301,8 +329,10 @@ pub(super) async fn fetch_tools(
 /// authority gets a 403, which the panel renders as `Unauthorized` with an org-authority
 /// note (never a silently empty table). Same 401 → AuthExpired / decode-fail → Unavailable
 /// discipline as the sibling MCP panels.
-pub(super) async fn fetch_agents(client: &RestClient) -> Result<Panel<Vec<AgentRow>>, AuthExpired> {
-    let result = client.get_json("/api/v1/agents").await;
+pub(super) async fn fetch_agents(client: &RestClient) -> Result<Panel<AgentsPanel>, AuthExpired> {
+    let result = client
+        .get_json(&format!("/api/v1/agents?limit={AGENTS_FETCH_LIMIT}"))
+        .await;
     if is_unauthorized(&result) {
         return Err(AuthExpired);
     }
@@ -316,17 +346,18 @@ pub(super) async fn fetch_agents(client: &RestClient) -> Result<Panel<Vec<AgentR
         }
         Err(_) => return Ok(Panel::Unavailable),
     };
-    Ok(Panel::Data(
-        page.items
-            .into_iter()
-            .map(|a| AgentRow {
-                id: a.id,
-                name: a.name,
-                kind: a.kind,
-                status: a.status,
-            })
-            .collect(),
-    ))
+    let rows: Vec<AgentRow> = page
+        .items
+        .into_iter()
+        .map(|a| AgentRow {
+            id: a.id,
+            name: a.name,
+            kind: a.kind,
+            status: a.status,
+        })
+        .collect();
+    let truncated = truncation(rows.len(), page.total);
+    Ok(Panel::Data(AgentsPanel { rows, truncated }))
 }
 
 /// Fetch one agent's grants (lazily, on row expand). A 403 → `Unauthorized`; a 404
@@ -335,12 +366,14 @@ pub(super) async fn fetch_agents(client: &RestClient) -> Result<Panel<Vec<AgentR
 pub(super) async fn fetch_agent_grants(
     client: &RestClient,
     agent_id: &str,
-) -> Result<Panel<Vec<AgentGrantRow>>, AuthExpired> {
+) -> Result<Panel<AgentGrantsPanel>, AuthExpired> {
     // The agent id arrives as a user-supplied query value; percent-encode it so a hostile
     // value (`/`, `?`, `#`, `%`, dot-segments) cannot alter which upstream path is requested.
     let seg = encode_segment(agent_id);
     let result = client
-        .get_json(&format!("/api/v1/agents/{seg}/grants"))
+        .get_json(&format!(
+            "/api/v1/agents/{seg}/grants?limit={AGENTS_FETCH_LIMIT}"
+        ))
         .await;
     if is_unauthorized(&result) {
         return Err(AuthExpired);
@@ -355,16 +388,17 @@ pub(super) async fn fetch_agent_grants(
         }
         Err(_) => return Ok(Panel::Unavailable),
     };
-    Ok(Panel::Data(
-        page.items
-            .into_iter()
-            .map(|g| AgentGrantRow {
-                team_name: g.team_name,
-                resource: g.resource,
-                action: g.action,
-            })
-            .collect(),
-    ))
+    let rows: Vec<AgentGrantRow> = page
+        .items
+        .into_iter()
+        .map(|g| AgentGrantRow {
+            team_name: g.team_name,
+            resource: g.resource,
+            action: g.action,
+        })
+        .collect();
+    let truncated = truncation(rows.len(), page.total);
+    Ok(Panel::Data(AgentGrantsPanel { rows, truncated }))
 }
 
 fn is_unauthorized(result: &Result<serde_json::Value, ReadError>) -> bool {

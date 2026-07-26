@@ -87,10 +87,15 @@ struct StubState {
     agents_malformed: bool,
     /// The agent items served in the `Page` envelope.
     agents: Vec<Value>,
+    /// Override the `Page` `total` for `/api/v1/agents` (defaults to `agents.len()`); set larger
+    /// than the served items to simulate the CP capping the page below the full count.
+    agents_total: Option<usize>,
     /// Status for `GET /api/v1/agents/{id}/grants` (200 = healthy).
     grants_status: u16,
     /// The grant items served in the `Page` envelope.
     grants: Vec<Value>,
+    /// Override the `Page` `total` for the grants list (defaults to `grants.len()`).
+    grants_total: Option<usize>,
     requests: Mutex<Vec<Recorded>>,
 }
 
@@ -126,11 +131,13 @@ fn canned_error(status: u16) -> Response {
         .into_response()
 }
 
-/// Wrap `items` in the uniform `Page` envelope the CP list endpoints return.
-fn page(items: &[Value]) -> Response {
+/// Wrap `items` in the uniform `Page` envelope the CP list endpoints return. `total` is the full
+/// row count across all pages (≥ `items.len()`); when it exceeds the served items the dashboard
+/// must surface a truncation notice.
+fn page(items: &[Value], total: usize) -> Response {
     Json(json!({
         "items": items.to_vec(),
-        "total": items.len(),
+        "total": total,
         "limit": 500,
         "offset": 0,
     }))
@@ -151,14 +158,20 @@ fn route_request(state: &StubState, path: &str) -> Response {
                 // A 200 with a body that is NOT valid JSON — the decode-failure degradation.
                 return (StatusCode::OK, "this-is-not-json {{{").into_response();
             }
-            page(&state.agents)
+            page(
+                &state.agents,
+                state.agents_total.unwrap_or(state.agents.len()),
+            )
         }
         // `GET /api/v1/agents/{id}/grants` — one agent's grants.
         ["api", "v1", "agents", _id, "grants"] => {
             if state.grants_status != 200 {
                 return canned_error(state.grants_status);
             }
-            page(&state.grants)
+            page(
+                &state.grants,
+                state.grants_total.unwrap_or(state.grants.len()),
+            )
         }
         _ => canned_error(404),
     }
@@ -473,8 +486,10 @@ fn agents_fixture() -> AgentsFixture {
             agents_status: 200,
             agents_malformed: false,
             agents,
+            agents_total: None,
             grants_status: 200,
             grants,
+            grants_total: None,
             requests: Mutex::new(Vec::new()),
         },
         team,
@@ -751,4 +766,106 @@ async fn mcp_shell_lazy_loads_the_agents_partial() {
          recorded: {recorded:?}"
     );
     assert_bearer_and_no_leak(&recorded, &[&shell]);
+}
+
+// =============================================================================================
+// Test 6 (fpv2-9n8): TRUNCATION — the agents panel requests the full page cap (`?limit=500`, so
+// the old default-50 cliff no longer silently hides agents 51..500), and when the CP reports a
+// `total` greater than the rows shown, the panel renders a truncation notice naming shown-of-total
+// instead of implying it listed the whole org. The served rows still render.
+// =============================================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agents_partial_requests_full_limit_and_shows_truncation_notice() {
+    let fx = agents_fixture();
+    let team = fx.team.clone();
+    let alpha = fx.agent_alpha.clone();
+    let bravo = fx.agent_bravo.clone();
+    let mut state = fx.stub_state;
+    // Two rows served, but the org holds 500 agents in total — the page is capped.
+    state.agents_total = Some(500);
+    let stub = start_stub(state).await;
+    let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+    let http = client();
+
+    let resp = fetch(&http, &dash.agents_partial_url()).await;
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "the agents partial must be 200"
+    );
+    let body = resp.text().await.expect("agents body");
+
+    // The served rows still render.
+    assert!(
+        body.contains(&alpha) && body.contains(&bravo),
+        "the served agent rows must still render alongside the truncation notice; body:\n{body}"
+    );
+    // A truncation notice names shown-of-total (2 shown, 500 total).
+    let lower = body.to_lowercase();
+    assert!(
+        lower.contains("500") && (lower.contains("truncat") || lower.contains("showing first")),
+        "the agents panel must surface a truncation notice when total (500) exceeds the rows \
+         shown; body:\n{body}"
+    );
+
+    // The panel requested the full page cap, not the default 50 — the cliff moved to 500.
+    let recorded = stub.recorded();
+    let agents_req = recorded
+        .iter()
+        .find(|r| r.path == "/api/v1/agents")
+        .expect("the agents partial must fetch /api/v1/agents");
+    assert!(
+        agents_req.query.contains("limit=500"),
+        "the agents partial must request ?limit=500 (raise the default-50 cap); query: {:?}",
+        agents_req.query
+    );
+    assert_bearer_and_no_leak(&recorded, &[&body]);
+}
+
+// =============================================================================================
+// Test 7 (fpv2-9n8): GRANTS TRUNCATION — the same contract for an agent's grants list: request
+// `?limit=500` and surface a truncation notice when the agent has more grants than shown.
+// =============================================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_grants_partial_requests_full_limit_and_shows_truncation_notice() {
+    let fx = agents_fixture();
+    let team = fx.team.clone();
+    let team_a = fx.grant_team_a.clone();
+    let mut state = fx.stub_state;
+    state.grants_total = Some(120);
+    let stub = start_stub(state).await;
+    let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+    let http = client();
+
+    let agent_id = uid(AGENT_ALPHA_ID);
+    let resp = fetch(&http, &dash.agent_grants_partial_url(&agent_id)).await;
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "the grants partial must be 200"
+    );
+    let body = resp.text().await.expect("grants body");
+
+    assert!(
+        body.contains(&team_a),
+        "the served grant rows must still render alongside the truncation notice; body:\n{body}"
+    );
+    let lower = body.to_lowercase();
+    assert!(
+        lower.contains("120") && (lower.contains("truncat") || lower.contains("showing first")),
+        "the grants panel must surface a truncation notice when total (120) exceeds the rows \
+         shown; body:\n{body}"
+    );
+
+    let recorded = stub.recorded();
+    let grants_req = recorded
+        .iter()
+        .find(|r| r.path == format!("/api/v1/agents/{agent_id}/grants"))
+        .expect("the grants partial must fetch the agent's grants");
+    assert!(
+        grants_req.query.contains("limit=500"),
+        "the grants partial must request ?limit=500; query: {:?}",
+        grants_req.query
+    );
+    assert_bearer_and_no_leak(&recorded, &[&body]);
 }
