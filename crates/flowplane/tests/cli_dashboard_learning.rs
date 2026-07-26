@@ -128,9 +128,17 @@ struct StubState {
     team: String,
     /// Status for the learning-sessions LIST endpoint (200 = healthy).
     sessions_status: u16,
+    /// Status for the discovery-sessions LIST endpoint (200 = healthy). fpv2-g87.
+    discovery_status: u16,
     /// Status for the spec-content endpoint (200 = healthy → real ETag/304 handling).
     content_status: u16,
     sessions: Vec<Value>,
+    /// Discovery-session LIST items (fpv2-g87); empty by default so the extra sweep is a clean
+    /// 200-empty for suites that do not exercise discovery.
+    discovery_sessions: Vec<Value>,
+    /// Override the discovery Page `total` (defaults to the item count). Set larger than the
+    /// served items to simulate an upstream count that exceeds a single short page (fpv2-g87).
+    discovery_total: Option<usize>,
     apis: Vec<ApiFixture>,
     requests: Mutex<Vec<Recorded>>,
 }
@@ -169,13 +177,20 @@ fn canned_error(status: u16) -> Response {
 
 /// Slice `items` per limit/offset into the uniform Page envelope.
 fn paged(items: &[Value], page: PageQuery) -> Response {
+    let total = items.len();
+    paged_with_total(items, page, total)
+}
+
+/// Like [`paged`] but reports an explicit envelope `total` (may exceed the served items — models
+/// an upstream count larger than a single short page).
+fn paged_with_total(items: &[Value], page: PageQuery, total: usize) -> Response {
     let limit = page.limit.unwrap_or(50) as usize;
     let offset = page.offset.unwrap_or(0) as usize;
     let start = offset.min(items.len());
     let end = start.saturating_add(limit).min(items.len());
     Json(json!({
         "items": items[start..end].to_vec(),
-        "total": items.len(),
+        "total": total,
         "limit": limit,
         "offset": offset,
     }))
@@ -201,6 +216,16 @@ fn route_request(
                 return canned_error(state.sessions_status);
             }
             paged(&state.sessions, page)
+        }
+        // fpv2-g87: the discovery-session metadata list the Learning tab now also sweeps.
+        ["learning-discovery-sessions"] => {
+            if state.discovery_status != 200 {
+                return canned_error(state.discovery_status);
+            }
+            match state.discovery_total {
+                Some(total) => paged_with_total(&state.discovery_sessions, page, total),
+                None => paged(&state.discovery_sessions, page),
+            }
         }
         ["api-definitions"] => {
             let items: Vec<Value> = state.apis.iter().map(|a| a.list_item.clone()).collect();
@@ -648,6 +673,7 @@ fn learning_fixture() -> LearningFixture {
     let stub_state = StubState {
         team: team.clone(),
         sessions_status: 200,
+        discovery_status: 200,
         content_status: 200,
         sessions: vec![
             session_item(500, &session_done, "completed", json!(uid(100)), json!(TS2)),
@@ -660,6 +686,8 @@ fn learning_fixture() -> LearningFixture {
             ),
             session_item(502, &session_no_api, "completed", Value::Null, json!(TS2)),
         ],
+        discovery_sessions: Vec::new(),
+        discovery_total: None,
         apis: vec![learn, cap],
         requests: Mutex::new(Vec::new()),
     };
@@ -1122,11 +1150,14 @@ async fn two_completed_sessions_on_one_api_attribute_versions_by_provenance() {
     let stub_state = StubState {
         team: team.clone(),
         sessions_status: 200,
+        discovery_status: 200,
         content_status: 200,
         sessions: vec![
             session_item(800, &sess_a, "completed", json!(uid(700)), json!(TS2)),
             session_item(801, &sess_b, "completed", json!(uid(700)), json!(TS2)),
         ],
+        discovery_sessions: Vec::new(),
+        discovery_total: None,
         apis: vec![shared],
         requests: Mutex::new(Vec::new()),
     };
@@ -1189,5 +1220,152 @@ async fn open_sessions_panel_fetches_on_load_not_toggle() {
     assert!(
         details.contains("open"),
         "sessions panel renders open: {details}"
+    );
+}
+
+/// A discovery-session LIST item, wire shape (subset of the CP `DiscoverySessionView`).
+fn discovery_session_item(
+    id: u64,
+    name: &str,
+    status: &str,
+    sample_count: i64,
+    path_count: i64,
+    completed_at: Value,
+) -> Value {
+    json!({
+        "id": uid(id),
+        "name": name,
+        "status": status,
+        "listener_port": 19080,
+        "upstream_host": "example.test",
+        "upstream_port": 443,
+        "upstream_tls": true,
+        "validated_upstream_ip": "93.184.216.34",
+        "validated_upstream_port": 443,
+        "target_sample_count": 100,
+        "max_bytes": 1_000_000,
+        "max_distinct_paths": 100,
+        "sample_count": sample_count,
+        "byte_count": 4096,
+        "path_count": path_count,
+        "drop_count": 0,
+        "started_at": TS,
+        "completed_at": completed_at,
+        "updated_at": TS2,
+        "created_at": TS,
+    })
+}
+
+// =============================================================================================
+// Test (fpv2-g87): DISCOVERY SESSIONS in the Learning tab. The panel sweeps the discovery-session
+// list alongside learning-sessions and renders discovery rows with a "discovery" type facet and
+// their real counts (sample/path), distinct from capture ("learning") sessions. The discovery
+// fetch carries limit=500&offset=0. No token leak.
+// =============================================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn learning_panel_lists_discovery_sessions_with_type_facet() {
+    let fx = learning_fixture();
+    let team = fx.team.clone();
+    let capture_name = fx.session_done.clone();
+    let discovery_name = unique("discovery-sess");
+    let mut state = fx.stub_state;
+    state.discovery_sessions = vec![discovery_session_item(
+        900,
+        &discovery_name,
+        "completed",
+        37,
+        5,
+        json!(TS2),
+    )];
+    let stub = start_stub(state).await;
+    let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+    let http = client();
+
+    let body = fetch(&http, &dash.sessions_partial_url())
+        .await
+        .text()
+        .await
+        .expect("sessions body");
+
+    // The discovery session renders, carrying the "discovery" facet and its real counts.
+    assert!(
+        body.contains(&discovery_name),
+        "the discovery session must render in the Learning tab; body:\n{body}"
+    );
+    let disc_row = body
+        .split(&discovery_name)
+        .nth(1)
+        .and_then(|rest| rest.split("</tr>").next())
+        .expect("discovery row");
+    assert!(
+        disc_row.contains("discovery"),
+        "the discovery row must carry a \"discovery\" type facet; row:\n{disc_row}"
+    );
+    assert!(
+        disc_row.contains("37") && disc_row.contains('5'),
+        "the discovery row must show its sample (37) and path (5) counts; row:\n{disc_row}"
+    );
+
+    // Capture sessions still render, facet "capture", so the two types are distinguishable.
+    let cap_row = body
+        .split(&capture_name)
+        .nth(1)
+        .and_then(|rest| rest.split("</tr>").next())
+        .expect("capture row");
+    assert!(
+        cap_row.contains("capture"),
+        "capture sessions must carry a \"capture\" type facet; row:\n{cap_row}"
+    );
+
+    // Journal: the discovery list was swept with the full page cap.
+    let recorded = stub.recorded();
+    let base = format!("/api/v1/teams/{team}");
+    let disc_req = recorded
+        .iter()
+        .find(|r| r.path == format!("{base}/learning-discovery-sessions"))
+        .expect("the sessions partial must sweep /learning-discovery-sessions");
+    assert!(
+        disc_req.query.contains("limit=500") && disc_req.query.contains("offset=0"),
+        "the discovery sweep must fetch limit=500&offset=0; query: {:?}",
+        disc_req.query
+    );
+    assert_no_secret_paths(&recorded);
+    assert_bearer_and_no_leak(&recorded, &[&body]);
+}
+
+// =============================================================================================
+// Test (fpv2-g87, Codex follow-up): the "N of M" header reports the true upstream total, not the
+// fetched count. With 3 capture sessions and a discovery list whose envelope reports 42 total but
+// serves 1 row, the header must read "4 of 45" (4 rows shown, 3 + 42 upstream) — not "4 of 4".
+// =============================================================================================
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn learning_header_total_reflects_upstream_count_not_fetched() {
+    let fx = learning_fixture();
+    let team = fx.team.clone();
+    let discovery_name = unique("disc-partial");
+    let mut state = fx.stub_state;
+    state.discovery_sessions = vec![discovery_session_item(
+        910,
+        &discovery_name,
+        "completed",
+        10,
+        2,
+        json!(TS2),
+    )];
+    state.discovery_total = Some(42);
+    let stub = start_stub(state).await;
+    let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+    let http = client();
+
+    let body = fetch(&http, &dash.sessions_partial_url())
+        .await
+        .text()
+        .await
+        .expect("sessions body");
+
+    assert!(
+        body.contains("4 of 45"),
+        "the header must report rows-shown of upstream-total (4 of 45), not the fetched count; \
+         body:\n{body}"
     );
 }
