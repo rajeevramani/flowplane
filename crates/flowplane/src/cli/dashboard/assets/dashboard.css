@@ -104,3 +104,95 @@ body {
 .spec-link { cursor: pointer; }
 .trace-list .trace-row { border-bottom: 1px solid var(--line); padding: 0.3rem 0; }
 .hop-times { font-family: ui-monospace, monospace; font-size: 0.75rem; }
+
+/* ==========================================================================
+   Prototype design system (fpv2-80z ui-styling-alignment) — transcribed from
+   .local/prototype/dashboard-prototype.html. New rules for migrated surfaces;
+   legacy rules above remain until the dead-CSS sweep (fpv2-80z.10) so
+   unmigrated tabs keep their styling.
+   ========================================================================== */
+
+/* Slice 1 (fpv2-80z.1): tokens + base + shell + nav */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #eef1f5;
+  --border: #d8dde5;
+  --text: #1c2430;
+  --text-dim: #5a6675;
+  --text-faint: #8a94a3;
+  --accent: #3d6ea8;
+  --accent-soft: #e3ecf6;
+  --good: #2e8b57;
+  --good-soft: #e2f2e9;
+  --warn: #b07d18;
+  --warn-soft: #f7eed7;
+  --crit: #c0392b;
+  --crit-soft: #f9e4e1;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12161d;
+    --surface: #1a2029;
+    --surface-2: #222a35;
+    --border: #303a48;
+    --text: #dde3ea;
+    --text-dim: #98a3b3;
+    --text-faint: #6b7686;
+    --accent: #6d9fd8;
+    --accent-soft: #223347;
+    --good: #57b981;
+    --good-soft: #1c3328;
+    --warn: #d8a63f;
+    --warn-soft: #38301a;
+    --crit: #e06456;
+    --crit-soft: #3d211d;
+  }
+}
+/* Parity with the prototype only — inert, not a shipped theme toggle. */
+:root[data-theme="light"] {
+  --bg: #f6f7f9; --surface: #ffffff; --surface-2: #eef1f5; --border: #d8dde5;
+  --text: #1c2430; --text-dim: #5a6675; --text-faint: #8a94a3;
+  --accent: #3d6ea8; --accent-soft: #e3ecf6;
+  --good: #2e8b57; --good-soft: #e2f2e9;
+  --warn: #b07d18; --warn-soft: #f7eed7;
+  --crit: #c0392b; --crit-soft: #f9e4e1;
+}
+:root[data-theme="dark"] {
+  --bg: #12161d; --surface: #1a2029; --surface-2: #222a35; --border: #303a48;
+  --text: #dde3ea; --text-dim: #98a3b3; --text-faint: #6b7686;
+  --accent: #6d9fd8; --accent-soft: #223347;
+  --good: #57b981; --good-soft: #1c3328;
+  --warn: #d8a63f; --warn-soft: #38301a;
+  --crit: #e06456; --crit-soft: #3d211d;
+}
+
+body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; line-height: 1.5; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+main { padding: 20px 24px; display: grid; gap: 16px; }
+
+header.topbar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.brand { font-weight: 650; font-size: 15px; letter-spacing: 0.01em; }
+.brand span { color: var(--accent); }
+.ctx { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip {
+  font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 4px; padding: 2px 8px;
+}
+.chip b { color: var(--text); font-weight: 600; }
+.topbar .spacer { flex: 1; }
+
+nav.tabs { display: flex; gap: 2px; padding: 0 20px; background: var(--surface); border-bottom: 1px solid var(--border); }
+nav.tabs a {
+  padding: 9px 16px 7px; color: var(--text-dim); text-decoration: none; font-size: 13.5px;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+nav.tabs a.active { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+nav.tabs a:hover, nav.tabs a:focus-visible { color: var(--text); outline: none; }
