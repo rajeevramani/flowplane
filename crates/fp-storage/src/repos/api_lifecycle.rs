@@ -294,7 +294,7 @@ fn body_bytes(value: Option<&str>) -> i64 {
     value.map_or(0, |body| body.len() as i64)
 }
 
-fn merged_body_bytes(
+pub(crate) fn merged_body_bytes(
     body: Option<&str>,
     existing_bytes: Option<i64>,
     incoming_bytes: Option<i64>,
