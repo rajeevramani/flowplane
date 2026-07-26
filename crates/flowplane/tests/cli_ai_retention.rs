@@ -84,6 +84,7 @@ async fn ai_retention_cli_get_and_set_work_as_rest_only_clients() {
         validator: None,
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
+        xds_degraded: None,
         discovery_forwarding_policy: Default::default(),
         egress_advisory: Default::default(),
         rls_repush: None,

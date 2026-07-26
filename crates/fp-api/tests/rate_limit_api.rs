@@ -97,6 +97,7 @@ async fn build_app_with(pool: sqlx::PgPool, issuer: &Issuer) -> axum::Router {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
+        xds_degraded: None,
         discovery_forwarding_policy: Default::default(),
         egress_advisory: Default::default(),
         rls_repush: None,

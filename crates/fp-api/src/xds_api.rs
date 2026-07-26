@@ -54,6 +54,11 @@ pub struct XdsStatusView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_nack: Option<NackEventView>,
     pub dataplanes: Vec<DataplaneXdsStatusView>,
+    /// Resources currently withdrawn from this team's served snapshot — quarantined after a NACK
+    /// (served from last-good bytes) or dropped on a translation failure — each with its reason.
+    /// Empty when none, or when the snapshot-cache handle is not wired (API-only deployments).
+    /// fpv2-xni.
+    pub withdrawn: Vec<crate::state::WithdrawnResource>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -224,11 +229,20 @@ pub async fn status(
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
 ) -> Result<Json<XdsStatusView>, ApiError> {
-    let run = async {
-        let team = resolve_team(&state, &ctx, &team).await?;
-        fp_core::services::xds_status::status(&state.pool, &ctx, team, rid).await
+    let team_ref = resolve_team(&state, &ctx, &team)
+        .await
+        .map_err(|e| ApiError::new(e, rid))?;
+    let team_id = team_ref.id;
+    let status = fp_core::services::xds_status::status(&state.pool, &ctx, team_ref, rid)
+        .await
+        .map_err(|e| ApiError::new(e, rid))?;
+    // The withdrawn set lives in the in-memory snapshot cache (not the DB); read it through the
+    // narrow handle when wired, else report an empty list. The caller is already authorized for
+    // this team's xDS status above (resolve_team + the service's own read authorization).
+    let withdrawn = match &state.xds_degraded {
+        Some(source) => source.withdrawn(team_id).await,
+        None => Vec::new(),
     };
-    let status = run.await.map_err(|e| ApiError::new(e, rid))?;
     let health = if status.recent_nack_count > 0 || status.warming_failures > 0 {
         "degraded"
     } else if status.stale_dataplanes > 0 {
@@ -262,6 +276,7 @@ pub async fn status(
                 warming_failures: item.dataplane.warming_failures,
             })
             .collect(),
+        withdrawn,
     }))
 }
 

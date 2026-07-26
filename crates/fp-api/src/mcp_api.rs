@@ -2548,6 +2548,7 @@ mod tests {
             validator: None,
             write_throttle: std::sync::Arc::new(crate::throttle::WriteThrottle::new(1000)),
             xds_readiness: None,
+            xds_degraded: None,
             discovery_forwarding_policy: Default::default(),
             egress_advisory: Default::default(),
             rls_repush: None,

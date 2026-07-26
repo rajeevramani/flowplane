@@ -9,6 +9,33 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
+/// Bridges the live xDS snapshot cache to the API's `GET /xds/status` read (fpv2-xni). Defined in
+/// the binary so fp-api need not depend on fp-xds; it maps `SnapshotCache::degraded` into the
+/// fp-api DTO.
+struct SnapshotDegradedSource(Arc<fp_xds::snapshot::SnapshotCache>);
+
+impl fp_api::state::XdsDegradedSource for SnapshotDegradedSource {
+    fn withdrawn<'a>(
+        &'a self,
+        team_id: fp_domain::TeamId,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Vec<fp_api::state::WithdrawnResource>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.0
+                .degraded(team_id)
+                .await
+                .into_iter()
+                .map(|d| fp_api::state::WithdrawnResource {
+                    type_url: d.type_url,
+                    name: d.name,
+                    error: d.error,
+                })
+                .collect()
+        })
+    }
+}
+
 pub async fn run() -> anyhow::Result<()> {
     let config = load_config()?;
     let otel_provider = init_tracing(&config)?;
@@ -256,6 +283,9 @@ pub async fn run() -> anyhow::Result<()> {
             max_lag: 0,
             failed: xds_consumer_failed,
         }),
+        xds_degraded: Some(std::sync::Arc::new(SnapshotDegradedSource(
+            snapshot_cache.clone(),
+        ))),
         discovery_forwarding_policy,
         egress_advisory,
         rls_repush,
