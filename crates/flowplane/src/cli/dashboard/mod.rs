@@ -537,7 +537,7 @@ async fn apis_page(axum::extract::State(state): axum::extract::State<Arc<DashSta
 #[template(path = "dashboard/apis_list.html")]
 struct ApisListPanel<'a> {
     nonce: &'a str,
-    panel: data::Panel<resources::Table<apis::ApiRow>>,
+    panel: data::Panel<apis::ApisOverview>,
 }
 
 async fn apis_list_partial(

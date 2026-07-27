@@ -296,9 +296,11 @@ fn list_item(
     display_name: &str,
     published_spec_version_id: Value,
     tool_count: u64,
+    enabled_tool_count: u64,
     route_binding_count: u64,
     latest_version: Value,
     published_version: Value,
+    latest_decision: Value,
 ) -> Value {
     json!({
         "id": uid(id),
@@ -308,9 +310,11 @@ fn list_item(
         "published_spec_version_id": published_spec_version_id,
         "revision": 1,
         "tool_count": tool_count,
+        "enabled_tool_count": enabled_tool_count,
         "route_binding_count": route_binding_count,
         "latest_version": latest_version,
         "published_version": published_version,
+        "latest_decision": latest_decision,
         "created_at": TS,
         "updated_at": TS2,
     })
@@ -322,9 +326,11 @@ fn definition_from(list_item: &Value) -> Value {
     let mut def = list_item.clone();
     let obj = def.as_object_mut().expect("list item is an object");
     obj.remove("tool_count");
+    obj.remove("enabled_tool_count");
     obj.remove("route_binding_count");
     obj.remove("latest_version");
     obj.remove("published_version");
+    obj.remove("latest_decision");
     def
 }
 
@@ -614,8 +620,10 @@ fn happy_fixture() -> HappyFixture {
         json!(uid(102)),
         2,
         1,
+        1,
         json!(3),
         json!(2),
+        json!("rejected"),
     );
     let x = ApiFixture {
         name: api_x.clone(),
@@ -645,8 +653,10 @@ fn happy_fixture() -> HappyFixture {
         json!(uid(112)),
         0,
         0,
+        0,
         json!(1),
         json!(1),
+        json!("published"),
     );
     let y = ApiFixture {
         name: api_y.clone(),
@@ -745,9 +755,8 @@ async fn apis_happy_path_list_and_detail_render_lifecycle_read_model() {
         "the list must render the display name; body:\n{list}"
     );
     assert!(
-        list.contains("published v2 · latest v3"),
-        "API-X (published_version=2, latest_version=3) must summarize as \
-         \"published v2 · latest v3\"; body:\n{list}"
+        list.contains("published v2 · v3 rejected"),
+        "API-X must render the real latest review decision for published v2 plus latest v3; body:\n{list}"
     );
     assert!(
         list.contains("published v1"),
@@ -902,7 +911,18 @@ async fn apis_happy_path_list_and_detail_render_lifecycle_read_model() {
 async fn all_five_review_decisions_render_in_detail() {
     let team = unique("team");
     let api = unique("api-five");
-    let a_list = list_item(120, &api, "Five", Value::Null, 0, 0, json!(1), Value::Null);
+    let a_list = list_item(
+        120,
+        &api,
+        "Five",
+        Value::Null,
+        0,
+        0,
+        0,
+        json!(1),
+        Value::Null,
+        json!("unpublished"),
+    );
     let fixture = ApiFixture {
         name: api.clone(),
         definition: definition_from(&a_list),
@@ -1024,6 +1044,8 @@ async fn api_without_versions_renders_no_spec_and_skips_events_fetch() {
         Value::Null,
         0,
         0,
+        0,
+        Value::Null,
         Value::Null,
         Value::Null,
     );

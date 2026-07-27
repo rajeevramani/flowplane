@@ -293,12 +293,50 @@ fn list_item(
         "published_spec_version_id": published_spec_version_id,
         "revision": 1,
         "tool_count": tool_count,
+        "enabled_tool_count": 0,
         "route_binding_count": route_binding_count,
         "latest_version": latest_version,
         "published_version": published_version,
+        // Required-but-nullable on the CLI↔CP wire boundary.
+        "latest_decision": null,
         "created_at": TS,
         "updated_at": TS2,
     })
+}
+
+#[allow(clippy::too_many_arguments)] // explicit lifecycle fixture facts are easier to audit
+fn lifecycle_list_item(
+    id: u64,
+    name: &str,
+    display_name: &str,
+    description: &str,
+    revision: u64,
+    tool_count: u64,
+    enabled_tool_count: u64,
+    route_binding_count: u64,
+    latest_version: Option<u64>,
+    published_version: Option<u64>,
+    latest_decision: Option<&str>,
+) -> Value {
+    let mut item = list_item(
+        id,
+        name,
+        display_name,
+        Value::Null,
+        tool_count,
+        route_binding_count,
+        latest_version.map_or(Value::Null, |v| json!(v)),
+        published_version.map_or(Value::Null, |v| json!(v)),
+    );
+    let obj = item.as_object_mut().expect("list item object");
+    obj.insert("description".into(), json!(description));
+    obj.insert("revision".into(), json!(revision));
+    obj.insert("enabled_tool_count".into(), json!(enabled_tool_count));
+    obj.insert(
+        "latest_decision".into(),
+        latest_decision.map_or(Value::Null, |decision| json!(decision)),
+    );
+    item
 }
 
 /// The definition GET body: the list item minus the enrichment fields
@@ -989,6 +1027,141 @@ fn table_containing<'a>(html: &'a str, needle: &str, which: &str) -> &'a str {
     panic!("the {which} partial must contain a <table> holding {needle:?}; body:\n{html}");
 }
 
+fn text_content(html: &str) -> String {
+    let mut text = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                text.push(' ');
+            }
+            '>' => {
+                in_tag = false;
+                text.push(' ');
+            }
+            _ if !in_tag => text.push(ch),
+            _ => {}
+        }
+    }
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+struct OverviewFixture {
+    items: Vec<Value>,
+    payments: String,
+    present_null: String,
+}
+
+fn overview_fixture() -> OverviewFixture {
+    let payments = unique("api-payments");
+    let present_null = unique("api-stable-null-decision");
+    OverviewFixture {
+        items: vec![
+            lifecycle_list_item(
+                801,
+                &unique("api-catalog"),
+                "Catalog API",
+                "Current published catalog",
+                3,
+                3,
+                2,
+                2,
+                Some(1),
+                Some(1),
+                Some("published"),
+            ),
+            lifecycle_list_item(
+                802,
+                &payments,
+                "Payments API",
+                "Payments ingress lifecycle",
+                17,
+                4,
+                1,
+                1,
+                Some(3),
+                Some(2),
+                Some("submitted"),
+            ),
+            lifecycle_list_item(
+                803,
+                &unique("api-reviews"),
+                "Reviews API",
+                "Awaiting first publication",
+                8,
+                2,
+                2,
+                0,
+                Some(1),
+                None,
+                Some("reviewed"),
+            ),
+            lifecycle_list_item(
+                804,
+                &unique("api-orders"),
+                "Orders API",
+                "Rejected draft retained",
+                11,
+                5,
+                3,
+                3,
+                Some(3),
+                Some(2),
+                Some("rejected"),
+            ),
+            lifecycle_list_item(
+                805,
+                &unique("api-empty"),
+                "Empty API",
+                "No specification yet",
+                2,
+                1,
+                1,
+                1,
+                None,
+                None,
+                None,
+            ),
+            lifecycle_list_item(
+                806,
+                &present_null,
+                "Stable API",
+                "Published without a latest review event",
+                29,
+                0,
+                0,
+                0,
+                Some(4),
+                Some(4),
+                None,
+            ),
+        ],
+        payments,
+        present_null,
+    }
+}
+
+fn list_only_state(
+    team: &str,
+    items: Vec<Value>,
+    total: u64,
+    fail_at: Option<(u64, u16)>,
+) -> StubState {
+    StubState {
+        team: team.to_string(),
+        list: Mutex::new(Coll {
+            status: 200,
+            items,
+            total,
+            fail_at,
+        }),
+        apis: Vec::new(),
+        route_configs: Vec::new(),
+        listeners: Vec::new(),
+    }
+}
+
 // =============================================================================================
 // Criterion 1 (shell): GET /<nonce>/apis serves the APIs shell page — `<nav class="tabs">`
 // links all 7 tabs as real `<a>` anchors with the APIs anchor `class="active"` (a real link,
@@ -1299,4 +1472,254 @@ async fn list_403_not_authorized_500_unavailable_and_no_inline_anywhere() {
     )
     .await;
     assert_no_inline(&detail, "apis detail");
+}
+
+// =============================================================================================
+// fpv2-41r.2 — independently authored served-HTML / black-box contracts.
+// =============================================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn six_complete_api_rows_render_exact_overview_and_lifecycle_facts() {
+    let team = unique("team-overview-complete");
+    let fx = overview_fixture();
+    let state = list_only_state(&team, fx.items, 6, None);
+    let stub = start_stub(state).await;
+    let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+    let list = fetch_page(&client(), &dash, "partials/apis/list").await;
+    let text = text_content(&list);
+
+    // Four exact cards over the six completely acquired, parseable rows.
+    for expected in [
+        "API definitions 6",
+        "4 published",
+        "2 attention",
+        "API tools 15",
+        "9 enabled",
+        "6 disabled",
+        "Route bindings 7",
+        "4 APIs with bindings",
+        "Latest unpublished 3",
+    ] {
+        assert!(
+            text.contains(expected),
+            "complete six-row HTML must expose exact aggregate text {expected:?}; text:\n{text}"
+        );
+    }
+    assert!(
+        !text.contains('≥') && !list.contains("&ge;"),
+        "complete acquisition must not render lower-bound card values; body:\n{list}"
+    );
+
+    // One lifecycle row pins real description/revision, semantic state, enabled/total tools,
+    // bindings, age, and the retained native detail interaction.
+    let payments = row_of(&list, &fx.payments);
+    let payments_text = text_content(payments);
+    for expected in [
+        "Payments ingress lifecycle",
+        "published v2 · v3 submitted",
+        "1 / 4",
+        "1 binding",
+        "ago",
+    ] {
+        assert!(
+            payments_text.contains(expected),
+            "payments row must render lifecycle fact {expected:?}; row:\n{payments}"
+        );
+    }
+    assert!(
+        payments_text.contains("revision 17") || payments_text.contains("rev 17"),
+        "payments row must expose real revision 17; row:\n{payments}"
+    );
+    assert!(
+        has_element_with_classes(payments, &["pill", "warn"]),
+        "submitted newer-latest state must have semantic warn class; row:\n{payments}"
+    );
+    let details = all_opening_tags(&list, "<details");
+    let details = details
+        .iter()
+        .find(|tag| tag.contains(&format!("partials/apis/detail?api={}", fx.payments)))
+        .unwrap_or_else(|| {
+            panic!(
+                "the slice must retain the existing native <details> interaction for {}; body:\n{list}",
+                fx.payments
+            )
+        });
+    assert!(
+        details.contains("hx-trigger=\"toggle once\""),
+        "native detail must retain one-shot lazy detail wiring; tag: {details:?}"
+    );
+
+    // `latest_decision` is present-null (not absent) and `enabled_tool_count` is present: the
+    // row must decode normally rather than falling into version-skew presentation.
+    let null_decision = row_of(&list, &fx.present_null);
+    let null_text = text_content(null_decision);
+    assert!(
+        null_text.contains("published v4") && null_text.contains("0 / 0"),
+        "present-null latest_decision and required enabled count must decode; row:\n{null_decision}"
+    );
+    assert!(
+        !null_text.to_lowercase().contains("unparseable")
+            && !null_text.to_lowercase().contains("version skew"),
+        "present-null latest_decision is a real no-event value, not version skew; row:\n{null_decision}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partial_api_sweep_uses_visible_lower_bounds_not_exact_global_aggregates() {
+    let team = unique("team-overview-partial");
+    let mut fx = overview_fixture();
+    // A real second-page failure requires a full first page: the production sweep correctly
+    // treats a short page as natural completion even when the envelope total drifted.
+    for i in 6..500_u64 {
+        fx.items.push(lifecycle_list_item(
+            10_000 + i,
+            &unique("api-padding"),
+            "Padding API",
+            "Zero-valued partial-sweep padding",
+            1,
+            0,
+            0,
+            0,
+            None,
+            None,
+            None,
+        ));
+    }
+    // The first page is visible, but the next bounded-sweep page fails. The envelope's 600 is
+    // useful only for "first N of M" acquisition wording, never for fabricated global sums.
+    let state = list_only_state(&team, fx.items, 600, Some((500, 500)));
+    let stub = start_stub(state).await;
+    let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+    let list = fetch_page(&client(), &dash, "partials/apis/list").await;
+    let text = text_content(&list);
+    let lower = text.to_lowercase();
+
+    assert!(
+        lower.contains("partial") && lower.contains("visible"),
+        "bounded-sweep failure must remain an explicit visible-partial notice; text:\n{text}"
+    );
+    assert!(
+        lower.contains("first 500 of 600"),
+        "partial acquisition must state the visible subset as first 500 of 600; text:\n{text}"
+    );
+    let lower_bound_marks = text.matches('≥').count() + list.matches("&ge;").count();
+    assert!(
+        lower_bound_marks >= 4,
+        "all four partial aggregate cards must use lower-bound values; body:\n{list}"
+    );
+    for heading in [
+        "API definitions",
+        "API tools",
+        "Route bindings",
+        "Latest unpublished",
+    ] {
+        assert!(
+            text.contains(heading),
+            "partial HTML must retain the {heading:?} card; text:\n{text}"
+        );
+    }
+    assert!(
+        !text.contains("API definitions 600")
+            && !text.contains("API tools 600")
+            && !text.contains("Route bindings 600")
+            && !text.contains("Latest unpublished 600"),
+        "partial HTML must never promote upstream total=600 into an exact global aggregate; \
+         text:\n{text}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_required_lifecycle_keys_render_version_skew_and_are_excluded_from_cards() {
+    let team = unique("team-overview-version-skew");
+    let valid = lifecycle_list_item(
+        901,
+        &unique("api-valid"),
+        "Valid API",
+        "Only parseable aggregate contributor",
+        6,
+        5,
+        3,
+        2,
+        Some(1),
+        None,
+        Some("submitted"),
+    );
+    let mut missing_enabled = lifecycle_list_item(
+        902,
+        &unique("api-missing-enabled"),
+        "Missing enabled",
+        "Must not fabricate enabled zero",
+        7,
+        99,
+        99,
+        99,
+        Some(2),
+        Some(1),
+        Some("reviewed"),
+    );
+    missing_enabled
+        .as_object_mut()
+        .expect("fixture object")
+        .remove("enabled_tool_count");
+    let mut missing_decision = lifecycle_list_item(
+        903,
+        &unique("api-missing-decision"),
+        "Missing decision",
+        "Must not fabricate no events",
+        8,
+        88,
+        88,
+        88,
+        Some(3),
+        Some(2),
+        Some("published"),
+    );
+    missing_decision
+        .as_object_mut()
+        .expect("fixture object")
+        .remove("latest_decision");
+
+    let state = list_only_state(
+        &team,
+        vec![valid, missing_enabled, missing_decision],
+        3,
+        None,
+    );
+    let stub = start_stub(state).await;
+    let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+    let list = fetch_page(&client(), &dash, "partials/apis/list").await;
+    let text = text_content(&list);
+    let lower = text.to_lowercase();
+
+    assert!(
+        lower.matches("unparseable").count() >= 2 && lower.matches("version skew").count() >= 2,
+        "each missing required key must produce an explicit unparseable/version-skew row; \
+         text:\n{text}"
+    );
+    assert!(
+        lower.contains("unparsed rows excluded"),
+        "decode failures must carry an explicit aggregate-exclusion notice; text:\n{text}"
+    );
+    for expected in [
+        "API definitions 3",
+        "0 published",
+        "1 attention",
+        "API tools 5",
+        "3 enabled",
+        "2 disabled",
+        "Route bindings 2",
+        "1 APIs with bindings",
+        "Latest unpublished 1",
+    ] {
+        assert!(
+            text.contains(expected),
+            "cards must derive only from the one parseable row ({expected:?}); text:\n{text}"
+        );
+    }
+    for fabricated in ["99 enabled", "88 enabled", "187 enabled", "192 bindings"] {
+        assert!(
+            !text.contains(fabricated),
+            "unparseable rows must not leak into aggregate fact {fabricated:?}; text:\n{text}"
+        );
+    }
 }
