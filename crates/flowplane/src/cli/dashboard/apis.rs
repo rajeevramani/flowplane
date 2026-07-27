@@ -258,6 +258,8 @@ struct SpecListItem {
     id: String,
     version: i64,
     source_kind: String,
+    #[serde(default = "unknown_format")]
+    format: String,
     spec_hash: String,
     #[serde(default)]
     latest_decision: Option<String>,
@@ -276,6 +278,8 @@ pub(super) struct LineageRow {
 
 #[derive(Debug, Deserialize)]
 struct EventItem {
+    #[serde(default)]
+    id: String,
     decision: String,
     actor_type: String,
     #[serde(default)]
@@ -289,6 +293,77 @@ pub(super) struct EventRow {
     pub(super) actor_type: String,
     pub(super) reason: String,
     pub(super) created: String,
+}
+
+fn unknown_format() -> String {
+    "—".into()
+}
+
+fn event_rows(now: DateTime<Utc>, mut events: Vec<EventItem>) -> Vec<EventRow> {
+    events.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    events
+        .into_iter()
+        .map(|event| EventRow {
+            decision: event.decision,
+            actor_type: event.actor_type,
+            reason: event.reason,
+            created: humanize_age(now, event.created_at),
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+pub(super) struct PipelineStage {
+    pub(super) label: String,
+    pub(super) kind: &'static str,
+}
+
+fn compose_pipeline(
+    source_kind: Option<&str>,
+    events: &[EventRow],
+    events_available: bool,
+    published_version: Option<i64>,
+    enabled_tools: usize,
+    total_tools: usize,
+    tools_partial: bool,
+) -> Vec<PipelineStage> {
+    let mut stages = Vec::new();
+    if let Some(source) = source_kind {
+        stages.push(PipelineStage {
+            label: format!("source: {source}"),
+            kind: "source",
+        });
+    }
+    stages.extend(events.iter().map(|event| PipelineStage {
+        label: event.decision.clone(),
+        kind: "event",
+    }));
+    if !events_available {
+        stages.push(PipelineStage {
+            label: "review events unavailable".into(),
+            kind: "unavailable",
+        });
+    }
+    if let Some(version) = published_version {
+        stages.push(PipelineStage {
+            label: format!("published v{version}"),
+            kind: "published",
+        });
+    }
+    let tool_label = if tools_partial {
+        format!("≥{enabled_tools}/≥{total_tools} tools enabled (visible)")
+    } else {
+        format!("{enabled_tools}/{total_tools} tools enabled")
+    };
+    stages.push(PipelineStage {
+        label: tool_label,
+        kind: "tools",
+    });
+    stages
 }
 
 #[derive(Debug, Deserialize)]
@@ -336,6 +411,15 @@ pub(super) struct ToolRow {
 pub(super) struct ApiDetail {
     pub(super) api: String,
     pub(super) pill: String,
+    pub(super) description: String,
+    pub(super) revision: String,
+    pub(super) updated: String,
+    pub(super) latest_format: String,
+    pub(super) latest_hash: String,
+    pub(super) published_version: Option<i64>,
+    pub(super) tool_summary: String,
+    pub(super) events_available: bool,
+    pub(super) pipeline: Vec<PipelineStage>,
     /// Event history of the latest version, oldest first, verbatim. `None` means the
     /// events fetch FAILED — rendered as an explicit unavailable notice, never as an
     /// empty history (fail closed, no silent partial).
@@ -403,15 +487,40 @@ pub(super) async fn fetch_api_detail(
     let seg = encode_segment(api);
     let mut notices = Vec::new();
 
-    // The definition row: only needed for published_spec_version_id.
-    let published_spec_id: Option<String> = match client
+    // The definition row supplies persisted metadata and the published-spec pointer.
+    let (published_spec_id, description, revision, updated): (
+        Option<String>,
+        String,
+        String,
+        String,
+    ) = match client
         .get_json_sized(&format!("/api/v1/teams/{team}/api-definitions/{seg}"))
         .await
     {
-        Ok((value, _)) => value
-            .get("published_spec_version_id")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        Ok((value, _)) => {
+            let published = value
+                .get("published_spec_version_id")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let description = value
+                .get("description")
+                .and_then(Value::as_str)
+                .filter(|description| !description.is_empty())
+                .unwrap_or("—")
+                .to_string();
+            let revision = value
+                .get("revision")
+                .and_then(Value::as_i64)
+                .map(|revision| revision.to_string())
+                .unwrap_or_else(|| "—".into());
+            let updated = value
+                .get("updated_at")
+                .and_then(Value::as_str)
+                .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
+                .map(|timestamp| humanize_age(now, timestamp.with_timezone(&Utc)))
+                .unwrap_or_else(|| "—".into());
+            (published, description, revision, updated)
+        }
         Err(super::super::client::ReadError::Status { status, .. })
             if status == reqwest::StatusCode::UNAUTHORIZED =>
         {
@@ -471,18 +580,13 @@ pub(super) async fn fetch_api_detail(
             return Err(AuthExpired);
         }
         events = match sweep_or_empty(events_result, "review events", &mut notices) {
-            Ok(items) => Some(
-                items
+            Ok(items) => {
+                let decoded = items
                     .into_iter()
                     .filter_map(|item| serde_json::from_value::<EventItem>(item).ok())
-                    .map(|e| EventRow {
-                        decision: e.decision,
-                        actor_type: e.actor_type,
-                        reason: e.reason,
-                        created: humanize_age(now, e.created_at),
-                    })
-                    .collect(),
-            ),
+                    .collect();
+                Some(event_rows(now, decoded))
+            }
             Err(_) => None,
         };
     }
@@ -588,6 +692,7 @@ pub(super) async fn fetch_api_detail(
     if matches!(tools_result, Err(SweepFailure::AuthExpired)) {
         return Err(AuthExpired);
     }
+    let notices_before_tools = notices.len();
     let tools = match sweep_or_empty(tools_result, "api tools", &mut notices) {
         Ok(items) => items,
         Err(state) => return Ok(state.into_panel()),
@@ -605,10 +710,42 @@ pub(super) async fn fetch_api_detail(
             output_schema: serde_json::to_string_pretty(&t.output_schema).unwrap_or_default(),
         })
         .collect();
+    let tools_partial = notices.len() > notices_before_tools;
+
+    let enabled_tool_count = tools.iter().filter(|tool| tool.enabled).count();
+    let latest_format = latest
+        .map(|spec| spec.format.clone())
+        .unwrap_or_else(|| "—".into());
+    let latest_hash = latest
+        .map(|spec| spec.spec_hash.clone())
+        .unwrap_or_else(|| "—".into());
+    let pipeline = compose_pipeline(
+        latest.map(|spec| spec.source_kind.as_str()),
+        events.as_deref().unwrap_or(&[]),
+        events.is_some(),
+        published_version,
+        enabled_tool_count,
+        tools.len(),
+        tools_partial,
+    );
+    let tool_summary = if tools_partial {
+        format!("≥{enabled_tool_count} / ≥{} enabled (visible)", tools.len())
+    } else {
+        format!("{enabled_tool_count} / {} enabled", tools.len())
+    };
 
     Ok(Panel::Data(ApiDetail {
         api: api.to_string(),
         pill,
+        description,
+        revision,
+        updated,
+        latest_format,
+        latest_hash,
+        published_version,
+        tool_summary,
+        events_available: events.is_some(),
+        pipeline,
         events,
         latest_version,
         lineage,
@@ -622,7 +759,10 @@ pub(super) async fn fetch_api_detail(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{api_lifecycle_presentation, api_row, overview_from_table, state_pill, ApiRow};
+    use super::{
+        api_lifecycle_presentation, api_row, compose_pipeline, event_rows, overview_from_table,
+        state_pill, ApiRow, EventItem,
+    };
     use crate::cli::dashboard::resources::{PartialNotice, PartialReason, Table};
     use chrono::{TimeZone, Utc};
     use serde_json::json;
@@ -926,5 +1066,79 @@ mod tests {
         assert_eq!(partial.binding_count, "≥3");
         assert_eq!(partial.apis_with_bindings, "≥2");
         assert_eq!(partial.latest_unpublished_count, "≥2");
+    }
+
+    #[test]
+    fn detail_pipeline_orders_persisted_events_and_never_invents_stages() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 27, 0, 0, 0).unwrap();
+        let events = event_rows(
+            now,
+            vec![
+                EventItem {
+                    id: "event-3".into(),
+                    decision: "future-decision".into(),
+                    actor_type: "human".into(),
+                    reason: "kept verbatim".into(),
+                    created_at: Utc.with_ymd_and_hms(2026, 7, 27, 0, 3, 0).unwrap(),
+                },
+                EventItem {
+                    id: "event-1".into(),
+                    decision: "submitted".into(),
+                    actor_type: "system".into(),
+                    reason: String::new(),
+                    created_at: Utc.with_ymd_and_hms(2026, 7, 27, 0, 1, 0).unwrap(),
+                },
+                EventItem {
+                    id: "event-2".into(),
+                    decision: "reviewed".into(),
+                    actor_type: "human".into(),
+                    reason: "looks good".into(),
+                    created_at: Utc.with_ymd_and_hms(2026, 7, 27, 0, 2, 0).unwrap(),
+                },
+            ],
+        );
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.decision.as_str())
+                .collect::<Vec<_>>(),
+            vec!["submitted", "reviewed", "future-decision"]
+        );
+
+        let pipeline = compose_pipeline(Some("openapi"), &events, true, Some(2), 1, 3, false);
+        assert_eq!(
+            pipeline
+                .iter()
+                .map(|stage| stage.label.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "source: openapi",
+                "submitted",
+                "reviewed",
+                "future-decision",
+                "published v2",
+                "1/3 tools enabled",
+            ]
+        );
+        let rendered = pipeline
+            .iter()
+            .map(|stage| stage.label.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(!rendered.contains("captured"));
+        assert!(!rendered.contains("cluster"));
+
+        let degraded = compose_pipeline(Some("openapi"), &[], false, None, 2, 3, true);
+        assert_eq!(
+            degraded
+                .iter()
+                .map(|stage| stage.label.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "source: openapi",
+                "review events unavailable",
+                "≥2/≥3 tools enabled (visible)",
+            ]
+        );
     }
 }

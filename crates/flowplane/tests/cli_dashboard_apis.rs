@@ -1190,3 +1190,220 @@ async fn open_list_panel_fetches_on_load_not_toggle() {
         "open panel must fetch on load, not toggle: {attrs}"
     );
 }
+
+// =============================================================================================
+// fpv2-41r.3 — independently authored served-detail contract from persisted fixture facts.
+// =============================================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn served_detail_recomposes_only_persisted_facts_in_truthful_pipeline_and_disclosure() {
+    let team = unique("team-served-detail");
+    let api = unique("api-served-detail");
+    let description = unique("description-persisted");
+    let binding = unique("binding-persisted");
+    let route_config = unique("route-config-persisted");
+    let scope = unique("scope-persisted");
+    let listener = unique("listener-persisted");
+    let enabled_one = unique("tool-enabled-one");
+    let enabled_two = unique("tool-enabled-two");
+    let disabled = unique("tool-disabled");
+    let input_marker = unique("schema-input-persisted");
+    let output_marker = unique("schema-output-persisted");
+    let spec_hash = hex_hash(0x41_003);
+
+    let list = list_item(
+        41_000,
+        &api,
+        "Persisted Detail API",
+        json!(uid(41_002)),
+        3,
+        2,
+        1,
+        json!(3),
+        json!(2),
+        json!("rejected"),
+    );
+    let mut definition = definition_from(&list);
+    let definition_obj = definition.as_object_mut().expect("definition object");
+    definition_obj.insert("description".into(), json!(description));
+    definition_obj.insert("revision".into(), json!(37));
+
+    let mut latest_spec = spec_item(41_003, 3, "generated", Some("rejected"));
+    let latest_spec_obj = latest_spec.as_object_mut().expect("latest spec object");
+    latest_spec_obj.insert("format".into(), json!("openapi-3.1+json"));
+    latest_spec_obj.insert("spec_hash".into(), json!(spec_hash));
+
+    let mut route_binding = binding_item(41_100, &binding, 41_000, 41_200, 41_300);
+    route_binding
+        .as_object_mut()
+        .expect("binding object")
+        .insert("virtual_host".into(), json!(scope));
+
+    let mut tool_one = tool_item(41_401, &enabled_one, 41_000, 41_003, true);
+    tool_one
+        .as_object_mut()
+        .expect("tool object")
+        .insert("input_schema".into(), json!({"title": input_marker}));
+    let mut tool_two = tool_item(41_402, &enabled_two, 41_000, 41_003, true);
+    tool_two
+        .as_object_mut()
+        .expect("tool object")
+        .insert("output_schema".into(), json!({"title": output_marker}));
+
+    let fixture = ApiFixture {
+        name: api.clone(),
+        list_item: list,
+        definition,
+        specs: vec![
+            latest_spec,
+            spec_item(41_002, 2, "learned", Some("published")),
+            spec_item(41_001, 1, "imported", Some("approved")),
+        ],
+        // Deliberately newest-first: served detail owns chronological oldest-to-newest order.
+        events: vec![
+            event_item(
+                41_505,
+                "rejected",
+                "event-05-rejected",
+                "2026-01-05T00:00:00Z",
+            ),
+            event_item(
+                41_504,
+                "published",
+                "event-04-published",
+                "2026-01-04T00:00:00Z",
+            ),
+            event_item(
+                41_503,
+                "approved",
+                "event-03-approved",
+                "2026-01-03T00:00:00Z",
+            ),
+            event_item(
+                41_502,
+                "reviewed",
+                "event-02-reviewed",
+                "2026-01-02T00:00:00Z",
+            ),
+            event_item(
+                41_501,
+                "submitted",
+                "event-01-submitted",
+                "2026-01-01T00:00:00Z",
+            ),
+        ],
+        bindings: vec![route_binding],
+        tools: vec![
+            tool_one,
+            tool_two,
+            tool_item(41_403, &disabled, 41_000, 41_003, false),
+        ],
+    };
+    let mut state = empty_stub(&team, 200);
+    state.apis = vec![fixture];
+    state.route_configs = vec![infra_item(41_200, &route_config)];
+    state.listeners = vec![infra_item(41_300, &listener)];
+    let stub = start_stub(state).await;
+    let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+
+    let response = fetch(&client(), &dash.detail_partial_url(&api)).await;
+    assert_eq!(response.status().as_u16(), 200, "served detail must be 200");
+    let detail = response.text().await.expect("served detail body");
+    let text = detail
+        .split('<')
+        .flat_map(|fragment| {
+            fragment
+                .split_once('>')
+                .map_or("", |(_, text)| text)
+                .split_whitespace()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    for persisted_fact in [
+        "source: generated",
+        description.as_str(),
+        "revision 37",
+        "openapi-3.1+json",
+        spec_hash.as_str(),
+        "published v2",
+        "2/3 tools enabled",
+    ] {
+        assert!(
+            text.contains(persisted_fact),
+            "served detail must render persisted fact {persisted_fact:?}; text:\n{text}"
+        );
+    }
+
+    let mut previous = 0;
+    for event in [
+        "event-01-submitted",
+        "event-02-reviewed",
+        "event-03-approved",
+        "event-04-published",
+        "event-05-rejected",
+    ] {
+        let position = detail.find(event).unwrap_or_else(|| {
+            panic!("served detail must render real persisted event {event:?}; body:\n{detail}")
+        });
+        assert!(
+            position > previous,
+            "persisted review events must render oldest-to-newest; {event:?} was out of order; \
+             body:\n{detail}"
+        );
+        previous = position;
+    }
+
+    let binding_at = idx_of(&detail, &binding, "binding chip");
+    let route_config_at = idx_of(&detail, &route_config, "route-config chip");
+    let scope_at = idx_of(&detail, &scope, "scope chip");
+    let listener_at = idx_of(&detail, &listener, "listener chip");
+    assert!(
+        binding_at < route_config_at && route_config_at < scope_at && scope_at < listener_at,
+        "joined chips must follow binding → route-config → scope → listener; body:\n{detail}"
+    );
+
+    let lower = detail.to_lowercase();
+    assert!(
+        !lower.contains("captured event") && !lower.contains("backend cluster"),
+        "served detail must not invent a captured-event or backend-cluster stage; body:\n{detail}"
+    );
+
+    let disclosure = all_details_regions(&detail)
+        .into_iter()
+        .find(|candidate| {
+            candidate.contains(&enabled_one)
+                && candidate.contains(&enabled_two)
+                && candidate.contains(&disabled)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the full tool/schema table must remain under a secondary native disclosure; \
+                 body:\n{detail}"
+            )
+        });
+    for persisted_table_fact in [&input_marker, &output_marker] {
+        assert!(
+            disclosure.contains(persisted_table_fact),
+            "secondary tool disclosure must retain schema fact {persisted_table_fact:?}; \
+             disclosure:\n{disclosure}"
+        );
+    }
+
+    assert_no_content_or_secret_paths(&stub.recorded());
+}
+
+fn all_details_regions(html: &str) -> Vec<&str> {
+    let mut regions = Vec::new();
+    let mut offset = 0;
+    while let Some(start) = html[offset..].find("<details") {
+        let start = offset + start;
+        let Some(end) = html[start..].find("</details>") else {
+            break;
+        };
+        let end = start + end + "</details>".len();
+        regions.push(&html[start..end]);
+        offset = end;
+    }
+    regions
+}
