@@ -1,6 +1,6 @@
 {% if let Some(p) = panel.data() %}
 <section class="panel" id="panel-learning-sessions">
-  <h2>Learning &amp; discovery sessions <span class="hint">{{ p.rows.len() }} of {{ p.total }}</span></h2>
+  <h2>Learning &amp; discovery sessions <span class="count">{{ p.rows.len() }} of {{ p.total }}</span></h2>
   {% for n in p.notices %}
   {% if n.budget() %}
   <p class="banner">Partial — first {{ n.shown }} of {{ n.total }} {{ n.collection }} (budget reached).</p>
@@ -11,7 +11,8 @@
   {% if p.unparsed_specs > 0 %}
   <p class="banner">{{ p.unparsed_specs }} spec-version row(s) could not be parsed (version skew?) and are not attributed to sessions.</p>
   {% endif %}
-  <table class="dataplanes">
+  <div class="tablewrap">
+  <table>
     <thead>
       <tr><th>Session</th><th>Type</th><th>Status</th><th>API</th><th>Samples</th><th>Paths</th><th>When</th><th>Produced spec versions</th></tr>
     </thead>
@@ -24,7 +25,7 @@
         <td colspan="6" class="placeholder">unparseable session row (version skew?)</td>
         {% else %}
         <td>{{ row.session_type }}</td>
-        <td>{{ row.status }}</td>
+        <td>{% if row.status == "completed" %}<span class="pill good">{{ row.status }}</span>{% else if row.status == "failed" %}<span class="pill crit">{{ row.status }}</span>{% else %}<span class="pill neutral">{{ row.status }}</span>{% endif %}</td>
         <td>{{ row.api }}</td>
         <td>{{ row.samples }}</td>
         <td>{{ row.paths }}</td>
@@ -57,6 +58,7 @@
       {% endif %}
     </tbody>
   </table>
+  </div>
 </section>
 {% else if panel.unauthorized() %}
 <section class="panel unauthorized" id="panel-learning-sessions">
