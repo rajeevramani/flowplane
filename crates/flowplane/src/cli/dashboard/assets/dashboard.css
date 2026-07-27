@@ -1,113 +1,19 @@
-:root {
-  color-scheme: light dark;
-  --bg: #f6f7f9;
-  --panel: #ffffff;
-  --ink: #1a1d21;
-  --muted: #6b7280;
-  --line: #e5e7eb;
-  --accent: #2563eb;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #111418;
-    --panel: #1a1f26;
-    --ink: #e5e7eb;
-    --muted: #9ca3af;
-    --line: #2a313b;
-  }
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background: var(--bg);
-  color: var(--ink);
-}
-.topbar {
-  display: flex;
-  align-items: baseline;
-  gap: 1rem;
-  padding: 0.75rem 1.25rem;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-}
-.topbar h1 { font-size: 1.1rem; margin: 0; }
-.team { color: var(--muted); font-size: 0.9rem; }
-.panel {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 1rem 1.25rem;
-}
-.panel h2 { margin: 0 0 0.5rem; font-size: 0.95rem; color: var(--muted); }
-.placeholder { color: var(--muted); }
-.hint { font-weight: normal; font-size: 0.75rem; color: var(--muted); }
-.stats div { display: flex; justify-content: space-between; gap: 1rem; padding: 0.2rem 0; }
-.stats dt { color: var(--muted); }
-.stats dd { margin: 0; font-variant-numeric: tabular-nums; }
-.health { padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.8rem; }
-.health-healthy { background: #16a34a22; color: #16a34a; }
-.health-degraded { background: #d9770622; color: #d97706; }
-.live { color: #16a34a; }
-.stale { color: #d97706; }
-.banner {
-  background: #d9770618;
-  border: 1px solid #d9770655;
-  border-radius: 6px;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.85rem;
-}
-.dataplanes { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-.dataplanes th, .dataplanes td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--line); }
-.dataplanes th { color: var(--muted); font-weight: 500; }
-.unauthorized p, .unavailable p, .error p { color: var(--muted); }
-.nacks { color: var(--muted); font-size: 0.85rem; }
-
-/* Resources topology (fpv2-cxw.2) */
-.nav a, .nav .active { margin-right: 0.75rem; }
-.topology .chain { border-left: 3px solid #ccd; margin: 0.75rem 0; padding-left: 0.75rem; }
-.topology .node { margin: 0.25rem 0; }
-.topology .vhost { margin: 0.25rem 0 0.25rem 1rem; }
-.topology ul.routes { margin: 0.15rem 0 0.4rem 1.25rem; padding: 0; list-style: none; }
-.topology .chip { display: inline-block; border: 1px solid #aac; border-radius: 4px; padding: 0 0.4rem; margin: 0.1rem 0.2rem; }
-.topology .chip.unresolved, .topology .node.unresolved { border-color: #c66; color: #a33; }
-.topology .chip .weight { font-weight: bold; }
-.topology .chip.hl { background: #ffef9e; outline: 2px solid #e6b800; }
-.snapshot { font-style: italic; }
-
-/* AI gateway tab (ui-f5) */
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.75rem; margin-top: 0.5rem; }
-.card { border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.8rem; display: flex; flex-direction: column; }
-.card .value { font-size: 1.4rem; font-variant-numeric: tabular-nums; }
-.card .label { color: var(--muted); font-size: 0.8rem; }
-.pill { padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.8rem; }
-.pill.enforcing { background: #dc262622; color: #dc2626; }
-.pill.shadow { background: #6b728022; color: var(--muted); }
-.meter { width: 120px; height: 8px; background: var(--line); border-radius: 999px; overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 0.4rem; }
-.meter-fill { height: 100%; background: var(--accent); }
-.meter.warn .meter-fill { background: #d97706; }
-.banner.warn { background: #dc262618; border-color: #dc262655; }
-.banner .chip { display: inline-block; border: 1px solid var(--line); border-radius: 4px; padding: 0 0.4rem; margin: 0 0.2rem; }
-.trace-row summary { display: flex; gap: 0.75rem; align-items: baseline; cursor: pointer; flex-wrap: wrap; }
-.trace-request { font-family: ui-monospace, monospace; font-size: 0.85rem; }
-.trace-failure { color: #dc2626; }
-.hop-timeline { margin: 0.4rem 0 0.4rem 1.5rem; padding: 0; }
-.hop-timeline .hop { margin: 0.15rem 0; }
-.hop-timeline .hop.failed .hop-outcome { color: #dc2626; }
-.hop-name { font-family: ui-monospace, monospace; margin-right: 0.5rem; }
-.spec-link { cursor: pointer; }
-.trace-list .trace-row { border-bottom: 1px solid var(--line); padding: 0.3rem 0; }
-.hop-times { font-family: ui-monospace, monospace; font-size: 0.75rem; }
-
 /* ==========================================================================
-   Prototype design system (fpv2-80z ui-styling-alignment) — transcribed from
-   .local/prototype/dashboard-prototype.html. New rules for migrated surfaces;
-   legacy rules above remain until the dead-CSS sweep (fpv2-80z.10) so
-   unmigrated tabs keep their styling.
+   Flowplane dashboard stylesheet — prototype design system
+   (fpv2-80z ui-styling-alignment; transcribed from
+   .local/prototype/dashboard-prototype.html, dead legacy rules swept in
+   fpv2-80z.10).
+
+   Parity note: `.hl` is applied at runtime by resources.js (no template
+   emitter); `data-cluster` is a behavioral attribute hook. Structural hook
+   classes with no styling (test/htmx anchors, e.g. .topology, .api-detail,
+   .detail-row, .spec-viewer, .spec-content, .rl-domain, .rl-policies,
+   .rl-policy-list, .footer-kinds) are intentionally rule-less.
    ========================================================================== */
 
-/* Slice 1 (fpv2-80z.1): tokens + base + shell + nav */
+/* Tokens + light/dark ----------------------------------------------------- */
 :root {
+  color-scheme: light dark;
   --bg: #f6f7f9;
   --surface: #ffffff;
   --surface-2: #eef1f5;
@@ -163,11 +69,20 @@ body {
   --crit: #e06456; --crit-soft: #3d211d;
 }
 
-body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; line-height: 1.5; }
+/* Base -------------------------------------------------------------------- */
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+}
 .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-
 main { padding: 20px 24px; display: grid; gap: 16px; }
 
+/* Shell: topbar + tabs nav ------------------------------------------------ */
 header.topbar {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
   padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border);
@@ -191,7 +106,7 @@ nav.tabs a {
 nav.tabs a.active { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
 nav.tabs a:hover, nav.tabs a:focus-visible { color: var(--text); outline: none; }
 
-/* Slice 2 (fpv2-80z.2): cards, panel, tablewrap, pills, banner */
+/* Cards, panel, tables, pills, banners ------------------------------------ */
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 0; }
 .card {
   background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
@@ -200,9 +115,6 @@ nav.tabs a:hover, nav.tabs a:focus-visible { color: var(--text); outline: none; 
 .card .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-faint); }
 .card .value { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 600; }
 .card .sub { font-size: 12px; color: var(--text-dim); }
-.value.good { color: var(--good); }
-.value.warn { color: var(--warn); }
-.value.crit { color: var(--crit); }
 
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
 .panel > h2 {
@@ -224,7 +136,7 @@ td { padding: 8px 14px; border-bottom: 1px solid var(--border); vertical-align: 
 tr:last-child td { border-bottom: none; }
 td.mono, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 12.5px; }
 td.dim { color: var(--text-dim); }
-td.wrap { white-space: normal; min-width: 260px; }
+tr.disabled td { color: var(--text-faint); }
 
 .pill {
   display: inline-block; font-size: 11px; font-weight: 600; border-radius: 999px;
@@ -241,18 +153,37 @@ td.wrap { white-space: normal; min-width: 260px; }
   background: var(--warn-soft); border-radius: 6px; padding: 10px 14px; font-size: 13px;
 }
 .banner code { font-family: var(--mono); font-size: 12.5px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
-.banner.hidden { display: none; }
 
-/* Slice 3 (fpv2-80z.3): resources — topology chains, cluster chips, warn variants */
+/* Shared text helpers ----------------------------------------------------- */
+.placeholder { color: var(--text-dim); }
+.hint { font-weight: normal; font-size: 0.75rem; color: var(--text-faint); }
+.muted { color: var(--text-faint); }
+.snapshot { font-style: italic; }
+.nacks { color: var(--text-dim); font-size: 0.85rem; }
+.unauthorized p, .unavailable p, .error p { color: var(--text-dim); }
+.stats div { display: flex; justify-content: space-between; gap: 1rem; padding: 0.2rem 0; }
+.stats dt { color: var(--text-dim); }
+.stats dd { margin: 0; font-variant-numeric: tabular-nums; }
+.spec-link { cursor: pointer; }
+.page-more {
+  cursor: pointer; font-size: 12.5px; color: var(--text-dim);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 3px 10px; margin: 8px 14px;
+}
+.page-more:hover, .page-more:focus-visible { color: var(--text); outline: none; }
+
+/* Resources: topology chains + cluster chips ------------------------------ */
 .flow { padding: 10px 16px; display: grid; gap: 8px; }
 .flow + .flow { border-top: 1px solid var(--border); }
 .flow .lst { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .flow .lst::before { content: "▾"; color: var(--text-faint); font-size: 11px; align-self: center; }
 .flow .lst .name { font-family: var(--mono); font-weight: 650; font-size: 13.5px; }
 .flow .lst .bind { font-family: var(--mono); font-size: 12.5px; color: var(--text-dim); }
+.flow.open .chain { display: grid; }
 .chain { display: grid; gap: 4px; padding-left: 14px; border-left: 2px solid var(--border); margin-left: 4px; }
 .chain .rc { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
 .chain .rc.unresolved { color: var(--warn); }
+.chain .rc.unbound, .chain .rc.unbound .hint { color: var(--warn); }
 .chain .vh { padding-left: 16px; font-family: var(--mono); font-size: 12.5px; color: var(--text-dim); }
 .routes-grid { display: grid; gap: 3px; padding-left: 32px; }
 .rt { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-family: var(--mono); font-size: 12.5px; }
@@ -264,11 +195,15 @@ td.wrap { white-space: normal; min-width: 260px; }
   padding: 1px 8px; font-size: 12px; cursor: default;
 }
 .cchip .cname { font-weight: 600; }
+.cchip .weight { font-weight: 600; color: var(--text-dim); }
 .cchip .meta { color: var(--text-faint); font-size: 11px; }
 .cchip.hl { border-color: var(--accent); background: var(--accent-soft); }
 .cchip.unresolved { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
 
-/* Slice 7 (fpv2-80z.7): native progress meter (AC 4a — replaces the inline-style meter-fill) */
+/* APIs: lifecycle event pipeline ------------------------------------------ */
+.pipeline { display: grid; gap: 6px; margin: 2px 0 10px; padding-left: 0; list-style: none; }
+
+/* AI: native progress meter (AC 4a) + trace drill-down --------------------- */
 progress.meter {
   width: 120px; height: 6px; appearance: none; -webkit-appearance: none;
   border: none; border-radius: 999px; background: var(--surface-2);
@@ -279,3 +214,13 @@ progress.meter::-webkit-progress-value { background: var(--accent); border-radiu
 progress.meter::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
 progress.meter.warn::-webkit-progress-value { background: var(--warn); }
 progress.meter.warn::-moz-progress-bar { background: var(--warn); }
+
+.trace-row summary { display: flex; gap: 0.75rem; align-items: baseline; cursor: pointer; flex-wrap: wrap; }
+.trace-list .trace-row { border-bottom: 1px solid var(--border); padding: 0.3rem 0; }
+.trace-request { font-family: var(--mono); font-size: 0.85rem; }
+.trace-failure { color: var(--crit); }
+.hop-timeline { margin: 0.4rem 0 0.4rem 1.5rem; padding: 0; }
+.hop-timeline .hop { margin: 0.15rem 0; }
+.hop-timeline .hop.failed .hop-outcome { color: var(--crit); }
+.hop-name { font-family: var(--mono); margin-right: 0.5rem; }
+.hop-times { font-family: var(--mono); font-size: 0.75rem; }
