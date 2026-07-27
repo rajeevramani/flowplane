@@ -267,3 +267,15 @@ td.wrap { white-space: normal; min-width: 260px; }
 .cchip .meta { color: var(--text-faint); font-size: 11px; }
 .cchip.hl { border-color: var(--accent); background: var(--accent-soft); }
 .cchip.unresolved { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+
+/* Slice 7 (fpv2-80z.7): native progress meter (AC 4a — replaces the inline-style meter-fill) */
+progress.meter {
+  width: 120px; height: 6px; appearance: none; -webkit-appearance: none;
+  border: none; border-radius: 999px; background: var(--surface-2);
+  overflow: hidden; vertical-align: middle; margin-right: 0.4rem;
+}
+progress.meter::-webkit-progress-bar { background: var(--surface-2); border-radius: 999px; }
+progress.meter::-webkit-progress-value { background: var(--accent); border-radius: 999px; }
+progress.meter::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
+progress.meter.warn::-webkit-progress-value { background: var(--warn); }
+progress.meter.warn::-moz-progress-bar { background: var(--warn); }

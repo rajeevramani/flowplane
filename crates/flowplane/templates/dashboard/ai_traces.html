@@ -12,7 +12,11 @@
       <span class="trace-request">{{ t.request_id }}</span>
       <span class="hint">{{ t.trace_id }}</span>
       <span>{{ t.model }}</span>
-      <span class="trace-status">{{ t.status }}</span>
+      {# Trace status is the request's HTTP status code (digits, or — when absent): a
+         descriptive value, not a fixed enum. Per the design's descriptive carve-out it
+         stays `pill neutral` and is never folded into the good/warn/crit status map — the
+         failure signal is `.trace-failure` (below) and per-hop `.hop.failed`. #}
+      <span><span class="pill neutral">{{ t.status }}</span></span>
       {% if !t.failure_hop.is_empty() %}<span class="trace-failure">failed: {{ t.failure_hop }}</span>{% endif %}
       <span class="hint">{{ t.age }}</span>
     </summary>

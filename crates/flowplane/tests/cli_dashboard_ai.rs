@@ -687,17 +687,19 @@ fn assert_paged_fetch(recorded: &[Recorded], path: &str) {
     );
 }
 
-/// Extract the value rendered on the stat card labeled `label`.
+/// Extract the value rendered on the stat card labeled `label`. The prototype-order
+/// card markup renders `<span class="label">LABEL</span><span class="value">N</span>`,
+/// so the value span FOLLOWS the label.
 fn card_value(body: &str, label: &str) -> String {
     let needle = format!(">{label}<");
     let idx = body
         .find(&needle)
         .unwrap_or_else(|| panic!("no card labeled {label:?}; body:\n{body}"));
-    let before = &body[..idx];
-    let vstart = before
-        .rfind("class=\"value\"")
-        .unwrap_or_else(|| panic!("no value span before the {label:?} card label; body:\n{body}"));
-    let after = &before[vstart..];
+    let after = &body[idx..];
+    let vstart = after
+        .find("class=\"value\"")
+        .unwrap_or_else(|| panic!("no value span after the {label:?} card label; body:\n{body}"));
+    let after = &after[vstart..];
     let open = after
         .find('>')
         .unwrap_or_else(|| panic!("malformed value span for card {label:?}"));
