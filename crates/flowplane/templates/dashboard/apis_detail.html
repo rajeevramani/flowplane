@@ -1,6 +1,6 @@
 {% if let Some(d) = panel.data() %}
 <section class="panel api-detail">
-  <h3>{{ d.api }} <span class="pill">{{ d.pill }}</span></h3>
+  <h3>{{ d.api }} <span class="pill neutral">{{ d.pill }}</span></h3>
   {% for n in d.notices %}
   {% if n.budget() %}
   <p class="banner">Partial — first {{ n.shown }} of {{ n.total }} {{ n.collection }} (budget reached).</p>
@@ -17,7 +17,7 @@
   {% else %}
   <ol class="pipeline">
     {% for e in events %}
-    <li><span class="decision decision-{{ e.decision }}">{{ e.decision }}</span>
+    <li><span class="pill neutral">{{ e.decision }}</span>
         by {{ e.actor_type }}{% if !e.reason.is_empty() %} — “{{ e.reason }}”{% endif %}
         <span class="hint">{{ e.created }}</span></li>
     {% endfor %}
@@ -29,7 +29,8 @@
   {% endif %}
 
   <h4>Spec lineage</h4>
-  <table class="dataplanes">
+  <div class="tablewrap">
+  <table>
     <thead><tr><th>Version</th><th>Source</th><th>Hash</th><th>Latest decision</th><th>Published</th><th>Created</th></tr></thead>
     <tbody>
       {% for s in d.lineage %}
@@ -37,7 +38,7 @@
         <td>v{{ s.version }}</td>
         <td>{{ s.source_kind }}</td>
         <td><code>{{ s.hash_short }}</code></td>
-        <td>{{ s.decision }}</td>
+        <td><span class="pill neutral">{{ s.decision }}</span></td>
         <td>{% if s.published %}yes{% else %}—{% endif %}</td>
         <td>{{ s.created }}</td>
       </tr>
@@ -47,12 +48,14 @@
       {% endif %}
     </tbody>
   </table>
+  </div>
 
   <h4>Envoy chain</h4>
   {% if d.chain_names_unresolved %}
   <p class="banner">Gateway resource names are currently unavailable — chain rows show raw IDs.</p>
   {% endif %}
-  <table class="dataplanes">
+  <div class="tablewrap">
+  <table>
     <thead><tr><th>Binding</th><th>Route config</th><th>Scope</th><th>Listener</th></tr></thead>
     <tbody>
       {% for c in d.chain %}
@@ -63,9 +66,11 @@
       {% endif %}
     </tbody>
   </table>
+  </div>
 
   <h4>Tools <span class="hint">including disabled</span></h4>
-  <table class="dataplanes">
+  <div class="tablewrap">
+  <table>
     <thead><tr><th>Tool</th><th>Operation</th><th>Method</th><th>Path</th><th>Enabled</th><th>Schemas</th></tr></thead>
     <tbody>
       {% for t in d.tools %}
@@ -74,7 +79,7 @@
         <td>{{ t.operation_id }}</td>
         <td>{{ t.method }}</td>
         <td>{{ t.path }}</td>
-        <td>{% if t.enabled %}yes{% else %}<strong>disabled</strong>{% endif %}</td>
+        <td>{% if t.enabled %}<span class="pill neutral">yes</span>{% else %}<span class="pill warn">disabled</span>{% endif %}</td>
         <td>
           <details><summary>input / output</summary>
             <pre>{{ t.input_schema }}</pre>
@@ -88,6 +93,7 @@
       {% endif %}
     </tbody>
   </table>
+  </div>
 </section>
 {% else if panel.unauthorized() %}
 <section class="panel unauthorized"><p>Not authorized to view this API.</p></section>
