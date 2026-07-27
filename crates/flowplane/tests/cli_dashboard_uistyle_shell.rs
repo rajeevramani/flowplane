@@ -327,9 +327,9 @@ async fn shell_serves_tabs_nav_naming_all_seven_tabs_with_active_overview() {
     );
     let mut cursor = 0usize;
     for tab in TABS {
-        let at = nav[cursor..].find(tab).unwrap_or_else(|| {
-            panic!("the nav must name the {tab:?} tab (in order); nav:\n{nav}")
-        });
+        let at = nav[cursor..]
+            .find(tab)
+            .unwrap_or_else(|| panic!("the nav must name the {tab:?} tab (in order); nav:\n{nav}"));
         // The tab name must sit inside an anchor (between an `<a` and its `</a>`), not
         // merely appear as stray text.
         let abs = cursor + at;

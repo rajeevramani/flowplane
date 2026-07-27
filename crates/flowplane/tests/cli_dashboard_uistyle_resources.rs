@@ -44,14 +44,14 @@ mod common;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::task::JoinHandle;
 
 /// A distinctive bearer token so any leak into a response body would be unambiguous.
@@ -260,11 +260,7 @@ fn canned_error(status: u16) -> Response {
         .into_response()
 }
 
-async fn start_stub(
-    clusters: Coll,
-    route_configs: Coll,
-    listeners: Coll,
-) -> StubUpstream {
+async fn start_stub(clusters: Coll, route_configs: Coll, listeners: Coll) -> StubUpstream {
     let state = Arc::new(StubState {
         clusters: Mutex::new(clusters),
         route_configs: Mutex::new(route_configs),
@@ -290,7 +286,9 @@ async fn start_stub(
             fail_at: None,
         }),
     });
-    let app = Router::new().fallback(stub_handler).with_state(state.clone());
+    let app = Router::new()
+        .fallback(stub_handler)
+        .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind stub upstream to an ephemeral port");
@@ -540,7 +538,12 @@ fn class_token_sets(html: &str) -> Vec<Vec<String>> {
     while let Some(i) = rest.find("class=\"") {
         let after = &rest[i + "class=\"".len()..];
         let Some(end) = after.find('"') else { break };
-        sets.push(after[..end].split_whitespace().map(str::to_string).collect());
+        sets.push(
+            after[..end]
+                .split_whitespace()
+                .map(str::to_string)
+                .collect(),
+        );
         rest = &after[end..];
     }
     sets
@@ -602,7 +605,9 @@ fn texts_of_elements_with_classes(html: &str, classes: &[&str]) -> Vec<String> {
                         }
                     }
                 } else {
-                    region_end = after[text_start..].find('<').unwrap_or(after.len() - text_start);
+                    region_end = after[text_start..]
+                        .find('<')
+                        .unwrap_or(after.len() - text_start);
                 }
                 let raw = &after[text_start..text_start + region_end];
                 let mut out = String::with_capacity(raw.len());
@@ -646,17 +651,15 @@ fn css_rule_bodies<'a>(css: &'a str, token: &str) -> Vec<&'a str> {
         let Some((selector, body)) = block.split_once('{') else {
             continue;
         };
-        let matches = selector
-            .split([',', ' ', '\n', '\t', '>'])
-            .any(|part| {
-                let part = part.trim();
-                part == token
-                    || (part.starts_with(token)
-                        && part[token.len()..]
-                            .chars()
-                            .next()
-                            .is_some_and(|c| !c.is_alphanumeric() && c != '-' && c != '_'))
-            });
+        let matches = selector.split([',', ' ', '\n', '\t', '>']).any(|part| {
+            let part = part.trim();
+            part == token
+                || (part.starts_with(token)
+                    && part[token.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| !c.is_alphanumeric() && c != '-' && c != '_'))
+        });
         if matches {
             bodies.push(body);
         }
@@ -767,9 +770,7 @@ async fn shell_resources_tab_active_and_eight_lazy_details_panels() {
     let resources_js = scripts
         .iter()
         .find(|tag| tag.contains("resources.js"))
-        .unwrap_or_else(|| {
-            panic!("the shell must load resources.js; script tags: {scripts:?}")
-        });
+        .unwrap_or_else(|| panic!("the shell must load resources.js; script tags: {scripts:?}"));
     assert!(
         resources_js.contains("src=\"/"),
         "resources.js must be same-origin (src starts with '/'); tag: {resources_js:?}"

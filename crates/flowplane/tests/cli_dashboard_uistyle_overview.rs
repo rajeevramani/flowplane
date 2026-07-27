@@ -39,7 +39,7 @@ mod common;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
@@ -123,7 +123,9 @@ async fn start_stub(stats: (u16, String), xds: (u16, String)) -> StubUpstream {
         stats: Mutex::new(stats),
         xds: Mutex::new(xds),
     });
-    let app = Router::new().fallback(stub_handler).with_state(state.clone());
+    let app = Router::new()
+        .fallback(stub_handler)
+        .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind stub upstream to an ephemeral port");
@@ -395,7 +397,12 @@ fn class_token_sets(html: &str) -> Vec<Vec<String>> {
     while let Some(i) = rest.find("class=\"") {
         let after = &rest[i + "class=\"".len()..];
         let Some(end) = after.find('"') else { break };
-        sets.push(after[..end].split_whitespace().map(str::to_string).collect());
+        sets.push(
+            after[..end]
+                .split_whitespace()
+                .map(str::to_string)
+                .collect(),
+        );
         rest = &after[end..];
     }
     sets
@@ -460,7 +467,9 @@ fn texts_of_elements_with_classes(html: &str, classes: &[&str]) -> Vec<String> {
                         }
                     }
                 } else {
-                    region_end = after[text_start..].find('<').unwrap_or(after.len() - text_start);
+                    region_end = after[text_start..]
+                        .find('<')
+                        .unwrap_or(after.len() - text_start);
                 }
                 let raw = &after[text_start..text_start + region_end];
                 let mut out = String::with_capacity(raw.len());
@@ -504,17 +513,15 @@ fn css_rule_bodies<'a>(css: &'a str, token: &str) -> Vec<&'a str> {
         let Some((selector, body)) = block.split_once('{') else {
             continue;
         };
-        let matches = selector
-            .split([',', ' ', '\n', '\t', '>'])
-            .any(|part| {
-                let part = part.trim();
-                part == token
-                    || (part.starts_with(token)
-                        && part[token.len()..]
-                            .chars()
-                            .next()
-                            .is_some_and(|c| !c.is_alphanumeric() && c != '-' && c != '_'))
-            });
+        let matches = selector.split([',', ' ', '\n', '\t', '>']).any(|part| {
+            let part = part.trim();
+            part == token
+                || (part.starts_with(token)
+                    && part[token.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| !c.is_alphanumeric() && c != '-' && c != '_'))
+        });
         if matches {
             bodies.push(body);
         }
@@ -605,11 +612,7 @@ async fn overview_totals_render_as_four_card_grid_with_dataplanes_value_and_live
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gateway_health_maps_to_pill_variants_and_drops_legacy_health_class() {
     let names = two_names();
-    let stub = start_stub(
-        (200, stats_body(2)),
-        (200, xds_body("healthy", &names)),
-    )
-    .await;
+    let stub = start_stub((200, stats_body(2)), (200, xds_body("healthy", &names))).await;
     let team = unique("team");
     let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
     let http = client();
@@ -630,15 +633,14 @@ async fn gateway_health_maps_to_pill_variants_and_drops_legacy_health_class() {
         );
 
         // The Gateway heading is an h2 carrying the health pill.
-        let gateway_at = partial.find("Gateway").unwrap_or_else(|| {
-            panic!("the partial must render a Gateway panel; body:\n{partial}")
-        });
-        let h2_open = partial[..gateway_at].rfind("<h2").unwrap_or_else(|| {
-            panic!("the Gateway heading must be an <h2>; body:\n{partial}")
-        });
-        let h2 = region(&partial[h2_open..], "<h2", "</h2>").unwrap_or_else(|| {
-            panic!("the Gateway <h2> must be closed; body:\n{partial}")
-        });
+        let gateway_at = partial
+            .find("Gateway")
+            .unwrap_or_else(|| panic!("the partial must render a Gateway panel; body:\n{partial}"));
+        let h2_open = partial[..gateway_at]
+            .rfind("<h2")
+            .unwrap_or_else(|| panic!("the Gateway heading must be an <h2>; body:\n{partial}"));
+        let h2 = region(&partial[h2_open..], "<h2", "</h2>")
+            .unwrap_or_else(|| panic!("the Gateway <h2> must be closed; body:\n{partial}"));
 
         assert!(
             has_element_with_classes(h2, &["pill", pill_variant]),
@@ -669,11 +671,7 @@ async fn gateway_health_maps_to_pill_variants_and_drops_legacy_health_class() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dataplanes_table_uses_tablewrap_pill_cells_and_sticky_header_css() {
     let names = two_names();
-    let stub = start_stub(
-        (200, stats_body(2)),
-        (200, xds_body("healthy", &names)),
-    )
-    .await;
+    let stub = start_stub((200, stats_body(2)), (200, xds_body("healthy", &names))).await;
     let team = unique("team");
     let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
     let http = client();
@@ -763,11 +761,7 @@ async fn dataplanes_table_uses_tablewrap_pill_cells_and_sticky_header_css() {
 async fn truncation_banner_text_and_banner_css_border_left() {
     let names = two_names();
     // 902 team-wide dataplanes but only 2 listed rows → truncation banner.
-    let stub = start_stub(
-        (200, stats_body(902)),
-        (200, xds_body("healthy", &names)),
-    )
-    .await;
+    let stub = start_stub((200, stats_body(902)), (200, xds_body("healthy", &names))).await;
     let team = unique("team");
     let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
     let http = client();
@@ -811,7 +805,10 @@ async fn truncation_banner_text_and_banner_css_border_left() {
 async fn upstream_403_renders_not_authorized_panel() {
     let names = two_names();
     let stub = start_stub(
-        (403, json!({ "code": "forbidden", "message": "nope" }).to_string()),
+        (
+            403,
+            json!({ "code": "forbidden", "message": "nope" }).to_string(),
+        ),
         (200, xds_body("healthy", &names)),
     )
     .await;
@@ -828,7 +825,10 @@ async fn upstream_403_renders_not_authorized_panel() {
 
     // 403 on the xds endpoint (stats healthy again).
     stub.set_stats(200, stats_body(2));
-    stub.set_xds(403, json!({ "code": "forbidden", "message": "nope" }).to_string());
+    stub.set_xds(
+        403,
+        json!({ "code": "forbidden", "message": "nope" }).to_string(),
+    );
     let partial = fetch_partial(&http, &dash).await;
     assert!(
         partial.to_lowercase().contains("not authorized"),
@@ -864,7 +864,10 @@ async fn upstream_500_or_malformed_renders_unavailable_panel() {
 
     // 500 on the xds endpoint (stats healthy again).
     stub.set_stats(200, stats_body(2));
-    stub.set_xds(500, json!({ "code": "internal", "message": "boom" }).to_string());
+    stub.set_xds(
+        500,
+        json!({ "code": "internal", "message": "boom" }).to_string(),
+    );
     let partial = fetch_partial(&http, &dash).await;
     assert!(
         partial.to_lowercase().contains("unavailable"),
@@ -888,11 +891,7 @@ async fn upstream_500_or_malformed_renders_unavailable_panel() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn partial_has_no_inline_style_script_elements_or_style_attributes() {
     let names = two_names();
-    let stub = start_stub(
-        (200, stats_body(2)),
-        (200, xds_body("healthy", &names)),
-    )
-    .await;
+    let stub = start_stub((200, stats_body(2)), (200, xds_body("healthy", &names))).await;
     let team = unique("team");
     let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
     let http = client();

@@ -34,14 +34,14 @@ mod common;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::task::JoinHandle;
 
 /// A distinctive bearer token so any leak into a response body would be unambiguous.
@@ -208,7 +208,9 @@ async fn start_secrets_stub(
         secrets: Mutex::new(secrets),
         ai_providers: Mutex::new(ai_providers),
     });
-    let app = Router::new().fallback(stub_handler).with_state(state.clone());
+    let app = Router::new()
+        .fallback(stub_handler)
+        .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind stub upstream to an ephemeral port");
@@ -513,7 +515,12 @@ fn class_token_sets(html: &str) -> Vec<Vec<String>> {
     while let Some(i) = rest.find("class=\"") {
         let after = &rest[i + "class=\"".len()..];
         let Some(end) = after.find('"') else { break };
-        sets.push(after[..end].split_whitespace().map(str::to_string).collect());
+        sets.push(
+            after[..end]
+                .split_whitespace()
+                .map(str::to_string)
+                .collect(),
+        );
         rest = &after[end..];
     }
     sets
@@ -575,7 +582,9 @@ fn texts_of_elements_with_classes(html: &str, classes: &[&str]) -> Vec<String> {
                         }
                     }
                 } else {
-                    region_end = after[text_start..].find('<').unwrap_or(after.len() - text_start);
+                    region_end = after[text_start..]
+                        .find('<')
+                        .unwrap_or(after.len() - text_start);
                 }
                 let raw = &after[text_start..text_start + region_end];
                 let mut out = String::with_capacity(raw.len());
@@ -619,17 +628,15 @@ fn css_rule_bodies<'a>(css: &'a str, token: &str) -> Vec<&'a str> {
         let Some((selector, body)) = block.split_once('{') else {
             continue;
         };
-        let matches = selector
-            .split([',', ' ', '\n', '\t', '>'])
-            .any(|part| {
-                let part = part.trim();
-                part == token
-                    || (part.starts_with(token)
-                        && part[token.len()..]
-                            .chars()
-                            .next()
-                            .is_some_and(|c| !c.is_alphanumeric() && c != '-' && c != '_'))
-            });
+        let matches = selector.split([',', ' ', '\n', '\t', '>']).any(|part| {
+            let part = part.trim();
+            part == token
+                || (part.starts_with(token)
+                    && part[token.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| !c.is_alphanumeric() && c != '-' && c != '_'))
+        });
         if matches {
             bodies.push(body);
         }
@@ -710,9 +717,9 @@ async fn secrets_partial_panel_count_tablewrap_expiry_pills_and_no_stale() {
         .unwrap_or_else(|| panic!("the secrets panel must have an <h2>; body:\n{partial}"));
     let count_texts = texts_of_elements_with_classes(h2, &["count"]);
     assert!(
-        count_texts
-            .iter()
-            .any(|t| t.to_lowercase().contains("metadata only, values never fetched")),
+        count_texts.iter().any(|t| t
+            .to_lowercase()
+            .contains("metadata only, values never fetched")),
         "the secrets panel h2 must carry `<span class=\"count\">` containing \"metadata only, \
          values never fetched\"; found count texts: {count_texts:?}; h2:\n{h2}"
     );
