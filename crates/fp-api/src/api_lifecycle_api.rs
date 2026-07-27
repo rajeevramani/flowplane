@@ -54,11 +54,17 @@ pub struct ApiDefinitionListItemView {
     pub published_spec_version_id: Option<uuid::Uuid>,
     pub revision: i64,
     pub tool_count: i64,
+    pub enabled_tool_count: i64,
     pub route_binding_count: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_version: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub published_version: Option<i64>,
+    /// Latest decision for the latest version. This key is intentionally serialized as
+    /// `null` when no event exists so dashboard clients can distinguish no-event from an
+    /// older control plane that does not provide this additive field.
+    #[schema(required = true, nullable = true)]
+    pub latest_decision: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -73,9 +79,13 @@ impl From<fp_domain::api_lifecycle::ApiDefinitionOverview> for ApiDefinitionList
             published_spec_version_id: value.api.published_spec_version_id.map(|id| id.as_uuid()),
             revision: value.api.version,
             tool_count: value.tool_count,
+            enabled_tool_count: value.enabled_tool_count,
             route_binding_count: value.route_binding_count,
             latest_version: value.latest_version,
             published_version: value.published_version,
+            latest_decision: value
+                .latest_decision
+                .map(|decision| decision.as_str().into()),
             created_at: value.api.created_at,
             updated_at: value.api.updated_at,
         }
@@ -815,4 +825,58 @@ pub async fn delete_api(
     run.await
         .map(|_| axum::http::StatusCode::NO_CONTENT)
         .map_err(|e| ApiError::new(e, rid))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::ApiDefinitionListItemView;
+    use fp_domain::api_lifecycle::{ApiDefinition, ApiDefinitionOverview, SpecReviewDecision};
+    use fp_domain::{ApiDefinitionId, TeamId};
+
+    fn overview(latest_decision: Option<SpecReviewDecision>) -> ApiDefinitionOverview {
+        let now = chrono::Utc::now();
+        ApiDefinitionOverview {
+            api: ApiDefinition {
+                id: ApiDefinitionId::generate(),
+                team_id: TeamId::generate(),
+                name: "orders".into(),
+                display_name: "Orders".into(),
+                description: "Orders API".into(),
+                published_spec_version_id: None,
+                version: 3,
+                created_at: now,
+                updated_at: now,
+            },
+            tool_count: 3,
+            enabled_tool_count: 2,
+            route_binding_count: 1,
+            latest_version: Some(2),
+            published_version: Some(1),
+            latest_decision,
+        }
+    }
+
+    #[test]
+    fn api_definition_list_item_serializes_no_event_as_present_null() {
+        let value = serde_json::to_value(ApiDefinitionListItemView::from(overview(None)))
+            .expect("serialize list item");
+
+        assert_eq!(value["enabled_tool_count"], 2);
+        assert!(
+            value.get("latest_decision").is_some(),
+            "latest_decision key must be present for producer/consumer skew detection"
+        );
+        assert!(value["latest_decision"].is_null());
+    }
+
+    #[test]
+    fn api_definition_list_item_serializes_latest_decision_verbatim() {
+        let value = serde_json::to_value(ApiDefinitionListItemView::from(overview(Some(
+            SpecReviewDecision::Reviewed,
+        ))))
+        .expect("serialize list item");
+
+        assert_eq!(value["latest_decision"], "reviewed");
+    }
 }

@@ -603,17 +603,25 @@ pub async fn list_api_definitions(
 const API_ENRICHED_SQL: &str = "SELECT a.id, a.team_id, a.name, a.display_name, a.description, \
             a.published_spec_version_id, a.version, a.created_at, a.updated_at, \
             coalesce(tc.n, 0) AS tool_count, \
+            coalesce(tc.enabled_n, 0) AS enabled_tool_count, \
             coalesce(bc.n, 0) AS route_binding_count, \
             lv.version AS latest_version, \
+            lv.latest_decision AS latest_decision, \
             pv.version AS published_version \
      FROM api_definitions a \
-     LEFT JOIN (SELECT api_definition_id, count(*) AS n FROM api_tools \
+     LEFT JOIN (SELECT api_definition_id, count(*) AS n, \
+                       count(*) FILTER (WHERE enabled) AS enabled_n FROM api_tools \
                 WHERE team_id = $1 GROUP BY api_definition_id) tc \
             ON tc.api_definition_id = a.id \
      LEFT JOIN (SELECT api_definition_id, count(*) AS n FROM api_route_bindings \
                 WHERE team_id = $1 GROUP BY api_definition_id) bc \
             ON bc.api_definition_id = a.id \
-     LEFT JOIN LATERAL (SELECT version FROM spec_versions v \
+     LEFT JOIN LATERAL (SELECT v.version, \
+                (SELECT e.decision FROM spec_version_review_events e \
+                 WHERE e.team_id = a.team_id AND e.api_definition_id = a.id \
+                   AND e.spec_version_id = v.id \
+                 ORDER BY e.created_at DESC, e.id DESC LIMIT 1) AS latest_decision \
+                FROM spec_versions v \
                 WHERE v.team_id = a.team_id AND v.api_definition_id = a.id \
                 ORDER BY version DESC LIMIT 1) lv ON true \
      LEFT JOIN spec_versions pv ON pv.id = a.published_spec_version_id \
@@ -637,18 +645,25 @@ pub async fn list_api_definitions_enriched(
         .await
         .map_err(|e| DomainError::internal(format!("list apis enriched: {e}")))?;
     let total = count_api_definitions_for_team(pool, team_id).await?;
-    Ok((
-        rows.iter()
-            .map(|row| fp_domain::api_lifecycle::ApiDefinitionOverview {
+    let overviews = rows
+        .iter()
+        .map(|row| {
+            let latest_decision = row
+                .get::<Option<String>, _>("latest_decision")
+                .map(|raw| SpecReviewDecision::parse(&raw))
+                .transpose()?;
+            Ok(fp_domain::api_lifecycle::ApiDefinitionOverview {
                 api: api_from_row(row),
                 tool_count: row.get("tool_count"),
+                enabled_tool_count: row.get("enabled_tool_count"),
                 route_binding_count: row.get("route_binding_count"),
                 latest_version: row.get("latest_version"),
                 published_version: row.get("published_version"),
+                latest_decision,
             })
-            .collect(),
-        total,
-    ))
+        })
+        .collect::<DomainResult<Vec<_>>>()?;
+    Ok((overviews, total))
 }
 
 /// `EXPLAIN (ANALYZE)` of the enriched-list aggregate, over the exact same SQL the

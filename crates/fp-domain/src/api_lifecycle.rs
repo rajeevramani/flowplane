@@ -174,9 +174,11 @@ pub struct SpecVersion {
 pub struct ApiDefinitionOverview {
     pub api: ApiDefinition,
     pub tool_count: i64,
+    pub enabled_tool_count: i64,
     pub route_binding_count: i64,
     pub latest_version: Option<i64>,
     pub published_version: Option<i64>,
+    pub latest_decision: Option<SpecReviewDecision>,
 }
 
 /// Spec-version row without the `spec` JSONB body. List endpoints return this shape so a

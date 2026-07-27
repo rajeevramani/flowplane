@@ -1597,8 +1597,13 @@ async fn enriched_definition_list_matches_per_api_facts() {
         .find(|r| r.api.id == api.id)
         .expect("created api present");
     assert_eq!(row.tool_count, 1);
+    assert_eq!(row.enabled_tool_count, 1);
     assert_eq!(row.route_binding_count, 1);
     assert_eq!(row.latest_version, Some(2));
+    assert_eq!(
+        row.latest_decision, None,
+        "latest version has no review event"
+    );
     assert_eq!(
         row.published_version,
         Some(1),
@@ -1636,11 +1641,50 @@ async fn enriched_definition_list_aggregate_meets_p95_budget_on_design_fixture()
         api_ids.push(api.id);
     }
     tx.commit().await.expect("commit apis");
+    let mut version_ids = Vec::with_capacity(500);
     for (i, api_id) in api_ids.iter().enumerate() {
         for v in 0..5 {
-            commit_spec_version(&w.pool, w.team_a, *api_id, &format!("bench-{i}-v{v}")).await;
+            let version =
+                commit_spec_version(&w.pool, w.team_a, *api_id, &format!("bench-{i}-v{v}")).await;
+            version_ids.push((*api_id, version.id));
         }
     }
+    // Exercise the new latest-decision lookup under realistic event load rather than
+    // measuring only empty index probes. Three events per version share one timestamp,
+    // forcing the production `created_at DESC, id DESC` tie-break path.
+    let mut tx = w.pool.begin().await.expect("review event fixture tx");
+    for (api_id, spec_version_id) in version_ids {
+        for decision in [
+            fp_domain::api_lifecycle::SpecReviewDecision::Submitted,
+            fp_domain::api_lifecycle::SpecReviewDecision::Reviewed,
+            fp_domain::api_lifecycle::SpecReviewDecision::Rejected,
+        ] {
+            api_lifecycle::append_spec_review_event(
+                &mut tx,
+                w.team_a,
+                api_lifecycle::SpecReviewEventInsert {
+                    api_id,
+                    spec_version_id,
+                    decision,
+                    actor_type: "user",
+                    actor_id: None,
+                    reason: "benchmark fixture",
+                    metadata: serde_json::json!({}),
+                },
+            )
+            .await
+            .expect("append benchmark review event");
+        }
+    }
+    sqlx::query(
+        "UPDATE spec_version_review_events SET created_at = '2026-06-01T00:00:00Z' \
+         WHERE team_id = $1",
+    )
+    .bind(w.team_a.id.as_uuid())
+    .execute(&mut *tx)
+    .await
+    .expect("tie benchmark review-event timestamps");
+    tx.commit().await.expect("commit review event fixture");
 
     let mut samples_ms: Vec<f64> = Vec::with_capacity(50);
     for _ in 0..50 {
