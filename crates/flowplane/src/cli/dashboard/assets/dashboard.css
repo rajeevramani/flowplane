@@ -200,8 +200,50 @@ tr.disabled td { color: var(--text-faint); }
 .cchip.hl { border-color: var(--accent); background: var(--accent-soft); }
 .cchip.unresolved { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
 
-/* APIs: lifecycle event pipeline ------------------------------------------ */
+/* APIs: lifecycle event pipeline + accessible master/detail ---------------- */
 .pipeline { display: grid; gap: 6px; margin: 2px 0 10px; padding-left: 0; list-style: none; }
+.api-overview { display: grid; gap: 12px; }
+.api-list-panel { overflow: hidden; }
+.api-list-controls {
+  display: flex; align-items: end; gap: 10px; padding: 12px 14px;
+  border-bottom: 1px solid var(--border); background: var(--surface);
+}
+.api-list-controls label { font-size: 12px; font-weight: 600; color: var(--text-dim); }
+.api-list-controls input {
+  flex: 1; min-width: 220px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--surface); color: var(--text); padding: 7px 9px; font: inherit;
+}
+.api-list-controls input:focus-visible,
+.api-list-controls button:focus-visible,
+.api-disclosure:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.api-pager { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); }
+.api-pager button {
+  border: 1px solid var(--border); border-radius: 4px; background: var(--surface-2);
+  color: var(--text); padding: 5px 9px; cursor: pointer;
+}
+.api-pager button:disabled { color: var(--text-faint); cursor: default; }
+.api-master-table td:first-child { white-space: normal; min-width: 270px; }
+.api-disclosure {
+  appearance: none; width: 100%; display: flex; align-items: start; gap: 8px;
+  border: 0; padding: 0; background: transparent; color: inherit; text-align: left;
+  font: inherit; cursor: pointer;
+}
+.api-disclosure-icon { color: var(--text-faint); font-size: 18px; line-height: 1; transition: transform 120ms ease; }
+.api-disclosure[aria-expanded="true"] .api-disclosure-icon { transform: rotate(90deg); }
+.api-primary { display: grid; gap: 2px; }
+.api-row.selected td { background: var(--accent-soft); }
+.api-detail-row td { padding: 12px 18px 16px 36px; background: var(--surface-2); white-space: normal; }
+.api-detail { padding: 14px; }
+.api-detail > h3 { margin-top: 0; }
+.api-metadata { display: flex; gap: 6px; flex-wrap: wrap; align-items: baseline; }
+.api-detail .chip { display: inline-flex; margin: 2px 4px 2px 0; }
+.api-detail .secondary { margin-top: 10px; }
+.api-detail .secondary > summary { cursor: pointer; font-weight: 600; }
+
+@media (max-width: 760px) {
+  .api-list-controls { align-items: stretch; flex-direction: column; }
+  .api-pager { justify-content: space-between; }
+}
 
 /* AI: native progress meter (AC 4a) + trace drill-down --------------------- */
 progress.meter {

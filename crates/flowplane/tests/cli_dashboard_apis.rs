@@ -1158,11 +1158,7 @@ async fn failed_join_sweeps_render_explicit_notice() {
     );
 }
 
-/// Implementer regression (found live in the eval container): the list panel is rendered
-/// `<details open>`, and an already-open details element never fires a `toggle` event —
-/// so the lazy fetch MUST be wired to htmx's `load` trigger or the panel shows
-/// "Loading…" forever in a real browser (stub tests fetch partials directly and cannot
-/// catch this).
+/// The always-visible list panel must fetch on load; API expansion has a separate owner.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn open_list_panel_fetches_on_load_not_toggle() {
     let fixture = happy_fixture();
@@ -1176,18 +1172,21 @@ async fn open_list_panel_fetches_on_load_not_toggle() {
         .text()
         .await
         .expect("shell");
-    let panel = shell
+    let before_path = shell
         .split("partials/apis/list")
         .next()
         .expect("panel prefix");
-    let panel = &panel[panel.rfind("<details").expect("details tag")..];
-    assert!(panel.contains("open"), "list panel renders open: {panel}");
+    let panel = &before_path[before_path.rfind("<section").expect("section tag")..];
     let after = &shell[shell.find("partials/apis/list").expect("wiring")..];
     let attrs = after.split('>').next().expect("attrs");
     let full = format!("{panel}{after}");
     assert!(
         full.contains("hx-trigger=\"load once\""),
-        "open panel must fetch on load, not toggle: {attrs}"
+        "list panel must fetch on load: {attrs}"
+    );
+    assert!(
+        !attrs.contains("toggle"),
+        "list loading must not depend on expansion"
     );
 }
 

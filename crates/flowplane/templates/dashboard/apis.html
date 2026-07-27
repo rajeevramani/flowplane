@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="/{{ nonce }}/assets/dashboard.css">
   <script src="/{{ nonce }}/assets/htmx.min.js" defer></script>
+  <script src="/{{ nonce }}/assets/apis.js" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -25,15 +26,15 @@
     <a href="/{{ nonce }}/mcp">MCP</a>
     <a href="/{{ nonce }}/operations">Operations</a>
   </nav>
-  <main id="resources">
-    <details id="apis-list" open
+  <main id="apis">
+    <div aria-live="polite">
+    <section id="apis-list"
              hx-get="/{{ nonce }}/partials/apis/list"
              hx-trigger="load once"
-             hx-target="#apis-list-body"
-             hx-swap="innerHTML">
-      <summary>API definitions</summary>
-      <div id="apis-list-body"><p class="placeholder">Loading…</p></div>
-    </details>
+             hx-swap="outerHTML">
+      <p class="placeholder">Loading API definitions…</p>
+    </section>
+    </div>
   </main>
 </body>
 </html>

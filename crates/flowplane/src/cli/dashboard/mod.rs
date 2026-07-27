@@ -60,6 +60,8 @@ const DASHBOARD_CSS: &str = include_str!("assets/dashboard.css");
 /// Same-origin hover-highlight helper for the topology view (CSP `default-src 'self'`
 /// forbids inline script, so this ships as a served asset).
 const RESOURCES_JS: &str = include_str!("assets/resources.js");
+/// DOM-only APIs master/detail, filter and display-paging controller.
+const APIS_JS: &str = include_str!("assets/apis.js");
 
 /// Every route the dashboard serves, WITHOUT the nonce prefix. The router is built from
 /// this table and from nothing else, so a route that skips the nonce prefix cannot exist;
@@ -96,6 +98,7 @@ pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/assets/htmx.min.js",
     "/assets/dashboard.css",
     "/assets/resources.js",
+    "/assets/apis.js",
 ];
 
 pub(crate) struct DashState {
@@ -352,6 +355,7 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
                 "/assets/htmx.min.js" => get(htmx_js),
                 "/assets/dashboard.css" => get(dashboard_css),
                 "/assets/resources.js" => get(resources_js),
+                "/assets/apis.js" => get(apis_js),
                 other => unreachable!("unrouted dashboard path {other}"),
             },
         );
@@ -1102,6 +1106,10 @@ async fn resources_js() -> impl IntoResponse {
     )
 }
 
+async fn apis_js() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "application/javascript")], APIS_JS)
+}
+
 #[cfg(test)]
 mod container_profile_tests {
     //! fpv2-m4u.1 unit layer: flag parsing, URL derivation, url-file lifecycle helpers.
@@ -1554,5 +1562,33 @@ mod tests {
             !body.contains("test-bearer-token"),
             "bearer token must never reach HTML"
         );
+    }
+
+    #[test]
+    fn apis_script_is_dom_only_and_pins_interaction_contract() {
+        for banned in [
+            "fetch(",
+            "eval(",
+            "localStorage",
+            "innerHTML",
+            "insertAdjacentHTML",
+            "Authorization",
+            "Bearer",
+        ] {
+            assert!(!APIS_JS.contains(banned), "apis.js must forbid {banned}");
+        }
+        for required in [
+            "api-expand",
+            "aria-expanded",
+            "CustomEvent",
+            "PAGE_SIZE = 25",
+            "toLowerCase",
+            "htmx:afterSwap",
+        ] {
+            assert!(
+                APIS_JS.contains(required),
+                "apis.js must contain {required}"
+            );
+        }
     }
 }

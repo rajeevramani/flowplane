@@ -709,6 +709,36 @@ fn opening_tag<'a>(html: &'a str, tag_start: &str) -> Option<&'a str> {
     Some(&html[start..=end])
 }
 
+fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let marker = format!("{name}=\"");
+    let start = tag.find(&marker)? + marker.len();
+    let end = tag[start..].find('"')? + start;
+    Some(&tag[start..end])
+}
+
+fn assert_no_inline_event_attributes(html: &str, which: &str) {
+    let mut rest = html;
+    while let Some(start) = rest.find('<') {
+        let Some(end) = rest[start..].find('>') else {
+            break;
+        };
+        let tag = &rest[start..=start + end];
+        if !tag.starts_with("</") && !tag.starts_with("<!--") {
+            for token in tag.split_ascii_whitespace().skip(1) {
+                let Some((attribute_name, _)) = token.split_once('=') else {
+                    continue;
+                };
+                let attribute_name = attribute_name.trim_end_matches('>').to_ascii_lowercase();
+                assert!(
+                    !attribute_name.starts_with("on"),
+                    "the {which} must not use inline event handlers; offending tag: {tag:?}"
+                );
+            }
+        }
+        rest = &rest[start + end + 1..];
+    }
+}
+
 /// All opening tags matching `tag_start`, in document order.
 fn all_opening_tags<'a>(html: &'a str, tag_start: &str) -> Vec<&'a str> {
     let mut tags = Vec::new();
@@ -1304,28 +1334,27 @@ async fn list_partial_panel_count_tablewrap_no_dataplanes_and_detail_row_wiring(
         "the apis list partial must not contain class=\"dataplanes\" anywhere; body:\n{list}"
     );
 
-    // The per-row lazy detail wiring is preserved verbatim:
-    // `<details hx-get="/<nonce>/partials/apis/detail?api=<name>" hx-trigger="toggle once">`.
-    let details = all_opening_tags(&list, "<details");
+    // Slice 4 transfers expansion ownership to accessible native buttons.
+    let disclosures = all_opening_tags(&list, "<button");
     for name in [&fx.api_x, &fx.api_y] {
-        let tag = details
+        let tag = disclosures
             .iter()
             .find(|t| t.contains(&format!("partials/apis/detail?api={name}")))
             .unwrap_or_else(|| {
                 panic!(
-                    "the apis list must render a per-row <details> wired to the detail \
-                     partial for {name:?}; details tags: {details:?}; body:\n{list}"
+                    "the apis list must render a native disclosure button wired to the detail \
+                     partial for {name:?}; buttons: {disclosures:?}; body:\n{list}"
                 )
             });
         let want_hx_get = format!("hx-get=\"/{}/partials/apis/detail?api={name}\"", dash.nonce);
         assert!(
             tag.contains(&want_hx_get),
-            "the per-row <details> for {name:?} must carry the verbatim hx-get \
+            "the per-row button for {name:?} must carry the verbatim hx-get \
              {want_hx_get:?}; offending tag: {tag:?}"
         );
         assert!(
-            tag.contains("hx-trigger=\"toggle once\""),
-            "the per-row <details> for {name:?} must carry hx-trigger=\"toggle once\"; \
+            tag.contains("hx-trigger=\"api-expand once\""),
+            "the per-row button for {name:?} must carry hx-trigger=\"api-expand once\"; \
              offending tag: {tag:?}"
         );
     }
@@ -1534,19 +1563,19 @@ async fn six_complete_api_rows_render_exact_overview_and_lifecycle_facts() {
         has_element_with_classes(payments, &["pill", "warn"]),
         "submitted newer-latest state must have semantic warn class; row:\n{payments}"
     );
-    let details = all_opening_tags(&list, "<details");
-    let details = details
+    let disclosures = all_opening_tags(&list, "<button");
+    let disclosure = disclosures
         .iter()
         .find(|tag| tag.contains(&format!("partials/apis/detail?api={}", fx.payments)))
         .unwrap_or_else(|| {
             panic!(
-                "the slice must retain the existing native <details> interaction for {}; body:\n{list}",
+                "the slice must expose a native disclosure-button interaction for {}; body:\n{list}",
                 fx.payments
             )
         });
     assert!(
-        details.contains("hx-trigger=\"toggle once\""),
-        "native detail must retain one-shot lazy detail wiring; tag: {details:?}"
+        disclosure.contains("hx-trigger=\"api-expand once\""),
+        "native detail must retain one-shot lazy detail wiring; tag: {disclosure:?}"
     );
 
     // `latest_decision` is present-null (not absent) and `enabled_tool_count` is present: the
@@ -1722,4 +1751,207 @@ async fn missing_required_lifecycle_keys_render_version_skew_and_are_excluded_fr
             "unparseable rows must not leak into aggregate fact {fabricated:?}; text:\n{text}"
         );
     }
+}
+
+// =============================================================================================
+// fpv2-41r.4 — independently authored accessible master/detail and DOM-only script contracts.
+// =============================================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn api_list_serves_scoped_search_pager_and_adjacent_native_disclosure_pairs() {
+    let team = unique("team-interaction-contract");
+    let api_name = unique("api-contract-name");
+    let item = lifecycle_list_item(
+        20_001,
+        &api_name,
+        "Display Scope Needle",
+        "Description Scope Needle",
+        9,
+        4,
+        3,
+        2,
+        Some(2),
+        Some(1),
+        Some("submitted"),
+    );
+    let state = list_only_state(&team, vec![item], 1, None);
+    let stub = start_stub(state).await;
+    let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
+    let list = fetch_page(&client(), &dash, "partials/apis/list").await;
+
+    let search = all_opening_tags(&list, "<input")
+        .into_iter()
+        .find(|tag| attribute(tag, "type") == Some("search"))
+        .unwrap_or_else(|| panic!("APIs list must render an input type=search; body:\n{list}"));
+    assert_eq!(
+        attribute(search, "placeholder"),
+        Some("Search API name, display name, description, or lifecycle"),
+        "search placeholder must state its exact four-field scope and must not claim tool/path search"
+    );
+
+    let buttons = all_opening_tags(&list, "<button");
+    assert!(
+        buttons
+            .iter()
+            .filter(|tag| attribute(tag, "type") == Some("button"))
+            .count()
+            >= 3,
+        "list must render Prev, Next and disclosure as native type=button controls: {buttons:?}"
+    );
+    let visible_text = text_content(&list);
+    for marker in ["Prev", "Next", "1–1 of 1"] {
+        assert!(
+            visible_text.contains(marker),
+            "pager must expose marker {marker:?}; text:\n{visible_text}"
+        );
+    }
+
+    let disclosure = buttons
+        .iter()
+        .find(|tag| tag.contains(&format!("partials/apis/detail?api={api_name}")))
+        .unwrap_or_else(|| {
+            panic!("primary API row must contain its detail disclosure button; body:\n{list}")
+        });
+    assert_eq!(attribute(disclosure, "type"), Some("button"));
+    assert_eq!(attribute(disclosure, "aria-expanded"), Some("false"));
+    assert_eq!(attribute(disclosure, "hx-trigger"), Some("api-expand once"));
+    let controls = attribute(disclosure, "aria-controls")
+        .unwrap_or_else(|| panic!("disclosure must name its adjacent detail row: {disclosure}"));
+    let target = format!("#{controls}");
+    assert_eq!(
+        attribute(disclosure, "hx-target"),
+        Some(target.as_str()),
+        "htmx must swap the detail response into the controlled row"
+    );
+
+    let primary = row_of(&list, &api_name);
+    let primary_at = primary.as_ptr() as usize - list.as_ptr() as usize;
+    let after_primary = list[primary_at + primary.len()..].trim_start();
+    assert!(
+        after_primary.starts_with("<tr"),
+        "the hidden detail row must be immediately adjacent to its primary row; after row:\n{after_primary}"
+    );
+    let detail_tag = opening_tag(after_primary, "<tr").expect("adjacent detail tr");
+    assert_eq!(attribute(detail_tag, "id"), Some(controls));
+    assert!(
+        detail_tag
+            .split_ascii_whitespace()
+            .any(|part| part.trim_end_matches('>') == "hidden"),
+        "adjacent detail row must initially carry the boolean hidden attribute: {detail_tag}"
+    );
+
+    let primary_tag = opening_tag(primary, "<tr").expect("primary tr");
+    let lower_primary = primary_tag.to_ascii_lowercase();
+    for forbidden in [
+        "onclick=",
+        "hx-get=",
+        "hx-trigger=",
+        "role=\"button\"",
+        "tabindex=",
+        "style=",
+    ] {
+        assert!(
+            !lower_primary.contains(forbidden),
+            "the primary <tr> itself must not be clickable or inline-styled ({forbidden}); tag: {primary_tag}"
+        );
+    }
+    let search_text = attribute(primary_tag, "data-search")
+        .unwrap_or_else(|| {
+            panic!("primary row must carry normalized data-search text: {primary_tag}")
+        })
+        .to_ascii_lowercase();
+    for needle in [
+        api_name.to_ascii_lowercase(),
+        "display scope needle".to_string(),
+        "description scope needle".to_string(),
+        "published v1 · v2 submitted".to_string(),
+    ] {
+        assert!(
+            search_text.contains(&needle),
+            "data-search must include name/display/description/lifecycle, missing {needle:?}: {search_text:?}"
+        );
+    }
+    assert_no_inline(&list, "apis list");
+    assert_no_inline_event_attributes(&list, "apis list");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn served_apis_script_is_dom_only_and_owns_disclosure_filter_and_pair_paging() {
+    let (state, fx) = happy_fixture();
+    let stub = start_stub(state).await;
+    let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &fx.team);
+    let http = client();
+    let shell = fetch_page(&http, &dash, "apis").await;
+    let expected_src = format!("src=\"/{}/assets/apis.js\"", dash.nonce);
+    assert!(
+        all_opening_tags(&shell, "<script")
+            .iter()
+            .any(|tag| tag.contains(&expected_src)),
+        "APIs shell must load {expected_src:?}; body:\n{shell}"
+    );
+
+    let url = dash.nonce_url("assets/apis.js");
+    let resp = fetch(&http, &url).await;
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "nonce-prefixed apis.js must be served"
+    );
+    let source = resp.text().await.expect("apis.js source");
+    let lower = source.to_ascii_lowercase();
+    for forbidden in [
+        "fetch(",
+        "eval(",
+        "localstorage",
+        "innerhtml",
+        "insertadjacenthtml",
+        "document.cookie",
+        "authorization",
+        "bearer",
+        "credential",
+        "token",
+    ] {
+        assert!(
+            !lower.contains(forbidden),
+            "apis.js is DOM-state-only and must not contain {forbidden:?}; source:\n{source}"
+        );
+    }
+
+    for required in [
+        "addeventlistener",
+        "aria-expanded",
+        "hidden",
+        "dataset.search",
+        "tolowercase",
+        "api-expand",
+        "dispatchevent",
+    ] {
+        assert!(
+            lower.contains(required),
+            "apis.js must own disclosure/filter/page DOM state and contain {required:?}; source:\n{source}"
+        );
+    }
+    let compact: String = source.chars().filter(|ch| !ch.is_whitespace()).collect();
+    assert!(
+        compact.contains("constPAGE_SIZE=25;"),
+        "display paging must define an auditable 25-pair page size; source:\n{source}"
+    );
+    assert!(
+        compact.contains("letcurrentPage=0;") || compact.contains("letpage=0;"),
+        "paging state must start on page one (zero-based); source:\n{source}"
+    );
+    let input_listener = compact
+        .find("addEventListener(\"input\"")
+        .or_else(|| compact.find("addEventListener('input'"))
+        .unwrap_or_else(|| panic!("filter must have an input listener; source:\n{source}"));
+    let input_tail = &compact[input_listener..];
+    assert!(
+        input_tail.contains("currentPage=0;") || input_tail.contains("page=0;"),
+        "filter input must reset display paging to page one; source:\n{source}"
+    );
+    assert_eq!(
+        compact.matches("button.dispatchEvent(").count(),
+        1,
+        "the first expansion path must dispatch api-expand on the disclosure button exactly once in source"
+    );
 }

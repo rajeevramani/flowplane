@@ -239,6 +239,7 @@ async fn nonce_is_mandatory_on_every_route_class() {
         ("", true),
         ("assets/htmx.min.js", false),
         ("assets/dashboard.css", false),
+        ("assets/apis.js", false),
     ];
 
     for (path, is_page) in routes {
@@ -343,6 +344,85 @@ async fn foreign_origin_is_rejected_own_origin_is_accepted() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// fpv2-41r.4: exercise the new asset route itself so it cannot bypass the dashboard's
+// nonce/Host/Origin/CSP and browser-bearer isolation envelope.
+// ---------------------------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apis_script_is_nonce_scoped_javascript_and_keeps_security_envelope() {
+    let dash = spawn_dashboard(SECRET_TOKEN);
+    let http = client();
+    let path = format!("/{}/assets/apis.js", dash.nonce);
+    let url = dash.nonce_url("assets/apis.js");
+
+    let resp = http
+        .get(&url)
+        .send()
+        .await
+        .expect("GET nonce-prefixed apis.js");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "nonce-prefixed apis.js must be served"
+    );
+    assert_security_headers(&resp, "200 nonce-prefixed apis.js");
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        content_type.contains("javascript"),
+        "apis.js must be served with a JavaScript content type, got {content_type:?}"
+    );
+    let body = resp.text().await.expect("read apis.js");
+    assert!(
+        !body.trim().is_empty(),
+        "apis.js must contain executable source"
+    );
+    assert!(
+        !body.contains(SECRET_TOKEN),
+        "apis.js must never contain the bearer"
+    );
+
+    let unprefixed = format!("{}/assets/apis.js", dash.base());
+    let resp = http
+        .get(&unprefixed)
+        .send()
+        .await
+        .expect("GET unprefixed apis.js");
+    assert_eq!(
+        resp.status().as_u16(),
+        404,
+        "unprefixed apis.js must be hidden"
+    );
+    assert_security_headers(&resp, "404 unprefixed apis.js");
+
+    let (status, head) = raw_request_status(dash.port, &path, "evil.example").await;
+    assert_eq!(
+        status, 403,
+        "foreign Host must be denied for apis.js; head: {head}"
+    );
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("content-security-policy: default-src 'self'"),
+        "foreign-Host denial must retain self-only CSP; head: {head}"
+    );
+
+    let resp = http
+        .get(&url)
+        .header("Origin", "https://evil.example")
+        .send()
+        .await
+        .expect("GET apis.js with foreign Origin");
+    assert_eq!(
+        resp.status().as_u16(),
+        403,
+        "foreign Origin must be denied for apis.js"
+    );
+    assert_security_headers(&resp, "403 foreign-Origin apis.js");
+}
+
+// ---------------------------------------------------------------------------------------------
 // Criterion 3: the dashboard is read-only — non-GET methods on the real-nonce page route → 405.
 // ---------------------------------------------------------------------------------------------
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -375,8 +455,13 @@ async fn security_headers_on_every_response_including_errors() {
     let dash = spawn_dashboard(SECRET_TOKEN);
     let http = client();
 
-    // 200: page and both assets with the real nonce.
-    for path in ["", "assets/htmx.min.js", "assets/dashboard.css"] {
+    // 200: page and all embedded assets with the real nonce.
+    for path in [
+        "",
+        "assets/htmx.min.js",
+        "assets/dashboard.css",
+        "assets/apis.js",
+    ] {
         let url = dash.nonce_url(path);
         let resp = http.get(&url).send().await.expect("GET real nonce");
         assert_eq!(resp.status().as_u16(), 200, "sanity: {url}");
@@ -582,7 +667,12 @@ async fn bearer_token_never_leaks_into_responses_or_stdout() {
         dash.first_line
     );
 
-    for path in ["", "assets/htmx.min.js", "assets/dashboard.css"] {
+    for path in [
+        "",
+        "assets/htmx.min.js",
+        "assets/dashboard.css",
+        "assets/apis.js",
+    ] {
         let url = dash.nonce_url(path);
         let resp = http.get(&url).send().await.expect("GET real nonce");
         assert_eq!(resp.status().as_u16(), 200, "sanity: {url}");

@@ -1,4 +1,5 @@
 {% if let Some(p) = panel.data() %}
+<section id="apis-list" class="api-overview" data-apis-panel>
 <div class="cards" id="apis-cards">
   <div class="card" id="apis-card-definitions">
     <span class="label">API definitions</span>
@@ -21,7 +22,17 @@
     <span class="sub">latest version differs from published</span>
   </div>
 </div>
-<section class="panel" id="panel-apis-list">
+<section class="panel api-list-panel" id="panel-apis-list">
+  <div class="api-list-controls">
+    <label for="api-filter">Search APIs</label>
+    <input id="api-filter" data-api-filter type="search" autocomplete="off"
+           placeholder="Search API name, display name, description, or lifecycle">
+    <div class="api-pager" aria-label="API display pages">
+      <button type="button" data-api-prev>Prev</button>
+      <span data-api-range aria-live="polite">1–{{ p.table.rows.len() }} of {{ p.table.rows.len() }}</span>
+      <button type="button" data-api-next>Next</button>
+    </div>
+  </div>
   <h2>API definitions <span class="count">{{ p.table.rows.len() }} of {{ p.table.total }}</span></h2>
   {% if let Some(n) = p.table.partial %}
   {% if n.budget() %}
@@ -34,17 +45,28 @@
   <p class="banner">Unparsed rows excluded: {{ p.unparsed_count }} unparseable row(s) remain visible but do not contribute to lifecycle, tool or binding summaries.</p>
   {% endif %}
   <div class="tablewrap">
-  <table>
+  <table class="api-master-table">
     <thead>
       <tr><th>API</th><th>Description</th><th>Lifecycle</th><th>Tools</th><th>Bindings</th><th>Revision</th><th>Updated</th></tr>
     </thead>
     <tbody>
       {% for row in p.table.rows %}
-      <tr>
-        <td><strong>{{ row.name }}</strong><br><span class="dim">{{ row.display_name }}</span></td>
+      <tr class="api-row" data-api-row
+          data-search="{{ row.name }} {{ row.display_name }} {{ row.description }} {{ row.lifecycle }}">
         {% if row.unparsed %}
+        <td><strong>{{ row.name }}</strong><br><span class="dim">{{ row.display_name }}</span></td>
         <td colspan="6" class="placeholder">unparseable row (version skew?)</td>
         {% else %}
+        <td>
+          <button type="button" class="api-disclosure" data-api-disclosure
+                  aria-expanded="false" aria-controls="api-detail-{{ row.name }}"
+                  hx-get="/{{ nonce }}/partials/apis/detail?api={{ row.name|urlencode }}"
+                  hx-target="#api-detail-{{ row.name }}"
+                  hx-trigger="api-expand once" hx-swap="innerHTML">
+            <span class="api-disclosure-icon" aria-hidden="true">›</span>
+            <span class="api-primary"><strong>{{ row.name }}</strong><span class="dim">{{ row.display_name }}</span></span>
+          </button>
+        </td>
         <td>{{ row.description }}</td>
         <td>{% if row.lifecycle_tone == "good" %}<span class="pill good">{{ row.lifecycle }}</span>{% else if row.lifecycle_tone == "warn" %}<span class="pill warn">{{ row.lifecycle }}</span>{% else %}<span class="pill neutral">{{ row.lifecycle }}</span>{% endif %}</td>
         <td><span class="mono">{{ row.enabled_tool_count }} / {{ row.tool_count }}</span></td>
@@ -54,16 +76,8 @@
         {% endif %}
       </tr>
       {% if !row.unparsed %}
-      <tr class="detail-row">
-        <td colspan="7">
-          <details hx-get="/{{ nonce }}/partials/apis/detail?api={{ row.name|urlencode }}"
-                   hx-trigger="toggle once"
-                   hx-target="find div"
-                   hx-swap="innerHTML">
-            <summary>Lifecycle, Envoy chain &amp; tools</summary>
-            <div><p class="placeholder">Loading…</p></div>
-          </details>
-        </td>
+      <tr id="api-detail-{{ row.name }}" class="api-detail-row" data-api-detail-row hidden>
+        <td colspan="7"><p class="placeholder">Loading persisted detail…</p></td>
       </tr>
       {% endif %}
       {% endfor %}
@@ -73,6 +87,7 @@
     </tbody>
   </table>
   </div>
+</section>
 </section>
 {% else if panel.unauthorized() %}
 <section class="panel unauthorized" id="panel-apis-list">
