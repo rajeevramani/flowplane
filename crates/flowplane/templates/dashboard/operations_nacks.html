@@ -1,7 +1,8 @@
 {% if let Some(p) = panel.data() %}
 <section class="panel" id="panel-operations-nacks">
-  <h2>NACK history <span class="hint">{{ p.window_total }} in last {{ p.window_hours }}h</span></h2>
-  <table class="dataplanes">
+  <h2>NACK history <span class="count">{{ p.window_total }} in last {{ p.window_hours }}h</span></h2>
+  <div class="tablewrap">
+  <table>
     <thead>
       <tr><th>When</th><th>Node</th><th>Type</th><th>Rejected version</th><th>Error</th><th>Quarantined</th></tr>
     </thead>
@@ -15,7 +16,7 @@
         <td>{{ r.error_message }}</td>
         <td>
           {% for q in r.quarantined %}
-          <a href="/{{ nonce }}/resources" class="quarantined">{{ q }}</a>
+          <a href="/{{ nonce }}/resources" class="pill crit">{{ q }}</a>
           {% endfor %}
           {% if r.quarantined.is_empty() %}<span class="muted">—</span>{% endif %}
         </td>
@@ -26,6 +27,7 @@
       {% endif %}
     </tbody>
   </table>
+  </div>
   {% if let Some(cursor) = p.next_cursor.as_ref() %}
   <button class="page-more"
           hx-get="/{{ nonce }}/partials/operations/nacks?before={{ cursor }}"
