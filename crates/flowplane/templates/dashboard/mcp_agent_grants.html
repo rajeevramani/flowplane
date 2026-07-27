@@ -2,7 +2,8 @@
 {% if let Some(t) = grants.truncated %}
 <p class="banner">Showing first {{ t.shown }} of {{ t.total }} grants — the remaining grants were not fetched.</p>
 {% endif %}
-<table class="dataplanes">
+<div class="tablewrap">
+<table>
   <thead>
     <tr><th>Team</th><th>Resource</th><th>Action</th></tr>
   </thead>
@@ -19,6 +20,7 @@
     {% endif %}
   </tbody>
 </table>
+</div>
 {% else if panel.unauthorized() %}
 <p class="placeholder">Not authorized to view this agent's grants.</p>
 {% else %}

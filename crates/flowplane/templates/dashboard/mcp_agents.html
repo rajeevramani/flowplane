@@ -1,11 +1,12 @@
 {% if let Some(agents) = panel.data() %}
 <section class="panel" id="panel-mcp-agents">
-  <h2>Agents <span class="hint">organization-wide · requires org authority</span></h2>
+  <h2>Agents <span class="count">organization-wide · requires org authority</span></h2>
   <p class="banner">Agent credentials are shown once at create/rotate and are never stored or displayed here.</p>
   {% if let Some(t) = agents.truncated %}
   <p class="banner">Showing first {{ t.shown }} of {{ t.total }} agents — the remaining agents were not fetched.</p>
   {% endif %}
-  <table class="dataplanes">
+  <div class="tablewrap">
+  <table>
     <thead>
       <tr><th>Name</th><th>Kind</th><th>Status</th></tr>
     </thead>
@@ -14,7 +15,7 @@
       <tr>
         <td>{{ row.name }}</td>
         <td>{{ row.kind }}</td>
-        <td>{{ row.status }}</td>
+        <td>{% if row.status == "active" %}<span class="pill good">{{ row.status }}</span>{% else if row.status == "suspended" %}<span class="pill warn">{{ row.status }}</span>{% else %}<span class="pill neutral">{{ row.status }}</span>{% endif %}</td>
       </tr>
       <tr class="detail-row">
         <td colspan="3">
@@ -33,6 +34,7 @@
       {% endif %}
     </tbody>
   </table>
+  </div>
 </section>
 {% else if panel.unauthorized() %}
 <section class="panel unauthorized" id="panel-mcp-agents">
