@@ -1083,32 +1083,31 @@ async fn traces_partial_status_pills_failure_marker_structure_and_load_older() {
         "trace status is descriptive and must NOT render any `pill crit`; the failed row's \
          signal is `.trace-failure`/`.hop.failed`; body:\n{partial}"
     );
-    // The failing hop carries the `.hop.failed` class (per-hop boolean render path).
+    // The failing hop composes the generic timeline-item and critical state primitives.
     assert!(
-        has_element_with_classes(&partial, &["hop", "failed"]),
-        "the failing hop must add the `.hop.failed` class; body:\n{partial}"
+        has_element_with_classes(&partial, &["ui-timeline-item", "is-critical"]),
+        "the failing hop must compose `.ui-timeline-item.is-critical`; body:\n{partial}"
     );
 
-    // The `.trace-failure` marker is preserved on the failed row.
+    // The row-level failure marker uses the same generic critical state primitive.
     assert!(
-        has_element_with_classes(&partial, &["trace-failure"]),
-        "a row with failure_hop set must keep the `.trace-failure` marker; body:\n{partial}"
+        has_element_with_classes(&partial, &["is-critical"]),
+        "a row with failure_hop set must render the generic critical state; body:\n{partial}"
     );
 
-    // The details/summary drill-down structure is intact: `<details class="trace-row">`
-    // rows with the `.hop-timeline` inside.
+    // The details/summary drill-down composes the generic disclosure and timeline primitives.
     let trace_row_details: Vec<&str> = all_opening_tags(&partial, "<details")
         .into_iter()
-        .filter(|tag| tag_has_class(tag, "trace-row"))
+        .filter(|tag| tag_has_class(tag, "ui-disclosure-row"))
         .collect();
     assert!(
         !trace_row_details.is_empty(),
-        "the traces partial must render `<details class=\"trace-row\">` drill-down rows; \
+        "the traces partial must render generic disclosure drill-down rows; \
          body:\n{partial}"
     );
     assert!(
-        has_element_with_classes(&partial, &["hop-timeline"]),
-        "the traces drill-down must keep the `.hop-timeline` structure; body:\n{partial}"
+        has_element_with_classes(&partial, &["ui-timeline"]),
+        "the traces drill-down must use the generic timeline structure; body:\n{partial}"
     );
 
     // A full 50-row page keeps the Load-older control whose hx-get targets

@@ -4,6 +4,7 @@
   "use strict";
 
   const PAGE_SIZE = 25;
+  const UI = window.FlowplaneUI;
 
   function detailFor(button) {
     return document.getElementById(button.getAttribute("aria-controls"));
@@ -12,14 +13,14 @@
   function collapse(button) {
     var detail = detailFor(button);
     button.setAttribute("aria-expanded", "false");
-    button.closest("tr").classList.remove("selected");
+    button.closest("tr").classList.remove("is-selected");
     if (detail) detail.hidden = true;
   }
 
   function expand(button) {
     var detail = detailFor(button);
     button.setAttribute("aria-expanded", "true");
-    button.closest("tr").classList.add("selected");
+    button.closest("tr").classList.add("is-selected");
     if (detail) detail.hidden = false;
     if (button.getAttribute("data-loaded") !== "true") {
       button.setAttribute("data-loaded", "true");
@@ -40,18 +41,13 @@
     let page = 0;
 
     function render() {
-      var query = filter.value.trim().toLowerCase();
-      var matches = rows.filter(function (row) {
-        return row.dataset.search.toLowerCase().indexOf(query) !== -1;
+      var result = UI.paginate(rows, filter.value, page, PAGE_SIZE, function (row) {
+        return row.dataset.search;
       });
-      var pages = Math.max(1, Math.ceil(matches.length / PAGE_SIZE));
-      if (page >= pages) page = pages - 1;
-      var start = page * PAGE_SIZE;
-      var end = Math.min(start + PAGE_SIZE, matches.length);
+      page = result.page;
 
       rows.forEach(function (row) {
-        var visibleIndex = matches.indexOf(row);
-        var visible = visibleIndex >= start && visibleIndex < end;
+        var visible = result.visible.indexOf(row) !== -1;
         row.hidden = !visible;
         var button = row.querySelector("button[data-api-disclosure]");
         var detail = button && detailFor(button);
@@ -60,10 +56,10 @@
       });
 
       previous.disabled = page === 0;
-      next.disabled = page + 1 >= pages || matches.length === 0;
-      range.textContent = matches.length === 0
+      next.disabled = page + 1 >= result.maxPage || result.total === 0;
+      range.textContent = result.total === 0
         ? "0–0 of 0"
-        : String(start + 1) + "–" + String(end) + " of " + String(matches.length);
+        : String(result.start) + "–" + String(result.end) + " of " + String(result.total);
     }
 
     filter.addEventListener("input", function () {

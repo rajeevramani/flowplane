@@ -36,7 +36,7 @@
 {% if let Some(g) = data.gateway.data() %}
 <section class="panel" id="panel-gateway">
   <h2>Gateway {% if g.health == "healthy" %}<span class="pill good">healthy</span>{% else if g.health == "stale" %}<span class="pill warn">stale</span>{% else if g.health == "degraded" %}<span class="pill crit">degraded</span>{% else %}<span class="pill neutral">{{ g.health }}</span>{% endif %}</h2>
-  <p class="nacks">Recent NACKs (15m, team-wide): {{ g.recent_nack_count }}</p>
+  <p class="hint">Recent NACKs (15m, team-wide): {{ g.recent_nack_count }}</p>
   {% if let Some(t) = data.truncated %}
   <p class="banner">Showing first {{ t.shown }} of {{ t.total }} dataplanes — dataplane
     health inputs are limited to the listed dataplanes; NACK status is team-wide.</p>

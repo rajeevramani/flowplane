@@ -8,23 +8,8 @@
   <script src="/{{ nonce }}/assets/htmx.min.js" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">flow<span>plane</span> dashboard</div>
-    <div class="ctx">
-      <span class="chip">team <b>{{ team }}</b></span>
-      <span class="chip">read-only</span>
-    </div>
-    <div class="spacer"></div>
-  </header>
-  <nav class="tabs">
-    <a href="/{{ nonce }}/" class="active">Overview</a>
-    <a href="/{{ nonce }}/resources">Resources</a>
-    <a href="/{{ nonce }}/apis">APIs</a>
-    <a href="/{{ nonce }}/learning">Learning</a>
-    <a href="/{{ nonce }}/ai">AI</a>
-    <a href="/{{ nonce }}/mcp">MCP</a>
-    <a href="/{{ nonce }}/operations">Operations</a>
-  </nav>
+  {% let active_tab = "overview" %}
+  {% include "dashboard/_shell.html" %}
   <main id="overview"
         hx-get="/{{ nonce }}/partials/overview"
         hx-trigger="load, every 10s"

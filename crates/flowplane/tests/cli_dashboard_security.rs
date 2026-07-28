@@ -239,6 +239,7 @@ async fn nonce_is_mandatory_on_every_route_class() {
         ("", true),
         ("assets/htmx.min.js", false),
         ("assets/dashboard.css", false),
+        ("assets/ui.js", false),
         ("assets/apis.js", false),
     ];
 
@@ -460,6 +461,7 @@ async fn security_headers_on_every_response_including_errors() {
         "",
         "assets/htmx.min.js",
         "assets/dashboard.css",
+        "assets/ui.js",
         "assets/apis.js",
     ] {
         let url = dash.nonce_url(path);
@@ -671,6 +673,7 @@ async fn bearer_token_never_leaks_into_responses_or_stdout() {
         "",
         "assets/htmx.min.js",
         "assets/dashboard.css",
+        "assets/ui.js",
         "assets/apis.js",
     ] {
         let url = dash.nonce_url(path);

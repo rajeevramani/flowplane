@@ -8,23 +8,8 @@
   <script src="/{{ nonce }}/assets/htmx.min.js" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">flow<span>plane</span> dashboard</div>
-    <div class="ctx">
-      <span class="chip">team <b>{{ team }}</b></span>
-      <span class="chip">read-only</span>
-    </div>
-    <div class="spacer"></div>
-  </header>
-  <nav class="tabs">
-    <a href="/{{ nonce }}/">Overview</a>
-    <a href="/{{ nonce }}/resources">Resources</a>
-    <a href="/{{ nonce }}/apis">APIs</a>
-    <a href="/{{ nonce }}/learning" class="active">Learning</a>
-    <a href="/{{ nonce }}/ai">AI</a>
-    <a href="/{{ nonce }}/mcp">MCP</a>
-    <a href="/{{ nonce }}/operations">Operations</a>
-  </nav>
+  {% let active_tab = "learning" %}
+  {% include "dashboard/_shell.html" %}
   <main id="resources">
     <details id="learning-sessions" open
              hx-get="/{{ nonce }}/partials/learning/sessions"
@@ -36,7 +21,7 @@
     </details>
     <section class="panel" id="learning-viewer">
       <h2>Spec viewer</h2>
-      <div id="learning-viewer-body"><p class="placeholder">Pick a produced spec version from a completed session.</p></div>
+      <div class="panel-body" id="learning-viewer-body"><p class="placeholder">Pick a produced spec version from a completed session.</p></div>
     </section>
   </main>
 </body>

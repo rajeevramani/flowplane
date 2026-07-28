@@ -1021,6 +1021,13 @@ async fn list_partial_degrades_per_dashboard_conventions() {
             286,
             "upstream 401 must yield the htmx stop-polling status 286"
         );
+        assert_eq!(
+            resp.headers()
+                .get("HX-Retarget")
+                .and_then(|value| value.to_str().ok()),
+            Some("main"),
+            "global auth expiry must retarget the shared main landmark on every page"
+        );
         let body = resp.text().await.expect("body");
         assert!(
             body.contains("flowplane auth login"),

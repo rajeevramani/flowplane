@@ -17,13 +17,13 @@
         <td>{{ row.kind }}</td>
         <td>{% if row.status == "active" %}<span class="pill good">{{ row.status }}</span>{% else if row.status == "suspended" %}<span class="pill warn">{{ row.status }}</span>{% else %}<span class="pill neutral">{{ row.status }}</span>{% endif %}</td>
       </tr>
-      <tr class="detail-row">
+      <tr class="ui-detail-row">
         <td colspan="3">
           <details hx-get="/{{ nonce }}/partials/mcp/agent-grants?id={{ row.id|urlencode }}"
                    hx-trigger="toggle once"
                    hx-target="find div"
                    hx-swap="innerHTML">
-            <summary>Grants</summary>
+            <summary class="ui-disclosure-summary">Grants</summary>
             <div><p class="placeholder">Loading…</p></div>
           </details>
         </td>

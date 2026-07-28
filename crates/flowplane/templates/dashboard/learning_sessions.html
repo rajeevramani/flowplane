@@ -37,7 +37,7 @@
           <span class="placeholder">none yet</span>
           {% else %}
           {% for spec in row.produced %}
-          <button class="spec-link"
+          <button class="ui-button"
                   hx-get="/{{ nonce }}/partials/learning/content?api={{ spec.api|urlencode }}&version={{ spec.version }}"
                   hx-target="#learning-viewer-body"
                   hx-swap="innerHTML">{{ spec.api }} v{{ spec.version }}</button>

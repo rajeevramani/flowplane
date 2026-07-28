@@ -29,7 +29,7 @@
   </table>
   </div>
   {% if let Some(cursor) = p.next_cursor.as_ref() %}
-  <button class="page-more"
+  <button class="ui-button ui-button--panel"
           hx-get="/{{ nonce }}/partials/operations/nacks?before={{ cursor }}"
           hx-target="#operations-nacks"
           hx-swap="innerHTML">Older →</button>

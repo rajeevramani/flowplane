@@ -1,6 +1,6 @@
 {% if let Some(d) = panel.data() %}
 <td colspan="7">
-<section class="panel api-detail">
+<section class="ui-detail-content">
   <h3>{{ d.api }} <span class="pill neutral">{{ d.pill }}</span></h3>
   {% for n in d.notices %}
   {% if n.budget() %}
@@ -10,7 +10,7 @@
   {% endif %}
   {% endfor %}
 
-  <p class="api-metadata">
+  <p class="ui-metadata">
     <span>{{ d.description }}</span>
     · {% if let Some(v) = d.latest_version %}latest v{{ v }}{% else %}no spec{% endif %}
     · {% if let Some(v) = d.published_version %}published v{{ v }}{% else %}not published{% endif %}
@@ -25,20 +25,20 @@
   {% endif %}
 
   <h4>Persisted pipeline</h4>
-  <ol class="pipeline compact-pipeline">
+  <ol class="ui-steps compact-pipeline">
     {% for stage in d.pipeline %}
     <li class="pipeline-stage {{ stage.kind }}"><span class="pill neutral">{{ stage.label }}</span></li>
     {% endfor %}
   </ol>
 
   {% if let Some(v) = d.latest_version %}
-  <details class="secondary-detail review-history">
+  <details class="ui-secondary-disclosure review-history">
     <summary>Review pipeline — v{{ v }} (event history, oldest first)</summary>
     {% if let Some(events) = d.events %}
     {% if events.is_empty() %}
     <p class="placeholder">No review events for v{{ v }}.</p>
     {% else %}
-    <ol class="pipeline">
+    <ol class="ui-steps">
       {% for e in events %}
       <li><span class="pill neutral">{{ e.decision }}</span>
           by {{ e.actor_type }}{% if !e.reason.is_empty() %} — “{{ e.reason }}”{% endif %}
@@ -93,7 +93,7 @@
   </div>
 
   <h4>Tools <span class="hint">{{ d.tool_summary }}</span></h4>
-  <details class="secondary-detail tools-detail">
+  <details class="ui-secondary-disclosure tools-detail">
     <summary>Full tool and schema table</summary>
     <div class="tablewrap">
     <table>

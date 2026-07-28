@@ -12,8 +12,8 @@
 //!
 //! Acceptance criteria covered (served-HTML level):
 //!   1. Shell /<nonce>/resources: `<nav class="tabs">` with the Resources anchor
-//!      `class="active"`; 8 lazy `<details>` panels each carrying hx-get +
-//!      hx-trigger="toggle once" + hx-target + hx-swap="innerHTML"; same-origin
+//!      `class="active"`; native Topology/Tables tabs; topology + orphan panels load on
+//!      initial view; six table panels load on first Tables selection; same-origin
 //!      resources.js script tag.
 //!   2. clusters/route-configs/listeners partials: `.panel` h2 has `<span class="count">`
 //!      "N of M"; every table in `.tablewrap`; NO `class="dataplanes"`; listeners unbound
@@ -701,12 +701,11 @@ fn row_of<'a>(partial: &'a str, needle: &str) -> &'a str {
 }
 
 // =============================================================================================
-// Criterion 1: shell /<nonce>/resources — `<nav class="tabs">` with the Resources anchor
-// class="active"; 8 lazy <details> panels each carrying hx-get + hx-trigger="toggle once" +
-// hx-target + hx-swap="innerHTML"; same-origin resources.js script tag.
+// Criterion 1: shell /<nonce>/resources — prototype Topology/Tables master view, with topology
+// visible and loaded initially while flat resource tables stay lazy until first selection.
 // =============================================================================================
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shell_resources_tab_active_and_eight_lazy_details_panels() {
+async fn shell_resources_tab_active_and_matches_prototype_topology_tables_structure() {
     let stub = start_happy_stub().await;
     let team = unique("team");
     let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &team);
@@ -737,31 +736,70 @@ async fn shell_resources_tab_active_and_eight_lazy_details_panels() {
         "the Resources anchor must carry class=\"active\"; tag: {resources_anchor:?}"
     );
 
-    // Exactly 8 lazy <details> panels, each carrying the full htmx lazy-load wiring.
-    let details = all_opening_tags(&shell, "<details");
-    assert_eq!(
-        details.len(),
-        8,
-        "the resources shell must render exactly 8 lazy <details> panels; \
-         found {} tags: {details:?}",
-        details.len()
+    assert!(
+        shell.contains("class=\"ui-segmented\"")
+            && shell.contains("role=\"tablist\"")
+            && shell.contains("aria-label=\"Resources view\""),
+        "resources must expose the prototype Topology/Tables view switch; body:\n{shell}"
     );
-    for tag in &details {
-        for attr in ["hx-get", "hx-target"] {
-            assert!(
-                tag.contains(attr),
-                "every lazy <details> panel must carry {attr}; offending tag: {tag:?}"
-            );
-        }
+    let view_buttons = all_opening_tags(&shell, "<button");
+    assert_eq!(
+        view_buttons.len(),
+        2,
+        "the Resources view switch must contain exactly Topology and Tables buttons"
+    );
+    assert!(view_buttons
+        .iter()
+        .any(|tag| tag.contains("data-ui-tab=\"topology\"")
+            && tag.contains("aria-selected=\"true\"")));
+    assert!(view_buttons.iter().any(
+        |tag| tag.contains("data-ui-tab=\"tables\"") && tag.contains("aria-selected=\"false\"")
+    ));
+    assert!(shell.contains("data-ui-tab-panel=\"topology\""));
+    assert!(shell.contains("data-ui-tab-panel=\"tables\" hidden"));
+    assert_eq!(
+        all_opening_tags(&shell, "<details").len(),
+        0,
+        "obsolete top-level accordion shell must be removed"
+    );
+
+    for partial in ["topology", "orphans"] {
+        let marker = format!("partials/resources/{partial}");
+        let start = shell
+            .find(&marker)
+            .unwrap_or_else(|| panic!("missing {marker}"));
+        let tag_start = shell[..start].rfind('<').expect("loader opening tag");
+        let tag_end = shell[start..]
+            .find('>')
+            .map(|n| start + n + 1)
+            .expect("loader tag end");
+        let tag = &shell[tag_start..tag_end];
         assert!(
-            tag.contains("hx-trigger=\"toggle once\""),
-            "every lazy <details> panel must carry hx-trigger=\"toggle once\"; \
-             offending tag: {tag:?}"
+            tag.contains("hx-trigger=\"load once\""),
+            "{partial} must load initially: {tag}"
         );
+    }
+    for partial in [
+        "clusters",
+        "route-configs",
+        "listeners",
+        "filters",
+        "rate-limits",
+        "secrets",
+    ] {
+        let marker = format!("partials/resources/{partial}");
+        let start = shell
+            .find(&marker)
+            .unwrap_or_else(|| panic!("missing {marker}"));
+        let tag_start = shell[..start].rfind('<').expect("loader opening tag");
+        let tag_end = shell[start..]
+            .find('>')
+            .map(|n| start + n + 1)
+            .expect("loader tag end");
+        let tag = &shell[tag_start..tag_end];
         assert!(
-            tag.contains("hx-swap=\"innerHTML\""),
-            "every lazy <details> panel must carry hx-swap=\"innerHTML\"; \
-             offending tag: {tag:?}"
+            tag.contains("hx-trigger=\"resources-tables once\""),
+            "{partial} must stay lazy until Tables is selected: {tag}"
         );
     }
 
@@ -860,31 +898,67 @@ async fn topology_flow_chain_cchip_hover_contract_and_stylesheet_rules() {
 
     let partial = fetch_page(&http, &dash, "partials/resources/topology").await;
 
-    // `.flow` containers with the chain anatomy classes present.
+    assert!(partial.contains("Traffic topology"));
+    assert!(partial.contains("listener → route config → virtual host → route → cluster"));
+    assert!(partial.contains("data-topology-row"));
+    for hook in [
+        "data-topology-filter",
+        "data-topology-expand",
+        "data-topology-collapse",
+        "data-topology-range",
+        "data-topology-prev",
+        "data-topology-next",
+    ] {
+        assert!(
+            partial.contains(hook),
+            "topology must expose {hook}; body:\n{partial}"
+        );
+    }
+
+    // Topology composes the reusable tree primitives.
     assert!(
-        has_element_with_classes(&partial, &["flow"]),
-        "the topology partial must render `.flow` containers; body:\n{partial}"
+        has_element_with_classes(&partial, &["ui-tree-item"]),
+        "the topology partial must render generic tree items; body:\n{partial}"
     );
-    for class in ["lst", "chain", "vh", "rt"] {
+    for class in [
+        "ui-tree-trigger",
+        "ui-tree-branch",
+        "ui-tree-node--nested",
+        "ui-tree-leaf",
+    ] {
         assert!(
             has_element_with_classes(&partial, &[class]),
             "the topology partial must render `.{class}` elements in its chains; \
              body:\n{partial}"
         );
     }
-
-    // Every cluster chip is a <span class="cchip" data-cluster="...">; the bound fixture's
-    // cluster name appears verbatim in a data-cluster attribute (hover contract).
-    let cchip_tags: Vec<&str> = all_opening_tags(&partial, "<span")
+    let tree_tags: Vec<&str> = all_opening_tags(&partial, "<div")
         .into_iter()
-        .filter(|tag| tag_has_class(tag, "cchip"))
+        .filter(|tag| tag_has_class(tag, "ui-tree-item"))
+        .collect();
+    assert!(tree_tags
+        .iter()
+        .all(|tag| tag.contains("data-topology-row")));
+    let disclosure = all_opening_tags(&partial, "<button")
+        .into_iter()
+        .find(|tag| tag_has_class(tag, "ui-tree-trigger"))
+        .expect("topology tree must use a native disclosure button");
+    assert!(
+        disclosure.contains("type=\"button\"") && disclosure.contains("aria-expanded=\"true\"")
+    );
+
+    // Every entity chip carries data-cluster; the bound fixture's
+    // cluster name appears verbatim in a data-cluster attribute (hover contract).
+    let entity_chip_tags: Vec<&str> = all_opening_tags(&partial, "<span")
+        .into_iter()
+        .filter(|tag| tag_has_class(tag, "ui-entity-chip"))
         .collect();
     assert!(
-        !cchip_tags.is_empty(),
-        "the topology partial must render cluster chips as `<span class=\"cchip\" ...>`; \
+        !entity_chip_tags.is_empty(),
+        "the topology partial must render generic entity chips; \
          body:\n{partial}"
     );
-    for tag in &cchip_tags {
+    for tag in &entity_chip_tags {
         assert!(
             tag.contains("data-cluster=\""),
             "every cluster chip must carry a verbatim data-cluster attribute (hover \
@@ -892,44 +966,40 @@ async fn topology_flow_chain_cchip_hover_contract_and_stylesheet_rules() {
         );
     }
     assert!(
-        cchip_tags
+        entity_chip_tags
             .iter()
             .any(|tag| tag.contains(&format!("data-cluster=\"{C_MAIN}\""))),
         "the bound route's cluster {C_MAIN:?} must appear verbatim in a data-cluster \
-         attribute; cchip tags: {cchip_tags:?}"
+         attribute; entity chip tags: {entity_chip_tags:?}"
     );
 
-    // No bare class="chip" (without cchip) in the topology partial.
+    // The shell context chip primitive must not leak into topology entities.
     for span in all_opening_tags(&partial, "<span") {
-        if tag_has_class(span, "chip") {
-            assert!(
-                tag_has_class(span, "cchip"),
-                "bare `class=\"chip\"` (without cchip) is forbidden in the topology \
-                 partial; offending tag: {span:?}"
-            );
-        }
+        assert!(
+            !tag_has_class(span, "chip"),
+            "shell chip leaked into topology: {span:?}"
+        );
     }
 
-    // The served stylesheet has a `.cchip.hl` rule and a `.cchip.unresolved` rule with
-    // warn colors.
+    // Generic entity chips expose reusable highlighted and warning states.
     let css = fetch_stylesheet(&http, &dash).await;
-    let hl_bodies = css_rule_bodies(&css, ".cchip.hl");
+    let hl_bodies = css_rule_bodies(&css, ".ui-entity-chip.is-highlighted");
     assert!(
         !hl_bodies.is_empty(),
-        "the stylesheet must contain a `.cchip.hl` rule (cluster chip hover highlight); \
+        "the stylesheet must contain a generic entity-chip highlight rule; \
          css:\n{css}"
     );
-    let unresolved_bodies = css_rule_bodies(&css, ".cchip.unresolved");
+    let unresolved_bodies = css_rule_bodies(&css, ".ui-entity-chip.is-warning");
     assert!(
         !unresolved_bodies.is_empty(),
-        "the stylesheet must contain a `.cchip.unresolved` rule; css:\n{css}"
+        "the stylesheet must contain a generic entity-chip warning rule; css:\n{css}"
     );
     assert!(
         unresolved_bodies.iter().any(|b| {
             let squashed = b.replace([' ', '\n', '\t'], "").to_lowercase();
             squashed.contains("color") && (squashed.contains("warn") || squashed.contains('#'))
         }),
-        "the `.cchip.unresolved` rule must paint warn colors; rule bodies: {unresolved_bodies:?}"
+        "the entity-chip warning rule must paint warn colors; rule bodies: {unresolved_bodies:?}"
     );
 }
 
@@ -945,6 +1015,9 @@ async fn orphans_partial_warn_pill_kinds_and_no_legacy_chip_unresolved() {
     let http = client();
 
     let partial = fetch_page(&http, &dash, "partials/resources/orphans").await;
+
+    assert!(partial.contains("Not in any chain"));
+    assert!(has_element_with_classes(&partial, &["ui-record-list"]));
 
     // The unreferenced fixture cluster surfaces as an orphan; orphan kinds render as
     // <span class="pill warn">…</span>.

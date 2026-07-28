@@ -1025,14 +1025,14 @@ fn assert_tables_wrapped(html: &str, which: &str, expected_tables: usize) {
     }
 }
 
-/// The `<ol class="pipeline"> … </ol>` region of the detail partial (the review-events list).
+/// The generic `<ol class="ui-steps"> … </ol>` region of the detail partial.
 fn pipeline_region(detail: &str) -> &str {
-    let class_at = detail.find("class=\"pipeline\"").unwrap_or_else(|| {
-        panic!("the apis detail partial must render the events as an <ol class=\"pipeline\">; body:\n{detail}")
+    let class_at = detail.find("class=\"ui-steps\"").unwrap_or_else(|| {
+        panic!("the apis detail partial must render events with the generic ui-steps primitive; body:\n{detail}")
     });
-    let ol_open = detail[..class_at].rfind("<ol").unwrap_or_else(|| {
-        panic!("the `pipeline` class must sit on an <ol> element; body:\n{detail}")
-    });
+    let ol_open = detail[..class_at]
+        .rfind("<ol")
+        .unwrap_or_else(|| panic!("the `ui-steps` class must sit on an <ol>; body:\n{detail}"));
     region(&detail[ol_open..], "<ol", "</ol>")
         .unwrap_or_else(|| panic!("the pipeline <ol> must be closed; body:\n{detail}"))
 }
@@ -1876,18 +1876,26 @@ async fn api_list_serves_scoped_search_pager_and_adjacent_native_disclosure_pair
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn served_apis_script_is_dom_only_and_owns_disclosure_filter_and_pair_paging() {
+async fn served_ui_framework_and_api_adapter_are_dom_only_and_share_filter_paging() {
     let (state, fx) = happy_fixture();
     let stub = start_stub(state).await;
     let dash = spawn_dashboard(common::unique_tempdir(), &stub.base_url, &fx.team);
     let http = client();
     let shell = fetch_page(&http, &dash, "apis").await;
     let expected_src = format!("src=\"/{}/assets/apis.js\"", dash.nonce);
+    let expected_ui_src = format!("src=\"/{}/assets/ui.js\"", dash.nonce);
+    let scripts = all_opening_tags(&shell, "<script");
+    let ui_position = scripts
+        .iter()
+        .position(|tag| tag.contains(&expected_ui_src))
+        .expect("APIs shell must load the shared UI framework");
+    let adapter_position = scripts
+        .iter()
+        .position(|tag| tag.contains(&expected_src))
+        .expect("APIs shell must load its adapter");
     assert!(
-        all_opening_tags(&shell, "<script")
-            .iter()
-            .any(|tag| tag.contains(&expected_src)),
-        "APIs shell must load {expected_src:?}; body:\n{shell}"
+        ui_position < adapter_position,
+        "shared UI framework must load before APIs adapter"
     );
 
     let url = dash.nonce_url("assets/apis.js");
@@ -1898,7 +1906,14 @@ async fn served_apis_script_is_dom_only_and_owns_disclosure_filter_and_pair_pagi
         "nonce-prefixed apis.js must be served"
     );
     let source = resp.text().await.expect("apis.js source");
-    let lower = source.to_ascii_lowercase();
+    let ui_resp = fetch(&http, &dash.nonce_url("assets/ui.js")).await;
+    assert_eq!(
+        ui_resp.status().as_u16(),
+        200,
+        "shared ui.js must be served"
+    );
+    let ui_source = ui_resp.text().await.expect("ui.js source");
+    let lower = format!("{ui_source}\n{source}").to_ascii_lowercase();
     for forbidden in [
         "fetch(",
         "eval(",
@@ -1922,13 +1937,18 @@ async fn served_apis_script_is_dom_only_and_owns_disclosure_filter_and_pair_pagi
         "aria-expanded",
         "hidden",
         "dataset.search",
-        "tolowercase",
         "api-expand",
         "dispatchevent",
     ] {
         assert!(
             lower.contains(required),
             "apis.js must own disclosure/filter/page DOM state and contain {required:?}; source:\n{source}"
+        );
+    }
+    for required in ["paginate", "tolowercase", "math.ceil", "selecttab"] {
+        assert!(
+            ui_source.to_ascii_lowercase().contains(required),
+            "ui.js must own reusable tab/filter/page behavior and contain {required:?}; source:\n{ui_source}"
         );
     }
     let compact: String = source.chars().filter(|ch| !ch.is_whitespace()).collect();

@@ -23,7 +23,7 @@
 //!     stub's 404 fallback must never surface in any dashboard response.
 //!   * Expiry (AC 4): `expires_at` within 30 days → a warning indication near that row
 //!     (case-insensitive "30d" or "expire"); past date → "EXPIRED"; null → no warning.
-//!   * Failure classes: secrets 401 → HTTP 286 + `HX-Retarget: #resources` naming
+//!   * Failure classes: secrets 401 → HTTP 286 + `HX-Retarget: main` naming
 //!     `flowplane auth login`; secrets 403 → HTTP 200 saying not authorized; a reference
 //!     source (e.g. listeners) 403 → secrets STILL render (200, rows visible) with an
 //!     incomplete-references indication ("incomplete" or "unknown", case-insensitive).
@@ -863,7 +863,7 @@ async fn secrets_partial_never_requests_a_secret_value() {
 }
 
 // =============================================================================================
-// Test 4a: secrets 401 → HTTP 286 + `HX-Retarget: #resources` naming `flowplane auth login`.
+// Test 4a: secrets 401 → HTTP 286 + `HX-Retarget: main` naming `flowplane auth login`.
 // =============================================================================================
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unauthorized_secrets_returns_286_with_retarget_and_names_auth_login() {
@@ -887,8 +887,8 @@ async fn unauthorized_secrets_returns_286_with_retarget_and_names_auth_login() {
         resp.headers()
             .get("HX-Retarget")
             .and_then(|v| v.to_str().ok()),
-        Some("#resources"),
-        "the 286 response must carry HX-Retarget: #resources"
+        Some("main"),
+        "the 286 response must carry HX-Retarget: main"
     );
     let body = resp.text().await.expect("body");
     assert!(

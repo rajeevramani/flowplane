@@ -18,7 +18,7 @@
 //!     `data-cluster=`) with a visible "budget" notice, still naming the resources.
 //!   * Failure states: collection 403 → HTTP 200 partial saying not authorized naming the
 //!     collection; first-page 500 → HTTP 200 saying unavailable naming the collection;
-//!     upstream 401 → HTTP 286 naming `flowplane auth login` with `HX-Retarget: #resources`.
+//!     upstream 401 → HTTP 286 naming `flowplane auth login` with `HX-Retarget: main`.
 //!
 //! Parallel-safety (invariant 18): every test spawns its own stub upstream and dashboard
 //! child on ephemeral ports (127.0.0.1:0) with an isolated `HOME` temp dir and unique
@@ -933,8 +933,8 @@ async fn topology_unauthorized_upstream_returns_286_and_names_auth_login() {
         resp.headers()
             .get("HX-Retarget")
             .and_then(|v| v.to_str().ok()),
-        Some("#resources"),
-        "the 286 response must carry HX-Retarget: #resources"
+        Some("main"),
+        "the 286 response must carry HX-Retarget: main"
     );
     let body = resp.text().await.expect("body");
     assert!(
