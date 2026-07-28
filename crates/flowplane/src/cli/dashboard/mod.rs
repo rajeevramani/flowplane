@@ -1771,6 +1771,16 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_cards_contain_long_unbroken_values() {
+        for required in [".card {\n  min-width: 0;", "overflow-wrap: anywhere"] {
+            assert!(
+                DASHBOARD_CSS.contains(required),
+                "generic dashboard cards must contain long unbroken values: missing {required}"
+            );
+        }
+    }
+
+    #[test]
     fn resources_script_is_dom_only_and_pins_prototype_interactions() {
         for banned in [
             "fetch(",

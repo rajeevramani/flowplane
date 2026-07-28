@@ -112,11 +112,15 @@ nav.tabs a:hover, nav.tabs a:focus-visible { color: var(--text); outline: none; 
 /* Cards, panel, tables, pills, banners ------------------------------------ */
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 0; }
 .card {
+  min-width: 0;
   background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
   padding: 12px 14px; display: grid; gap: 2px;
 }
 .card .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-faint); }
-.card .value { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 600; }
+.card .value {
+  font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 600;
+  overflow-wrap: anywhere;
+}
 .card .sub { font-size: 12px; color: var(--text-dim); }
 
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
