@@ -21,7 +21,7 @@
 //!     opening a domain row triggers
 //!     `GET /<nonce>/partials/resources/rate-limit-policies?domain=<percent-encoded name>`
 //!     which sweeps `/api/v1/teams/{team}/rate-limit-domains/<percent-encoded name>/policies`.
-//!   * Failure classes: upstream 401 → HTTP 286 with `HX-Retarget: #resources` naming
+//!   * Failure classes: upstream 401 → HTTP 286 with `HX-Retarget: main` naming
 //!     `flowplane auth login`; 403 on rate-limit-domains → HTTP 200 saying not authorized;
 //!     listeners 403/unavailable → domains still render, attachment declared UNKNOWN
 //!     (never "unattached").
@@ -813,7 +813,7 @@ async fn forbidden_listeners_render_domains_with_attachment_unknown() {
 }
 
 // =============================================================================================
-// Test 6a: upstream 401 on rate-limit-domains → HTTP 286 + HX-Retarget: #resources naming
+// Test 6a: upstream 401 on rate-limit-domains → HTTP 286 + HX-Retarget: main naming
 // `flowplane auth login`.
 // =============================================================================================
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -837,8 +837,8 @@ async fn unauthorized_domains_returns_286_and_names_auth_login() {
         resp.headers()
             .get("HX-Retarget")
             .and_then(|v| v.to_str().ok()),
-        Some("#resources"),
-        "the 286 response must carry HX-Retarget: #resources"
+        Some("main"),
+        "the 286 response must carry HX-Retarget: main"
     );
     let body = resp.text().await.expect("body");
     assert!(

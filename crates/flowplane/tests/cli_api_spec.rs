@@ -113,6 +113,7 @@ async fn api_spec_cli_read_model_matches_rest() {
         validator: None,
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
+        xds_degraded: None,
         discovery_forwarding_policy: Default::default(),
         egress_advisory: Default::default(),
         rls_repush: None,
@@ -162,6 +163,18 @@ async fn api_spec_cli_read_model_matches_rest() {
         .expect("publish");
     assert_eq!(published.status(), 200, "publish v1 over HTTP");
 
+    // A second API intentionally has no spec/review events. Its list row pins the
+    // required-nullable latest_decision contract through the real CLI process.
+    let no_event_name = unique("catalog-no-event");
+    let no_event = http
+        .post(&api_base)
+        .bearer_auth(&token)
+        .json(&json!({"name": no_event_name}))
+        .send()
+        .await
+        .expect("create no-event api");
+    assert_eq!(no_event.status(), 201, "create no-event API over HTTP");
+
     let home = common::unique_tempdir();
     let cli = |args: &[&str]| {
         common::flowplane_cmd(&home)
@@ -187,6 +200,33 @@ async fn api_spec_cli_read_model_matches_rest() {
                 .expect("rest json")
         }
     };
+
+    // Scenario 0 — `api list`: additive facts survive CLI JSON-envelope rendering and
+    // no-event is represented by a present key whose value is null.
+    let out = cli(&["api", "list", "--team", &team.name, "-o", "json"]);
+    let envelope = success_envelope(&out, "api list");
+    let rows = envelope["data"]["items"]
+        .as_array()
+        .expect("API list items");
+    let published_row = rows
+        .iter()
+        .find(|row| row["name"] == api_name)
+        .expect("published API list row");
+    assert_eq!(published_row["enabled_tool_count"], 1);
+    assert_eq!(published_row["latest_decision"], "published");
+    let no_event_row = rows
+        .iter()
+        .find(|row| row["name"] == no_event_name)
+        .expect("no-event API list row");
+    assert_eq!(no_event_row["enabled_tool_count"], 0);
+    assert!(
+        no_event_row
+            .as_object()
+            .expect("API list row object")
+            .contains_key("latest_decision"),
+        "CLI JSON must retain required-nullable latest_decision: {no_event_row}"
+    );
+    assert!(no_event_row["latest_decision"].is_null());
 
     // Scenario 1 — `api spec list`: envelope data equals the REST Page byte-for-byte, and
     // the single row is version 1 with latest_decision "published".

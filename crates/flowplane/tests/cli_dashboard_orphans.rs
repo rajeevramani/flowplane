@@ -27,7 +27,7 @@
 //!     claim phrase ("unreferenced cluster", "unbound listener", "unattached",
 //!     "unreferenced secret") may appear — even when a genuine orphan exists in the data
 //!     the sweep did retrieve.
-//!   * Upstream 401 → HTTP 286 + `HX-Retarget: #resources` naming `flowplane auth login`.
+//!   * Upstream 401 → HTTP 286 + `HX-Retarget: main` naming `flowplane auth login`.
 //!     The bearer token never appears in any response body or header.
 //!
 //! Fixture shapes are taken from the public contracts in `fp-domain` (`ListenerSpec`,
@@ -828,7 +828,7 @@ async fn forbidden_secrets_collection_suppresses_all_orphan_claims() {
 }
 
 // =============================================================================================
-// Test 4: upstream 401 → HTTP 286 (htmx stop-polling) + `HX-Retarget: #resources` naming
+// Test 4: upstream 401 → HTTP 286 (htmx stop-polling) + `HX-Retarget: main` naming
 // `flowplane auth login`; the bearer token never appears in any response body or header.
 // =============================================================================================
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -852,8 +852,8 @@ async fn unauthorized_upstream_returns_286_with_retarget_and_names_auth_login() 
         resp.headers()
             .get("HX-Retarget")
             .and_then(|v| v.to_str().ok()),
-        Some("#resources"),
-        "the 286 response must carry HX-Retarget: #resources"
+        Some("main"),
+        "the 286 response must carry HX-Retarget: main"
     );
     for (name, value) in resp.headers() {
         let value_str = String::from_utf8_lossy(value.as_bytes()).to_string();

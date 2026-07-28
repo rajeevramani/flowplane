@@ -1075,15 +1075,30 @@ async fn execute_static_tool(
             }))
         }
         ToolExecutor::OpsXdsNacks => {
-            let nacks = fp_core::services::xds_status::list_nack_events(
-                &state.pool,
-                ctx,
-                team,
-                integer_arg(&arguments, "limit").unwrap_or(50),
-                rid,
-            )
-            .await?;
-            let items = nacks
+            // Same window contract as REST (fpv2-55x.3 parity): half-open [since, until), cursor
+            // paging, window-relative total. Cursor codec is shared with xds_api so the emitted
+            // `next_cursor` is byte-identical between REST and MCP.
+            let query = fp_core::services::xds_status::NackQuery {
+                since: optional_timestamp_arg(&arguments, "since")?,
+                until: optional_timestamp_arg(&arguments, "until")?,
+                // A present `before` must be a string cursor; a non-string value is a client
+                // error, not a silent "no cursor" (parity with the stricter since/until + REST).
+                before: match arguments.get("before") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(raw)) => Some(crate::xds_api::decode_nack_cursor(raw)?),
+                    Some(_) => {
+                        return Err(DomainError::validation(
+                            "before must be a string cursor (<created_at>,<id>)",
+                        ))
+                    }
+                },
+                limit: integer_arg(&arguments, "limit"),
+            };
+            let window =
+                fp_core::services::xds_status::list_nack_window(&state.pool, ctx, team, query, rid)
+                    .await?;
+            let items = window
+                .events
                 .into_iter()
                 .map(|nack| {
                     json!({
@@ -1097,7 +1112,13 @@ async fn execute_static_tool(
                     })
                 })
                 .collect::<Vec<_>>();
-            Ok(json!({ "items": items }))
+            Ok(json!({
+                "items": items,
+                "window_total": window.window_total,
+                "next_cursor": window
+                    .next_cursor
+                    .map(|(created_at, id)| crate::xds_api::encode_nack_cursor(created_at, id)),
+            }))
         }
         ToolExecutor::OpsXdsTrace => {
             let query = fp_core::services::xds_status::TraceQuery {
@@ -2527,6 +2548,7 @@ mod tests {
             validator: None,
             write_throttle: std::sync::Arc::new(crate::throttle::WriteThrottle::new(1000)),
             xds_readiness: None,
+            xds_degraded: None,
             discovery_forwarding_policy: Default::default(),
             egress_advisory: Default::default(),
             rls_repush: None,

@@ -1,10 +1,11 @@
 {% if let Some(p) = panel.data() %}
 <section class="panel" id="panel-mcp-cp-tools">
-  <h2>CP tools <span class="hint">static cp_* / ops_* control-plane tools</span></h2>
+  <h2>CP tools <span class="count">static cp_* / ops_* control-plane tools</span></h2>
   {% if !p.include_disabled %}
   <p class="banner">Showing enabled tools only — grant <code>mcp-tools:update</code> to see disabled generated tools.</p>
   {% endif %}
-  <table class="dataplanes">
+  <div class="tablewrap">
+  <table>
     <thead>
       <tr><th>Tool</th><th>Resource</th><th>Action</th><th>Risk</th><th>Executable</th></tr>
     </thead>
@@ -14,8 +15,8 @@
         <td><code>{{ t.name }}</code><br><span class="hint">{{ t.description }}</span></td>
         <td>{{ t.resource }}</td>
         <td>{{ t.action }}</td>
-        <td><span class="pill {{ t.risk }}">{{ t.risk }}</span></td>
-        <td>{% if t.executable_by_caller %}<span class="pill enforcing">yes</span>{% else %}<span class="pill shadow">no</span>{% endif %}</td>
+        <td>{% if t.risk == "read" %}<span class="pill neutral">{{ t.risk }}</span>{% else if t.risk == "mutate" %}<span class="pill warn">{{ t.risk }}</span>{% else if t.risk == "delete" %}<span class="pill crit">{{ t.risk }}</span>{% else %}<span class="pill neutral">{{ t.risk }}</span>{% endif %}</td>
+        <td>{% if t.executable_by_caller %}<span class="pill good">yes</span>{% else %}<span class="pill neutral">no</span>{% endif %}</td>
       </tr>
       {% endfor %}
       {% if p.cp_tools.is_empty() %}
@@ -23,13 +24,15 @@
       {% endif %}
     </tbody>
   </table>
+  </div>
 </section>
 
 <section class="panel" id="panel-mcp-api-tools">
   <h2>API tools
-    <span class="hint">generated api_* tools for published specs{% if p.include_disabled %} · {{ p.disabled_count }} disabled{% endif %}</span>
+    <span class="count">generated api_* tools for published specs{% if p.include_disabled %} · {{ p.disabled_count }} disabled{% endif %}</span>
   </h2>
-  <table class="dataplanes">
+  <div class="tablewrap">
+  <table>
     <thead>
       <tr><th>Tool</th><th>Enabled</th><th>Risk</th><th>Executable</th></tr>
     </thead>
@@ -37,9 +40,9 @@
       {% for t in p.api_tools %}
       <tr{% if !t.enabled %} class="disabled"{% endif %}>
         <td><code>{{ t.name }}</code><br><span class="hint">{{ t.description }}</span></td>
-        <td>{% if t.enabled %}<span class="pill enforcing">enabled</span>{% else %}<span class="pill shadow">disabled</span>{% endif %}</td>
-        <td><span class="pill {{ t.risk }}">{{ t.risk }}</span></td>
-        <td>{% if t.executable_by_caller %}<span class="pill enforcing">yes</span>{% else %}<span class="pill shadow">no</span>{% endif %}</td>
+        <td>{% if t.enabled %}<span class="pill good">enabled</span>{% else %}<span class="pill neutral">disabled</span>{% endif %}</td>
+        <td>{% if t.risk == "read" %}<span class="pill neutral">{{ t.risk }}</span>{% else if t.risk == "mutate" %}<span class="pill warn">{{ t.risk }}</span>{% else if t.risk == "delete" %}<span class="pill crit">{{ t.risk }}</span>{% else %}<span class="pill neutral">{{ t.risk }}</span>{% endif %}</td>
+        <td>{% if t.executable_by_caller %}<span class="pill good">yes</span>{% else %}<span class="pill neutral">no</span>{% endif %}</td>
       </tr>
       {% endfor %}
       {% if p.api_tools.is_empty() %}
@@ -47,6 +50,7 @@
       {% endif %}
     </tbody>
   </table>
+  </div>
 </section>
 {% else if panel.unauthorized() %}
 <section class="panel unauthorized" id="panel-mcp-cp-tools">

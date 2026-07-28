@@ -44,6 +44,9 @@ pub(super) const COLLECTIONS: &[&str] = &[
     "api-definitions",
     // Learning tab (ui-f4 S8): capture-session metadata list (no observation bodies).
     "learning-sessions",
+    // Learning tab (fpv2-g87): discovery-session metadata list — same metadata-only shape as
+    // learning-sessions (counters/status; no observation bodies).
+    "learning-discovery-sessions",
 ];
 
 /// Percent-encode one path segment (RFC 3986 unreserved kept verbatim). Rate-limit
@@ -881,7 +884,10 @@ mod tests {
                 "api-definitions",
                 // ui-f4 S8 (reviewed addition): capture-session metadata list for the
                 // Learning tab. Session bodies/observations are never fetched.
-                "learning-sessions"
+                "learning-sessions",
+                // fpv2-g87 (reviewed addition): discovery-session metadata list for the
+                // Learning tab — same metadata-only shape; observations are never fetched.
+                "learning-discovery-sessions"
             ],
             "the upstream allowlist is closed; review any change against design AC 4"
         );

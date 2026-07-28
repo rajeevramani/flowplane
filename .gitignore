@@ -43,3 +43,8 @@ __pycache__/
 
 # Playwright MCP run artifacts (local UI E2E)
 .playwright-mcp/
+
+# Local macOS and slice-verification artifacts
+.DS_Store
+.s3-verify.log
+.s3.diff

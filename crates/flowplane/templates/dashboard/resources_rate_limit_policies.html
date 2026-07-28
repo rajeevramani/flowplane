@@ -7,7 +7,8 @@
   <p class="banner">Partial data: the {{ p.collection }} collection is incomplete.</p>
   {% endif %}
   {% endif %}
-  <table class="dataplanes">
+  <div class="tablewrap">
+  <table>
     <thead><tr><th>Policy</th><th>Limit</th><th>Descriptors</th><th>Revision</th></tr></thead>
     <tbody>
       {% for row in t.rows %}
@@ -27,6 +28,7 @@
       {% endif %}
     </tbody>
   </table>
+  </div>
 </div>
 {% else if panel.unauthorized() %}
 <p class="unauthorized">Not authorized to view this domain's policies.</p>

@@ -42,6 +42,19 @@ struct SpecMetaItem {
     capture_session_id: Option<String>,
 }
 
+/// Discovery-session list item (fpv2-g87). A subset of `DiscoverySessionView` — only the fields
+/// the Learning-tab row renders; the counters are populated by the discovery ingest fix (l2l).
+#[derive(Debug, Deserialize)]
+struct DiscoverySessionItem {
+    name: String,
+    status: String,
+    sample_count: i64,
+    path_count: i64,
+    #[serde(default)]
+    completed_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+}
+
 /// One learned spec version a completed session's API produced — the viewer link target.
 #[derive(Debug)]
 pub(super) struct ProducedSpec {
@@ -58,6 +71,13 @@ pub(super) struct SessionRow {
     pub(super) paths: i64,
     pub(super) age: String,
     pub(super) completed: bool,
+    /// Session provenance facet: `"capture"` (learning) or `"discovery"`. Discovery sessions
+    /// (fpv2-g87) share the counters/status shape but reach the tab via a separate sweep.
+    pub(super) session_type: &'static str,
+    /// True when spec-version provenance is linkable for this session (capture sessions only).
+    /// Discovery-generated specs stamp `discovery_session_id`, which the spec-list contract does
+    /// not yet expose, so discovery rows do not resolve produced specs (fpv2-g87 narrow scope).
+    pub(super) links_specs: bool,
     /// Learned spec versions this session produced (completed sessions only), matched by
     /// the versions' capture-session provenance.
     pub(super) produced: Vec<ProducedSpec>,
@@ -75,12 +95,16 @@ pub(super) struct LearningPanel {
     pub(super) notices: Vec<PartialNotice>,
 }
 
+/// Returns the fetched items plus the upstream envelope `total` (the true M). The header's "N of
+/// M" uses this M, not the fetched count, so a partial sweep reports the real total rather than
+/// silently collapsing to the number of rows shown (the partial banner then explains the gap).
 fn record_notice(
     result: Result<super::resources::Sweep, SweepFailure>,
     collection: &'static str,
     notices: &mut Vec<PartialNotice>,
-) -> Result<Vec<Value>, SweepFailure> {
+) -> Result<(Vec<Value>, i64), SweepFailure> {
     let sweep = result?;
+    let total = sweep.total;
     if let Some(reason) = sweep.partial {
         notices.push(PartialNotice {
             shown: sweep.items.len(),
@@ -89,7 +113,7 @@ fn record_notice(
             collection,
         });
     }
-    Ok(sweep.items)
+    Ok((sweep.items, total))
 }
 
 pub(super) async fn fetch_learning(
@@ -99,13 +123,14 @@ pub(super) async fn fetch_learning(
 ) -> Result<Panel<LearningPanel>, AuthExpired> {
     let mut notices = Vec::new();
     let sessions_result = sweep(client, team, "learning-sessions", SWEEP_BYTE_BUDGET).await;
-    let sessions = match record_notice(sessions_result, "learning sessions", &mut notices) {
-        Ok(items) => items,
-        Err(SweepFailure::AuthExpired) => return Err(AuthExpired),
-        Err(SweepFailure::Unauthorized) => return Ok(Panel::Unauthorized),
-        Err(SweepFailure::Unavailable) => return Ok(Panel::Unavailable),
-    };
-    let total = sessions.len() as i64;
+    let (sessions, sessions_total) =
+        match record_notice(sessions_result, "learning sessions", &mut notices) {
+            Ok(pair) => pair,
+            Err(SweepFailure::AuthExpired) => return Err(AuthExpired),
+            Err(SweepFailure::Unauthorized) => return Ok(Panel::Unauthorized),
+            Err(SweepFailure::Unavailable) => return Ok(Panel::Unavailable),
+        };
+    let total = sessions_total;
     // Typed-decode failures render fallback rows (name kept when present) — nothing is
     // silently dropped (dashboard acquisition convention).
     let mut unparsed_rows: Vec<SessionRow> = Vec::new();
@@ -126,6 +151,8 @@ pub(super) async fn fetch_learning(
                     paths: 0,
                     age: String::new(),
                     completed: false,
+                    session_type: "capture",
+                    links_specs: false,
                     produced: Vec::new(),
                     unparsed: true,
                 });
@@ -139,7 +166,7 @@ pub(super) async fn fetch_learning(
     if sessions.iter().any(|s| s.api_definition_id.is_some()) {
         let apis_result = sweep(client, team, "api-definitions", SWEEP_BYTE_BUDGET).await;
         match record_notice(apis_result, "api definitions", &mut notices) {
-            Ok(items) => {
+            Ok((items, _total)) => {
                 for item in items {
                     if let (Some(id), Some(name)) = (
                         item.get("id").and_then(Value::as_str),
@@ -184,7 +211,7 @@ pub(super) async fn fetch_learning(
         )
         .await;
         match record_notice(specs_result, "spec versions", &mut notices) {
-            Ok(items) => {
+            Ok((items, _total)) => {
                 for item in items {
                     let Ok(meta) = serde_json::from_value::<SpecMetaItem>(item) else {
                         unparsed_specs += 1;
@@ -252,12 +279,23 @@ pub(super) async fn fetch_learning(
                 paths: s.path_count,
                 age: humanize_age(now, s.completed_at.unwrap_or(s.created_at)),
                 completed,
+                session_type: "capture",
+                links_specs: true,
                 produced,
                 unparsed: false,
             }
         })
         .collect();
     rows.extend(unparsed_rows);
+
+    // fpv2-g87: discovery sessions share the counters/status shape but reach the tab via a
+    // separate sweep. They are an additive facet — a 401 still aborts the whole dashboard, but a
+    // 403/unavailable degrades to a notice so the learning rows above still render.
+    let (discovery_rows, discovery_total) =
+        fetch_discovery_rows(client, team, now, &mut notices).await?;
+    let total = total + discovery_total;
+    rows.extend(discovery_rows);
+
     rows.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(Panel::Data(LearningPanel {
@@ -266,6 +304,81 @@ pub(super) async fn fetch_learning(
         unparsed_specs,
         notices,
     }))
+}
+
+/// Sweep the discovery-session metadata list and build Learning-tab rows (fpv2-g87). Discovery is
+/// additive: a 401 aborts the whole dashboard (`AuthExpired`), but a 403/unavailable or a decode
+/// failure degrades to a notice so the already-gathered learning rows still render. Returns the
+/// discovery rows plus the count swept (folded into the panel's "N of M").
+async fn fetch_discovery_rows(
+    client: &RestClient,
+    team: &str,
+    now: DateTime<Utc>,
+    notices: &mut Vec<PartialNotice>,
+) -> Result<(Vec<SessionRow>, i64), AuthExpired> {
+    let result = sweep(
+        client,
+        team,
+        "learning-discovery-sessions",
+        SWEEP_BYTE_BUDGET,
+    )
+    .await;
+    let (items, total) = match record_notice(result, "discovery sessions", notices) {
+        Ok(pair) => pair,
+        Err(SweepFailure::AuthExpired) => return Err(AuthExpired),
+        Err(SweepFailure::Unauthorized) | Err(SweepFailure::Unavailable) => {
+            notices.push(PartialNotice {
+                shown: 0,
+                total: 0,
+                reason: super::resources::PartialReason::UpstreamFailure,
+                collection: "discovery sessions",
+            });
+            return Ok((Vec::new(), 0));
+        }
+    };
+    let rows = items
+        .into_iter()
+        .map(
+            |item| match serde_json::from_value::<DiscoverySessionItem>(item.clone()) {
+                Ok(s) => {
+                    let completed = s.completed_at.is_some();
+                    SessionRow {
+                        name: s.name,
+                        status: s.status,
+                        // Discovery sessions bind API definitions by discovery_session_id, which the
+                        // spec-list contract does not expose — no API/spec link in this scope.
+                        api: "—".into(),
+                        samples: s.sample_count,
+                        paths: s.path_count,
+                        age: humanize_age(now, s.completed_at.unwrap_or(s.created_at)),
+                        completed,
+                        session_type: "discovery",
+                        links_specs: false,
+                        produced: Vec::new(),
+                        unparsed: false,
+                    }
+                }
+                Err(_) => SessionRow {
+                    name: item
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("(unknown)")
+                        .to_string(),
+                    status: String::new(),
+                    api: String::new(),
+                    samples: 0,
+                    paths: 0,
+                    age: String::new(),
+                    completed: false,
+                    session_type: "discovery",
+                    links_specs: false,
+                    produced: Vec::new(),
+                    unparsed: true,
+                },
+            },
+        )
+        .collect();
+    Ok((rows, total))
 }
 
 // =============================================================================================

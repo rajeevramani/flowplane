@@ -26,59 +26,188 @@ struct ApiListItem {
     name: String,
     #[serde(default)]
     display_name: String,
+    #[serde(default)]
+    description: String,
+    revision: i64,
     tool_count: i64,
+    enabled_tool_count: i64,
     route_binding_count: i64,
     #[serde(default)]
     latest_version: Option<i64>,
     #[serde(default)]
     published_version: Option<i64>,
+    latest_decision: Option<String>,
     updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ApiLifecyclePresentation {
+    label: String,
+    tone: &'static str,
+    published: bool,
+    attention: bool,
+    latest_unpublished: bool,
+}
+
+fn api_lifecycle_presentation(
+    published_version: Option<i64>,
+    latest_version: Option<i64>,
+    latest_decision: Option<&str>,
+) -> ApiLifecyclePresentation {
+    // A published pointer without any latest version is an inconsistent future payload;
+    // keep the truthful "no spec" label and do not count it as published.
+    let published = published_version.is_some() && latest_version.is_some();
+    let latest_unpublished = latest_version.is_some() && latest_version != published_version;
+    let attention = latest_unpublished && matches!(latest_decision, Some("submitted" | "reviewed"));
+    let tone = if latest_version.is_some() && latest_version == published_version {
+        "good"
+    } else if attention {
+        "warn"
+    } else {
+        "neutral"
+    };
+    ApiLifecyclePresentation {
+        label: state_pill(published_version, latest_version, latest_decision),
+        tone,
+        published,
+        attention,
+        latest_unpublished,
+    }
 }
 
 #[derive(Debug)]
 pub(super) struct ApiRow {
     pub(super) name: String,
     pub(super) display_name: String,
+    pub(super) description: String,
+    pub(super) revision: i64,
     pub(super) tool_count: i64,
+    pub(super) enabled_tool_count: i64,
     pub(super) route_binding_count: i64,
-    pub(super) versions: String,
+    pub(super) lifecycle: String,
+    pub(super) lifecycle_tone: &'static str,
+    pub(super) published: bool,
+    pub(super) attention: bool,
+    pub(super) latest_unpublished: bool,
     pub(super) updated: String,
     pub(super) unparsed: bool,
 }
 
 fn api_row(item: Value, now: DateTime<Utc>) -> ApiRow {
+    // Both additive fields are required wire keys. `latest_decision: null` is valid,
+    // but an absent key means producer/consumer version skew and must fail closed.
+    if item.get("enabled_tool_count").is_none() || item.get("latest_decision").is_none() {
+        return unparsed_api_row(&item);
+    }
     match serde_json::from_value::<ApiListItem>(item.clone()) {
-        Ok(item) => ApiRow {
-            versions: match (item.published_version, item.latest_version) {
-                (Some(p), Some(l)) if p == l => format!("published v{p}"),
-                (Some(p), Some(l)) => format!("published v{p} · latest v{l}"),
-                (None, Some(l)) => format!("latest v{l} (unpublished)"),
-                _ => "no spec".into(),
-            },
-            display_name: if item.display_name.is_empty() {
-                "—".into()
-            } else {
-                item.display_name
-            },
-            name: item.name,
-            tool_count: item.tool_count,
-            route_binding_count: item.route_binding_count,
-            updated: humanize_age(now, item.updated_at),
-            unparsed: false,
-        },
-        Err(_) => ApiRow {
-            name: item
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("(unknown)")
-                .to_string(),
-            display_name: String::new(),
-            tool_count: 0,
-            route_binding_count: 0,
-            versions: String::new(),
-            updated: String::new(),
-            unparsed: true,
-        },
+        Ok(item) => {
+            let lifecycle = api_lifecycle_presentation(
+                item.published_version,
+                item.latest_version,
+                item.latest_decision.as_deref(),
+            );
+            ApiRow {
+                lifecycle: lifecycle.label,
+                lifecycle_tone: lifecycle.tone,
+                published: lifecycle.published,
+                attention: lifecycle.attention,
+                latest_unpublished: lifecycle.latest_unpublished,
+                display_name: if item.display_name.is_empty() {
+                    "—".into()
+                } else {
+                    item.display_name
+                },
+                description: if item.description.is_empty() {
+                    "—".into()
+                } else {
+                    item.description
+                },
+                name: item.name,
+                revision: item.revision,
+                tool_count: item.tool_count,
+                enabled_tool_count: item.enabled_tool_count,
+                route_binding_count: item.route_binding_count,
+                updated: humanize_age(now, item.updated_at),
+                unparsed: false,
+            }
+        }
+        Err(_) => unparsed_api_row(&item),
+    }
+}
+
+fn unparsed_api_row(item: &Value) -> ApiRow {
+    ApiRow {
+        name: item
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("(unknown)")
+            .to_string(),
+        display_name: String::new(),
+        description: String::new(),
+        revision: 0,
+        tool_count: 0,
+        enabled_tool_count: 0,
+        route_binding_count: 0,
+        lifecycle: String::new(),
+        lifecycle_tone: "neutral",
+        published: false,
+        attention: false,
+        latest_unpublished: false,
+        updated: String::new(),
+        unparsed: true,
+    }
+}
+
+pub(super) struct ApisOverview {
+    pub(super) table: Table<ApiRow>,
+    pub(super) api_count: String,
+    pub(super) published_count: String,
+    pub(super) attention_count: String,
+    pub(super) tool_count: String,
+    pub(super) enabled_tool_count: String,
+    pub(super) disabled_tool_count: String,
+    pub(super) binding_count: String,
+    pub(super) apis_with_bindings: String,
+    pub(super) latest_unpublished_count: String,
+    pub(super) unparsed_count: usize,
+}
+
+fn lower_bound(value: impl std::fmt::Display, partial: bool) -> String {
+    if partial {
+        format!("≥{value}")
+    } else {
+        value.to_string()
+    }
+}
+
+fn overview_from_table(table: Table<ApiRow>) -> ApisOverview {
+    let partial = table.partial.is_some();
+    let unparsed_count = table.rows.iter().filter(|row| row.unparsed).count();
+    let parsed = table.rows.iter().filter(|row| !row.unparsed);
+    let published_count = parsed.clone().filter(|row| row.published).count();
+    let attention_count = parsed.clone().filter(|row| row.attention).count();
+    let tool_count: i64 = parsed.clone().map(|row| row.tool_count).sum();
+    let enabled_tool_count: i64 = parsed.clone().map(|row| row.enabled_tool_count).sum();
+    let binding_count: i64 = parsed.clone().map(|row| row.route_binding_count).sum();
+    let apis_with_bindings = parsed
+        .clone()
+        .filter(|row| row.route_binding_count > 0)
+        .count();
+    let latest_unpublished_count = parsed.filter(|row| row.latest_unpublished).count();
+    ApisOverview {
+        // Card 1 is the visible definition count. Unparseable rows remain visible API
+        // definitions; only lifecycle/tool/binding category sums exclude them.
+        api_count: lower_bound(table.rows.len(), partial),
+        published_count: lower_bound(published_count, partial),
+        attention_count: lower_bound(attention_count, partial),
+        tool_count: lower_bound(tool_count, partial),
+        enabled_tool_count: lower_bound(enabled_tool_count, partial),
+        disabled_tool_count: lower_bound(tool_count.saturating_sub(enabled_tool_count), partial),
+        binding_count: lower_bound(binding_count, partial),
+        apis_with_bindings: lower_bound(apis_with_bindings, partial),
+        latest_unpublished_count: lower_bound(latest_unpublished_count, partial),
+        unparsed_count,
+        table,
     }
 }
 
@@ -86,9 +215,15 @@ pub(super) async fn fetch_apis(
     client: &RestClient,
     team: &str,
     now: DateTime<Utc>,
-) -> Result<Panel<Table<ApiRow>>, AuthExpired> {
+) -> Result<Panel<ApisOverview>, AuthExpired> {
     let result = sweep(client, team, "api-definitions", SWEEP_BYTE_BUDGET).await;
-    to_panel(result, "api definitions", |item| api_row(item, now))
+    Ok(
+        match to_panel(result, "api definitions", |item| api_row(item, now))? {
+            Panel::Data(table) => Panel::Data(overview_from_table(table)),
+            Panel::Unauthorized => Panel::Unauthorized,
+            Panel::Unavailable => Panel::Unavailable,
+        },
+    )
 }
 
 // =============================================================================================
@@ -123,6 +258,8 @@ struct SpecListItem {
     id: String,
     version: i64,
     source_kind: String,
+    #[serde(default = "unknown_format")]
+    format: String,
     spec_hash: String,
     #[serde(default)]
     latest_decision: Option<String>,
@@ -141,6 +278,8 @@ pub(super) struct LineageRow {
 
 #[derive(Debug, Deserialize)]
 struct EventItem {
+    #[serde(default)]
+    id: String,
     decision: String,
     actor_type: String,
     #[serde(default)]
@@ -154,6 +293,77 @@ pub(super) struct EventRow {
     pub(super) actor_type: String,
     pub(super) reason: String,
     pub(super) created: String,
+}
+
+fn unknown_format() -> String {
+    "—".into()
+}
+
+fn event_rows(now: DateTime<Utc>, mut events: Vec<EventItem>) -> Vec<EventRow> {
+    events.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    events
+        .into_iter()
+        .map(|event| EventRow {
+            decision: event.decision,
+            actor_type: event.actor_type,
+            reason: event.reason,
+            created: humanize_age(now, event.created_at),
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+pub(super) struct PipelineStage {
+    pub(super) label: String,
+    pub(super) kind: &'static str,
+}
+
+fn compose_pipeline(
+    source_kind: Option<&str>,
+    events: &[EventRow],
+    events_available: bool,
+    published_version: Option<i64>,
+    enabled_tools: usize,
+    total_tools: usize,
+    tools_partial: bool,
+) -> Vec<PipelineStage> {
+    let mut stages = Vec::new();
+    if let Some(source) = source_kind {
+        stages.push(PipelineStage {
+            label: format!("source: {source}"),
+            kind: "source",
+        });
+    }
+    stages.extend(events.iter().map(|event| PipelineStage {
+        label: event.decision.clone(),
+        kind: "event",
+    }));
+    if !events_available {
+        stages.push(PipelineStage {
+            label: "review events unavailable".into(),
+            kind: "unavailable",
+        });
+    }
+    if let Some(version) = published_version {
+        stages.push(PipelineStage {
+            label: format!("published v{version}"),
+            kind: "published",
+        });
+    }
+    let tool_label = if tools_partial {
+        format!("≥{enabled_tools}/≥{total_tools} tools enabled (visible)")
+    } else {
+        format!("{enabled_tools}/{total_tools} tools enabled")
+    };
+    stages.push(PipelineStage {
+        label: tool_label,
+        kind: "tools",
+    });
+    stages
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,6 +411,15 @@ pub(super) struct ToolRow {
 pub(super) struct ApiDetail {
     pub(super) api: String,
     pub(super) pill: String,
+    pub(super) description: String,
+    pub(super) revision: String,
+    pub(super) updated: String,
+    pub(super) latest_format: String,
+    pub(super) latest_hash: String,
+    pub(super) published_version: Option<i64>,
+    pub(super) tool_summary: String,
+    pub(super) events_available: bool,
+    pub(super) pipeline: Vec<PipelineStage>,
     /// Event history of the latest version, oldest first, verbatim. `None` means the
     /// events fetch FAILED — rendered as an explicit unavailable notice, never as an
     /// empty history (fail closed, no silent partial).
@@ -268,15 +487,40 @@ pub(super) async fn fetch_api_detail(
     let seg = encode_segment(api);
     let mut notices = Vec::new();
 
-    // The definition row: only needed for published_spec_version_id.
-    let published_spec_id: Option<String> = match client
+    // The definition row supplies persisted metadata and the published-spec pointer.
+    let (published_spec_id, description, revision, updated): (
+        Option<String>,
+        String,
+        String,
+        String,
+    ) = match client
         .get_json_sized(&format!("/api/v1/teams/{team}/api-definitions/{seg}"))
         .await
     {
-        Ok((value, _)) => value
-            .get("published_spec_version_id")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        Ok((value, _)) => {
+            let published = value
+                .get("published_spec_version_id")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let description = value
+                .get("description")
+                .and_then(Value::as_str)
+                .filter(|description| !description.is_empty())
+                .unwrap_or("—")
+                .to_string();
+            let revision = value
+                .get("revision")
+                .and_then(Value::as_i64)
+                .map(|revision| revision.to_string())
+                .unwrap_or_else(|| "—".into());
+            let updated = value
+                .get("updated_at")
+                .and_then(Value::as_str)
+                .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
+                .map(|timestamp| humanize_age(now, timestamp.with_timezone(&Utc)))
+                .unwrap_or_else(|| "—".into());
+            (published, description, revision, updated)
+        }
         Err(super::super::client::ReadError::Status { status, .. })
             if status == reqwest::StatusCode::UNAUTHORIZED =>
         {
@@ -336,18 +580,13 @@ pub(super) async fn fetch_api_detail(
             return Err(AuthExpired);
         }
         events = match sweep_or_empty(events_result, "review events", &mut notices) {
-            Ok(items) => Some(
-                items
+            Ok(items) => {
+                let decoded = items
                     .into_iter()
                     .filter_map(|item| serde_json::from_value::<EventItem>(item).ok())
-                    .map(|e| EventRow {
-                        decision: e.decision,
-                        actor_type: e.actor_type,
-                        reason: e.reason,
-                        created: humanize_age(now, e.created_at),
-                    })
-                    .collect(),
-            ),
+                    .collect();
+                Some(event_rows(now, decoded))
+            }
             Err(_) => None,
         };
     }
@@ -453,6 +692,7 @@ pub(super) async fn fetch_api_detail(
     if matches!(tools_result, Err(SweepFailure::AuthExpired)) {
         return Err(AuthExpired);
     }
+    let notices_before_tools = notices.len();
     let tools = match sweep_or_empty(tools_result, "api tools", &mut notices) {
         Ok(items) => items,
         Err(state) => return Ok(state.into_panel()),
@@ -470,10 +710,42 @@ pub(super) async fn fetch_api_detail(
             output_schema: serde_json::to_string_pretty(&t.output_schema).unwrap_or_default(),
         })
         .collect();
+    let tools_partial = notices.len() > notices_before_tools;
+
+    let enabled_tool_count = tools.iter().filter(|tool| tool.enabled).count();
+    let latest_format = latest
+        .map(|spec| spec.format.clone())
+        .unwrap_or_else(|| "—".into());
+    let latest_hash = latest
+        .map(|spec| spec.spec_hash.clone())
+        .unwrap_or_else(|| "—".into());
+    let pipeline = compose_pipeline(
+        latest.map(|spec| spec.source_kind.as_str()),
+        events.as_deref().unwrap_or(&[]),
+        events.is_some(),
+        published_version,
+        enabled_tool_count,
+        tools.len(),
+        tools_partial,
+    );
+    let tool_summary = if tools_partial {
+        format!("≥{enabled_tool_count} / ≥{} enabled (visible)", tools.len())
+    } else {
+        format!("{enabled_tool_count} / {} enabled", tools.len())
+    };
 
     Ok(Panel::Data(ApiDetail {
         api: api.to_string(),
         pill,
+        description,
+        revision,
+        updated,
+        latest_format,
+        latest_hash,
+        published_version,
+        tool_summary,
+        events_available: events.is_some(),
+        pipeline,
         events,
         latest_version,
         lineage,
@@ -485,8 +757,15 @@ pub(super) async fn fetch_api_detail(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
-    use super::state_pill;
+    use super::{
+        api_lifecycle_presentation, api_row, compose_pipeline, event_rows, overview_from_table,
+        state_pill, ApiRow, EventItem,
+    };
+    use crate::cli::dashboard::resources::{PartialNotice, PartialReason, Table};
+    use chrono::{TimeZone, Utc};
+    use serde_json::json;
 
     /// Design acceptance 1: every derived pill maps 1:1 to a
     /// `(published_version, latest_version, latest event)` tuple — enumerated here,
@@ -547,6 +826,319 @@ mod tests {
         assert_eq!(
             state_pill(Some(1), Some(2), Some("archived")),
             "published v1 · v2 archived"
+        );
+    }
+
+    #[test]
+    fn list_lifecycle_maps_every_truthful_tuple_and_tone() {
+        type Case = (
+            Option<i64>,
+            Option<i64>,
+            Option<&'static str>,
+            &'static str,
+            &'static str,
+            bool,
+            bool,
+        );
+        let cases: &[Case] = &[
+            (None, None, None, "no spec", "neutral", false, false),
+            (Some(1), Some(1), None, "published v1", "good", false, false),
+            (
+                None,
+                Some(1),
+                Some("submitted"),
+                "v1 submitted",
+                "warn",
+                true,
+                true,
+            ),
+            (
+                None,
+                Some(1),
+                Some("reviewed"),
+                "v1 reviewed",
+                "warn",
+                true,
+                true,
+            ),
+            (
+                None,
+                Some(1),
+                Some("published"),
+                "v1 published",
+                "neutral",
+                false,
+                true,
+            ),
+            (
+                None,
+                Some(1),
+                Some("rejected"),
+                "v1 rejected",
+                "neutral",
+                false,
+                true,
+            ),
+            (
+                None,
+                Some(1),
+                Some("unpublished"),
+                "v1 unpublished",
+                "neutral",
+                false,
+                true,
+            ),
+            (
+                None,
+                Some(1),
+                None,
+                "v1 (no events)",
+                "neutral",
+                false,
+                true,
+            ),
+            (
+                Some(1),
+                Some(2),
+                Some("submitted"),
+                "published v1 · v2 submitted",
+                "warn",
+                true,
+                true,
+            ),
+            (
+                Some(1),
+                Some(2),
+                Some("reviewed"),
+                "published v1 · v2 reviewed",
+                "warn",
+                true,
+                true,
+            ),
+            (
+                Some(1),
+                Some(2),
+                Some("published"),
+                "published v1 · v2 published",
+                "neutral",
+                false,
+                true,
+            ),
+            (
+                Some(1),
+                Some(2),
+                Some("rejected"),
+                "published v1 · v2 rejected",
+                "neutral",
+                false,
+                true,
+            ),
+            (
+                Some(1),
+                Some(2),
+                Some("unpublished"),
+                "published v1 · v2 unpublished",
+                "neutral",
+                false,
+                true,
+            ),
+            (
+                Some(1),
+                Some(2),
+                Some("archived"),
+                "published v1 · v2 archived",
+                "neutral",
+                false,
+                true,
+            ),
+        ];
+        for (published, latest, decision, label, tone, attention, latest_unpublished) in cases {
+            let got = api_lifecycle_presentation(*published, *latest, *decision);
+            assert_eq!(got.label, *label);
+            assert_eq!(got.tone, *tone);
+            assert_eq!(got.attention, *attention);
+            assert_eq!(got.latest_unpublished, *latest_unpublished);
+        }
+        assert!(!api_lifecycle_presentation(Some(1), None, None).published);
+    }
+
+    #[test]
+    fn additive_wire_keys_are_required_but_latest_decision_accepts_null() {
+        let now = Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap();
+        let base = json!({
+            "name": "orders",
+            "display_name": "Orders",
+            "description": "Order lifecycle",
+            "revision": 7,
+            "tool_count": 3,
+            "enabled_tool_count": 2,
+            "route_binding_count": 1,
+            "latest_version": 2,
+            "published_version": 1,
+            "latest_decision": null,
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
+        let parsed = api_row(base.clone(), now);
+        assert!(!parsed.unparsed);
+        assert_eq!(parsed.enabled_tool_count, 2);
+        assert_eq!(parsed.lifecycle, "published v1 · v2 (no events)");
+
+        for missing in ["enabled_tool_count", "latest_decision"] {
+            let mut value = base.clone();
+            value.as_object_mut().unwrap().remove(missing);
+            assert!(api_row(value, now).unparsed, "missing {missing}");
+        }
+    }
+
+    fn row(
+        name: &str,
+        tools: i64,
+        enabled: i64,
+        bindings: i64,
+        current_published: bool,
+        attention: bool,
+        latest_unpublished: bool,
+    ) -> ApiRow {
+        ApiRow {
+            name: name.into(),
+            display_name: name.into(),
+            description: format!("{name} description"),
+            revision: 1,
+            tool_count: tools,
+            enabled_tool_count: enabled,
+            route_binding_count: bindings,
+            lifecycle: "fixture".into(),
+            lifecycle_tone: "neutral",
+            published: current_published,
+            attention,
+            latest_unpublished,
+            updated: "now".into(),
+            unparsed: false,
+        }
+    }
+
+    #[test]
+    fn overview_is_exact_when_complete_and_lower_bound_when_partial() {
+        let mut rows = vec![
+            row("a", 3, 2, 1, true, false, false),
+            row("b", 1, 1, 0, true, false, false),
+            row("c", 2, 1, 2, false, true, true),
+            row("d", 0, 0, 0, false, false, true),
+            row("e", 1, 0, 0, false, false, false),
+        ];
+        let mut malformed = row("malformed", 99, 99, 99, false, true, true);
+        malformed.unparsed = true;
+        rows.push(malformed);
+
+        let complete = overview_from_table(Table {
+            rows,
+            total: 6,
+            partial: None,
+        });
+        assert_eq!(complete.api_count, "6");
+        assert_eq!(complete.published_count, "2");
+        assert_eq!(complete.attention_count, "1");
+        assert_eq!(complete.tool_count, "7");
+        assert_eq!(complete.enabled_tool_count, "4");
+        assert_eq!(complete.disabled_tool_count, "3");
+        assert_eq!(complete.binding_count, "3");
+        assert_eq!(complete.apis_with_bindings, "2");
+        assert_eq!(complete.latest_unpublished_count, "2");
+        assert_eq!(complete.unparsed_count, 1);
+
+        let partial_rows = complete.table.rows;
+        let partial = overview_from_table(Table {
+            rows: partial_rows,
+            total: 40,
+            partial: Some(PartialNotice {
+                shown: 6,
+                total: 40,
+                reason: PartialReason::Budget,
+                collection: "api definitions",
+            }),
+        });
+        assert_eq!(partial.api_count, "≥6");
+        assert_eq!(partial.published_count, "≥2");
+        assert_eq!(partial.attention_count, "≥1");
+        assert_eq!(partial.tool_count, "≥7");
+        assert_eq!(partial.enabled_tool_count, "≥4");
+        assert_eq!(partial.disabled_tool_count, "≥3");
+        assert_eq!(partial.binding_count, "≥3");
+        assert_eq!(partial.apis_with_bindings, "≥2");
+        assert_eq!(partial.latest_unpublished_count, "≥2");
+    }
+
+    #[test]
+    fn detail_pipeline_orders_persisted_events_and_never_invents_stages() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 27, 0, 0, 0).unwrap();
+        let events = event_rows(
+            now,
+            vec![
+                EventItem {
+                    id: "event-3".into(),
+                    decision: "future-decision".into(),
+                    actor_type: "human".into(),
+                    reason: "kept verbatim".into(),
+                    created_at: Utc.with_ymd_and_hms(2026, 7, 27, 0, 3, 0).unwrap(),
+                },
+                EventItem {
+                    id: "event-1".into(),
+                    decision: "submitted".into(),
+                    actor_type: "system".into(),
+                    reason: String::new(),
+                    created_at: Utc.with_ymd_and_hms(2026, 7, 27, 0, 1, 0).unwrap(),
+                },
+                EventItem {
+                    id: "event-2".into(),
+                    decision: "reviewed".into(),
+                    actor_type: "human".into(),
+                    reason: "looks good".into(),
+                    created_at: Utc.with_ymd_and_hms(2026, 7, 27, 0, 2, 0).unwrap(),
+                },
+            ],
+        );
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.decision.as_str())
+                .collect::<Vec<_>>(),
+            vec!["submitted", "reviewed", "future-decision"]
+        );
+
+        let pipeline = compose_pipeline(Some("openapi"), &events, true, Some(2), 1, 3, false);
+        assert_eq!(
+            pipeline
+                .iter()
+                .map(|stage| stage.label.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "source: openapi",
+                "submitted",
+                "reviewed",
+                "future-decision",
+                "published v2",
+                "1/3 tools enabled",
+            ]
+        );
+        let rendered = pipeline
+            .iter()
+            .map(|stage| stage.label.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(!rendered.contains("captured"));
+        assert!(!rendered.contains("cluster"));
+
+        let degraded = compose_pipeline(Some("openapi"), &[], false, None, 2, 3, true);
+        assert_eq!(
+            degraded
+                .iter()
+                .map(|stage| stage.label.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "source: openapi",
+                "review events unavailable",
+                "≥2/≥3 tools enabled (visible)",
+            ]
         );
     }
 }

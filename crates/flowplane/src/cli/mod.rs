@@ -2285,16 +2285,40 @@ pub async fn run_ops(global: GlobalOptions, command: OpsCommand) -> Result<()> {
                 .await?;
         }
         OpsCommand::Xds {
-            command: XdsCommand::Nacks { team },
+            command:
+                XdsCommand::Nacks {
+                    team,
+                    since,
+                    until,
+                    limit,
+                    before,
+                },
         } => {
             let team = client.team(team)?;
-            client
-                .request(
-                    reqwest::Method::GET,
-                    &format!("/api/v1/teams/{team}/xds/nacks"),
-                    None,
-                )
-                .await?;
+            let mut query: Vec<(&str, String)> = Vec::new();
+            if let Some(since) = since {
+                query.push(("since", since));
+            }
+            if let Some(until) = until {
+                query.push(("until", until));
+            }
+            if let Some(limit) = limit {
+                query.push(("limit", limit.to_string()));
+            }
+            if let Some(before) = before {
+                query.push(("before", before));
+            }
+            let path = if query.is_empty() {
+                format!("/api/v1/teams/{team}/xds/nacks")
+            } else {
+                let query = query
+                    .into_iter()
+                    .map(|(key, value)| format!("{key}={}", query_component(&value)))
+                    .collect::<Vec<_>>()
+                    .join("&");
+                format!("/api/v1/teams/{team}/xds/nacks?{query}")
+            };
+            client.request(reqwest::Method::GET, &path, None).await?;
         }
         OpsCommand::Trace {
             team,

@@ -101,6 +101,7 @@ async fn posting_user_route_config_referencing_ai_cluster_is_a_400_validation_en
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
+        xds_degraded: None,
         discovery_forwarding_policy: Default::default(),
         egress_advisory: Default::default(),
         rls_repush: None,

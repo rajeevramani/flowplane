@@ -1,0 +1,48 @@
+{% if let Some(p) = panel.data() %}
+<section class="panel" id="panel-operations-nacks">
+  <h2>NACK history <span class="count">{{ p.window_total }} in last {{ p.window_hours }}h</span></h2>
+  <div class="tablewrap">
+  <table>
+    <thead>
+      <tr><th>When</th><th>Node</th><th>Type</th><th>Rejected version</th><th>Error</th><th>Quarantined</th></tr>
+    </thead>
+    <tbody>
+      {% for r in p.rows %}
+      <tr>
+        <td>{{ r.created_at }}</td>
+        <td>{{ r.node_id }}</td>
+        <td>{{ r.type_url }}</td>
+        <td>{{ r.version_rejected }}</td>
+        <td>{{ r.error_message }}</td>
+        <td>
+          {% for q in r.quarantined %}
+          <a href="/{{ nonce }}/resources" class="pill crit">{{ q }}</a>
+          {% endfor %}
+          {% if r.quarantined.is_empty() %}<span class="muted">—</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if p.rows.is_empty() %}
+      <tr><td colspan="6" class="placeholder">No NACKs in the last {{ p.window_hours }}h.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  </div>
+  {% if let Some(cursor) = p.next_cursor.as_ref() %}
+  <button class="ui-button ui-button--panel"
+          hx-get="/{{ nonce }}/partials/operations/nacks?before={{ cursor }}"
+          hx-target="#operations-nacks"
+          hx-swap="innerHTML">Older →</button>
+  {% endif %}
+</section>
+{% else if panel.unauthorized() %}
+<section class="panel unauthorized" id="panel-operations-nacks">
+  <h2>NACK history</h2>
+  <p>Not authorized to view xDS NACKs for this team.</p>
+</section>
+{% else %}
+<section class="panel unavailable" id="panel-operations-nacks">
+  <h2>NACK history</h2>
+  <p>NACK history is currently unavailable.</p>
+</section>
+{% endif %}

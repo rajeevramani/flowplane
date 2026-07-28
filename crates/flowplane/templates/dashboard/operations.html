@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Flowplane — {{ team }} — Operations</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/{{ nonce }}/assets/dashboard.css">
+  <script src="/{{ nonce }}/assets/htmx.min.js" defer></script>
+</head>
+<body>
+  {% let active_tab = "operations" %}
+  {% include "dashboard/_shell.html" %}
+  <main id="resources">
+    <div id="operations-nacks"
+         hx-get="/{{ nonce }}/partials/operations/nacks"
+         hx-trigger="load once"
+         hx-target="#operations-nacks"
+         hx-swap="innerHTML">
+      <p class="placeholder">Loading…</p>
+    </div>
+  </main>
+</body>
+</html>

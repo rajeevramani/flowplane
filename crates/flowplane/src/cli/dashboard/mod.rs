@@ -14,6 +14,7 @@ mod filters_inventory;
 mod joins;
 mod learning;
 mod mcp;
+mod operations;
 mod orphans;
 mod ratelimits;
 mod resources;
@@ -56,9 +57,13 @@ pub struct DashboardOptions {
 /// Served same-origin so the CSP stays `default-src 'self'` and the page works offline.
 const HTMX_JS: &[u8] = include_bytes!("assets/htmx.min.js");
 const DASHBOARD_CSS: &str = include_str!("assets/dashboard.css");
+/// Shared DOM-only pagination and tab-state primitives used by feature adapters.
+const UI_JS: &str = include_str!("assets/ui.js");
 /// Same-origin hover-highlight helper for the topology view (CSP `default-src 'self'`
 /// forbids inline script, so this ships as a served asset).
 const RESOURCES_JS: &str = include_str!("assets/resources.js");
+/// DOM-only APIs master/detail, filter and display-paging controller.
+const APIS_JS: &str = include_str!("assets/apis.js");
 
 /// Every route the dashboard serves, WITHOUT the nonce prefix. The router is built from
 /// this table and from nothing else, so a route that skips the nonce prefix cannot exist;
@@ -70,7 +75,9 @@ pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/learning",
     "/ai",
     "/mcp",
+    "/operations",
     "/partials/overview",
+    "/partials/operations/nacks",
     "/partials/ai/overview",
     "/partials/ai/traces",
     "/partials/mcp/status",
@@ -92,7 +99,9 @@ pub(crate) const ROUTE_PATHS: &[&str] = &[
     "/partials/resources/orphans",
     "/assets/htmx.min.js",
     "/assets/dashboard.css",
+    "/assets/ui.js",
     "/assets/resources.js",
+    "/assets/apis.js",
 ];
 
 pub(crate) struct DashState {
@@ -322,6 +331,8 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
                 "/learning" => get(learning_page),
                 "/ai" => get(ai_page),
                 "/mcp" => get(mcp_page),
+                "/operations" => get(operations_page),
+                "/partials/operations/nacks" => get(operations_nacks_partial),
                 "/partials/ai/overview" => get(ai_overview_partial),
                 "/partials/ai/traces" => get(ai_traces_partial),
                 "/partials/mcp/status" => get(mcp_status_partial),
@@ -346,7 +357,9 @@ pub(crate) fn build_router(state: Arc<DashState>) -> Router {
                 "/partials/resources/orphans" => get(resources_orphans_partial),
                 "/assets/htmx.min.js" => get(htmx_js),
                 "/assets/dashboard.css" => get(dashboard_css),
+                "/assets/ui.js" => get(ui_js),
                 "/assets/resources.js" => get(resources_js),
+                "/assets/apis.js" => get(apis_js),
                 other => unreachable!("unrouted dashboard path {other}"),
             },
         );
@@ -532,7 +545,7 @@ async fn apis_page(axum::extract::State(state): axum::extract::State<Arc<DashSta
 #[template(path = "dashboard/apis_list.html")]
 struct ApisListPanel<'a> {
     nonce: &'a str,
-    panel: data::Panel<resources::Table<apis::ApiRow>>,
+    panel: data::Panel<apis::ApisOverview>,
 }
 
 async fn apis_list_partial(
@@ -662,6 +675,59 @@ async fn mcp_page(axum::extract::State(state): axum::extract::State<Arc<DashStat
 }
 
 #[derive(askama::Template)]
+#[template(path = "dashboard/operations.html")]
+struct OperationsShell<'a> {
+    nonce: &'a str,
+    team: &'a str,
+}
+
+/// The Operations page shell (fpv2-55x.4): nav + one htmx-lazy NACK-history panel. The shell
+/// itself performs NO upstream fetch.
+async fn operations_page(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+) -> Response {
+    let shell = OperationsShell {
+        nonce: &state.nonce,
+        team: &state.team,
+    };
+    match askama::Template::render(&shell) {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(askama::Template)]
+#[template(path = "dashboard/operations_nacks.html")]
+struct OperationsNacksPanel<'a> {
+    nonce: &'a str,
+    panel: data::Panel<operations::OperationsPanel>,
+}
+
+/// Query for the NACK partial: an optional `before` cursor for the next page.
+#[derive(serde::Deserialize)]
+struct NackPartialQuery {
+    before: Option<String>,
+}
+
+async fn operations_nacks_partial(
+    axum::extract::State(state): axum::extract::State<Arc<DashState>>,
+    axum::extract::Query(query): axum::extract::Query<NackPartialQuery>,
+) -> Response {
+    let result = operations::fetch(
+        &state.client,
+        &state.team,
+        chrono::Utc::now(),
+        query.before.as_deref(),
+    )
+    .await
+    .map(|panel| OperationsNacksPanel {
+        nonce: &state.nonce,
+        panel,
+    });
+    render_resources_panel(result)
+}
+
+#[derive(askama::Template)]
 #[template(path = "dashboard/mcp_status.html")]
 struct McpStatusPanel {
     panel: data::Panel<mcp::StatusPanel>,
@@ -695,7 +761,7 @@ async fn mcp_tools_partial(
 #[template(path = "dashboard/mcp_agents.html")]
 struct McpAgentsPanel<'a> {
     nonce: &'a str,
-    panel: data::Panel<Vec<mcp::AgentRow>>,
+    panel: data::Panel<mcp::AgentsPanel>,
 }
 
 /// Org-scoped agents panel (ui-f6b S5): a 403 renders as `Unauthorized` with an
@@ -720,7 +786,7 @@ struct AgentGrantsQuery {
 #[derive(askama::Template)]
 #[template(path = "dashboard/mcp_agent_grants.html")]
 struct McpAgentGrantsPanel {
-    panel: data::Panel<Vec<mcp::AgentGrantRow>>,
+    panel: data::Panel<mcp::AgentGrantsPanel>,
 }
 
 /// One agent's grants, fetched lazily on row expand. The agent id arrives as a `?id=`
@@ -839,7 +905,7 @@ struct ListenersPanel {
 
 /// Render one resources partial: 401 → the shared re-login banner with htmx's 286
 /// stop status (same seam as the overview partial), retargeted at the whole
-/// `#resources` main so the expired-session state is dashboard-global — every panel
+/// shared `main` landmark so the expired-session state is dashboard-global — every panel
 /// is replaced, not just the one that happened to fetch; anything else → the panel
 /// state.
 fn render_resources_panel<T: askama::Template>(result: Result<T, data::AuthExpired>) -> Response {
@@ -853,7 +919,7 @@ fn render_resources_panel<T: askama::Template>(result: Result<T, data::AuthExpir
             match askama::Template::render(&AuthExpiredBanner) {
                 Ok(html) => (
                     status,
-                    [("HX-Retarget", "#resources"), ("HX-Reswap", "innerHTML")],
+                    [("HX-Retarget", "main"), ("HX-Reswap", "innerHTML")],
                     Html(html),
                 )
                     .into_response(),
@@ -1037,11 +1103,19 @@ async fn dashboard_css() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/css")], DASHBOARD_CSS)
 }
 
+async fn ui_js() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "application/javascript")], UI_JS)
+}
+
 async fn resources_js() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "application/javascript")],
         RESOURCES_JS,
     )
+}
+
+async fn apis_js() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "application/javascript")], APIS_JS)
 }
 
 #[cfg(test)]
@@ -1496,5 +1570,246 @@ mod tests {
             !body.contains("test-bearer-token"),
             "bearer token must never reach HTML"
         );
+    }
+
+    #[test]
+    fn apis_script_is_dom_only_and_pins_interaction_contract() {
+        for banned in [
+            "fetch(",
+            "eval(",
+            "localStorage",
+            "innerHTML",
+            "insertAdjacentHTML",
+            "Authorization",
+            "Bearer",
+        ] {
+            assert!(!APIS_JS.contains(banned), "apis.js must forbid {banned}");
+        }
+        for required in [
+            "api-expand",
+            "aria-expanded",
+            "CustomEvent",
+            "PAGE_SIZE = 25",
+            "FlowplaneUI",
+            "htmx:afterSwap",
+        ] {
+            assert!(
+                APIS_JS.contains(required),
+                "apis.js must contain {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_interactions_share_dom_only_framework_helpers() {
+        assert!(
+            ROUTE_PATHS.contains(&"/assets/ui.js"),
+            "shared UI helper must be served through the nonce router"
+        );
+        for shell in [
+            include_str!("../../../templates/dashboard/resources.html"),
+            include_str!("../../../templates/dashboard/apis.html"),
+        ] {
+            let ui = shell.find("/assets/ui.js").expect("shared UI asset");
+            let adapter = shell
+                .find("/assets/resources.js")
+                .or_else(|| shell.find("/assets/apis.js"))
+                .expect("page adapter asset");
+            assert!(
+                ui < adapter,
+                "framework helper must load before its adapter"
+            );
+        }
+        for adapter in [RESOURCES_JS, APIS_JS] {
+            assert!(
+                !adapter.contains("Math.ceil") && !adapter.contains("Math.max(1"),
+                "paging arithmetic belongs to the shared UI framework"
+            );
+        }
+        assert!(
+            !RESOURCES_JS.contains("function matches"),
+            "Resources domain actions must reuse the framework paginator's matched set"
+        );
+        for banned in [
+            "fetch(",
+            "eval(",
+            "localStorage",
+            "innerHTML",
+            "insertAdjacentHTML",
+            "Authorization",
+            "Bearer",
+        ] {
+            for script in [UI_JS, RESOURCES_JS, APIS_JS] {
+                assert!(
+                    !script.contains(banned),
+                    "dashboard scripts must forbid {banned}"
+                );
+            }
+        }
+        for required in ["paginate", "selectTab", "Math.ceil", "toLowerCase"] {
+            assert!(
+                UI_JS.contains(required),
+                "shared UI helper must contain {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_shell_is_a_single_reusable_template_component() {
+        let shells = [
+            include_str!("../../../templates/dashboard/overview.html"),
+            include_str!("../../../templates/dashboard/resources.html"),
+            include_str!("../../../templates/dashboard/apis.html"),
+            include_str!("../../../templates/dashboard/learning.html"),
+            include_str!("../../../templates/dashboard/ai.html"),
+            include_str!("../../../templates/dashboard/mcp.html"),
+            include_str!("../../../templates/dashboard/operations.html"),
+        ];
+        for shell in shells {
+            assert!(
+                shell.contains("{% include \"dashboard/_shell.html\" %}"),
+                "every page must compose the shared dashboard shell"
+            );
+            assert!(
+                !shell.contains("<header class=\"topbar\">")
+                    && !shell.contains("<nav class=\"tabs\">"),
+                "page templates must not duplicate shell markup"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_presentation_uses_reusable_framework_primitives() {
+        assert!(
+            !include_str!("../../../templates/dashboard/apis_detail.html")
+                .contains("panel ui-detail-content"),
+            "detail content must use its reusable surface rather than nesting a panel"
+        );
+        for required in [
+            ".ui-segmented",
+            ".ui-view",
+            ".ui-toolbar",
+            ".ui-search",
+            ".ui-button-group",
+            ".ui-pager",
+            ".ui-empty-state",
+            ".ui-stack",
+            ".ui-inline",
+            ".ui-disclosure-list",
+            ".ui-disclosure-row",
+            ".ui-disclosure-summary",
+            ".ui-master-row",
+            ".ui-detail-row",
+            ".ui-detail-content",
+            ".ui-record-list",
+            ".ui-record-row",
+            ".ui-tree-item",
+            ".ui-tree-trigger",
+            ".ui-tree-branch",
+            ".ui-entity-chip",
+            ".ui-timeline",
+            ".ui-timeline-item",
+        ] {
+            assert!(
+                DASHBOARD_CSS.contains(required),
+                "dashboard CSS must define reusable framework primitive {required}"
+            );
+        }
+
+        for page_specific in [
+            ".viewtoggle",
+            ".resview",
+            ".panelbar",
+            ".pagerow",
+            ".filter-empty",
+            ".flow",
+            ".routes-grid",
+            ".cchip",
+            ".orphan-list",
+            ".api-overview",
+            ".api-list-panel",
+            ".api-list-controls",
+            ".api-pager",
+            ".api-master-table",
+            ".api-disclosure",
+            ".api-primary",
+            ".api-row",
+            ".api-detail-row",
+            ".api-metadata",
+            ".trace-list",
+            ".trace-row",
+            ".hop-timeline",
+            ".hop-name",
+            ".hop-times",
+        ] {
+            assert!(
+                !DASHBOARD_CSS.contains(page_specific),
+                "page-specific presentation selector must migrate to the UI framework: {page_specific}"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_panel_spacing_keeps_content_and_successive_tables_off_borders() {
+        for required in [
+            ".panel + .panel",
+            "margin-top: 16px",
+            "main > [hx-swap^=\"innerHTML\"]",
+            "gap: 16px",
+            ".panel > p:not(.ui-empty-state):not(.banner)",
+            "padding: 10px 14px",
+            ".panel > .panel-subheading",
+            ".panel-body",
+            ".panel-body > :first-child",
+            ".panel-body > :last-child",
+        ] {
+            assert!(
+                DASHBOARD_CSS.contains(required),
+                "dashboard CSS must pin shared panel spacing contract: {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_cards_contain_long_unbroken_values() {
+        for required in [".card {\n  min-width: 0;", "overflow-wrap: anywhere"] {
+            assert!(
+                DASHBOARD_CSS.contains(required),
+                "generic dashboard cards must contain long unbroken values: missing {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn resources_script_is_dom_only_and_pins_prototype_interactions() {
+        for banned in [
+            "fetch(",
+            "eval(",
+            "localStorage",
+            "innerHTML",
+            "insertAdjacentHTML",
+            "Authorization",
+            "Bearer",
+        ] {
+            assert!(
+                !RESOURCES_JS.contains(banned),
+                "resources.js must forbid {banned}"
+            );
+        }
+        for required in [
+            "data-ui-tab",
+            "FlowplaneUI",
+            "resources-tables",
+            "data-topology-filter",
+            "data-topology-expand",
+            "data-topology-collapse",
+            "PAGE_SIZE = 25",
+            "htmx:afterSwap",
+        ] {
+            assert!(
+                RESOURCES_JS.contains(required),
+                "resources.js must contain {required}"
+            );
+        }
     }
 }

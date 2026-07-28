@@ -1,21 +1,26 @@
 {% if let Some(grants) = panel.data() %}
-<table class="dataplanes">
+{% if let Some(t) = grants.truncated %}
+<p class="banner">Showing first {{ t.shown }} of {{ t.total }} grants — the remaining grants were not fetched.</p>
+{% endif %}
+<div class="tablewrap">
+<table>
   <thead>
     <tr><th>Team</th><th>Resource</th><th>Action</th></tr>
   </thead>
   <tbody>
-    {% for g in grants %}
+    {% for g in grants.rows %}
     <tr>
       <td>{{ g.team_name }}</td>
       <td>{{ g.resource }}</td>
       <td>{{ g.action }}</td>
     </tr>
     {% endfor %}
-    {% if grants.is_empty() %}
+    {% if grants.rows.is_empty() %}
     <tr><td colspan="3" class="placeholder">No grants for this agent.</td></tr>
     {% endif %}
   </tbody>
 </table>
+</div>
 {% else if panel.unauthorized() %}
 <p class="placeholder">Not authorized to view this agent's grants.</p>
 {% else %}

@@ -43,6 +43,13 @@ pub(super) struct OrphanFindings {
 }
 
 impl OrphanFindings {
+    pub(super) fn total(&self) -> usize {
+        self.unreferenced_clusters.len()
+            + self.unbound_listeners.len()
+            + self.unattached_domains.len()
+            + self.unreferenced_secrets.len()
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.unreferenced_clusters.is_empty()
             && self.unbound_listeners.is_empty()

@@ -5,24 +5,28 @@
 {% if p.unparsed > 0 %}
 <p class="banner">{{ p.unparsed }} trace row(s) could not be parsed (version skew?).</p>
 {% endif %}
-<div class="trace-list" id="ai-trace-table">
+<div class="ui-disclosure-list" id="ai-trace-table">
   {% for t in p.rows %}
-  <details class="trace-row">
-    <summary>
-      <span class="trace-request">{{ t.request_id }}</span>
+  <details class="ui-disclosure-row">
+    <summary class="ui-disclosure-summary">
+      <span class="mono">{{ t.request_id }}</span>
       <span class="hint">{{ t.trace_id }}</span>
       <span>{{ t.model }}</span>
-      <span class="trace-status">{{ t.status }}</span>
-      {% if !t.failure_hop.is_empty() %}<span class="trace-failure">failed: {{ t.failure_hop }}</span>{% endif %}
+      {# Trace status is the request's HTTP status code (digits, or — when absent): a
+         descriptive value, not a fixed enum. Per the design's descriptive carve-out it
+         stays `pill neutral` and is never folded into the good/warn/crit status map — the
+         failure signal is `.trace-failure` (below) and per-hop `.hop.failed`. #}
+      <span><span class="pill neutral">{{ t.status }}</span></span>
+      {% if !t.failure_hop.is_empty() %}<span class="is-critical">failed: {{ t.failure_hop }}</span>{% endif %}
       <span class="hint">{{ t.age }}</span>
     </summary>
-    <ol class="hop-timeline">
+    <ol class="ui-timeline">
       {% for h in t.hops %}
-      <li class="hop{% if h.failed %} failed{% endif %}">
-        <span class="hop-name">{{ h.hop }}</span>
-        <span class="hop-outcome">{{ h.label }}</span>
+      <li class="ui-timeline-item{% if h.failed %} is-critical{% endif %}">
+        <span class="ui-timeline-name">{{ h.hop }}</span>
+        <span class="ui-timeline-outcome">{{ h.label }}</span>
         {% if !h.started_at.is_empty() %}
-        <span class="hint hop-times">{{ h.started_at }}{% if !h.ended_at.is_empty() %} → {{ h.ended_at }}{% endif %}</span>
+        <span class="hint ui-timeline-meta">{{ h.started_at }}{% if !h.ended_at.is_empty() %} → {{ h.ended_at }}{% endif %}</span>
         {% endif %}
       </li>
       {% endfor %}
@@ -37,7 +41,7 @@
   {% endif %}
 </div>
 {% if let Some(cursor) = p.older_cursor %}
-<button class="spec-link" id="ai-trace-older"
+<button class="ui-button ui-button--panel" id="ai-trace-older"
         hx-get="/{{ nonce }}/partials/ai/traces?before={{ cursor|urlencode }}"
         hx-target="#ai-traces-body"
         hx-swap="innerHTML">Load older</button>

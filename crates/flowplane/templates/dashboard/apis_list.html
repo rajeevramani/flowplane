@@ -1,50 +1,93 @@
-{% if let Some(t) = panel.data() %}
-<section class="panel" id="panel-apis-list">
-  <h2>API definitions <span class="hint">{{ t.rows.len() }} of {{ t.total }}</span></h2>
-  {% if let Some(p) = t.partial %}
-  {% if p.budget() %}
-  <p class="banner">Partial — first {{ p.shown }} of {{ p.total }} (budget reached). Remaining pages were not fetched.</p>
+{% if let Some(p) = panel.data() %}
+<section id="apis-list" class="ui-stack" data-apis-panel>
+<div class="cards" id="apis-cards">
+  <div class="card" id="apis-card-definitions">
+    <span class="label">API definitions</span>
+    <span class="value">{{ p.api_count }}</span>
+    <span class="sub"><span class="num">{{ p.published_count }}</span> published · <span class="num">{{ p.attention_count }}</span> attention</span>
+  </div>
+  <div class="card" id="apis-card-tools">
+    <span class="label">API tools</span>
+    <span class="value">{{ p.tool_count }}</span>
+    <span class="sub"><span class="num">{{ p.enabled_tool_count }}</span> enabled · <span class="num">{{ p.disabled_tool_count }}</span> disabled</span>
+  </div>
+  <div class="card" id="apis-card-bindings">
+    <span class="label">Route bindings</span>
+    <span class="value">{{ p.binding_count }}</span>
+    <span class="sub"><span class="num">{{ p.apis_with_bindings }}</span> APIs with bindings</span>
+  </div>
+  <div class="card" id="apis-card-unpublished">
+    <span class="label">Latest unpublished</span>
+    <span class="value">{{ p.latest_unpublished_count }}</span>
+    <span class="sub">latest version differs from published</span>
+  </div>
+</div>
+<section class="panel ui-panel--clip" id="panel-apis-list">
+  <div class="ui-toolbar ui-toolbar--bottom">
+    <label for="api-filter">Search APIs</label>
+    <input id="api-filter" class="ui-search" data-api-filter type="search" autocomplete="off"
+           placeholder="Search API name, display name, description, or lifecycle">
+    <div class="ui-pager" aria-label="API display pages">
+      <button type="button" data-api-prev>Prev</button>
+      <span class="ui-range" data-api-range aria-live="polite">1–{{ p.table.rows.len() }} of {{ p.table.rows.len() }}</span>
+      <button type="button" data-api-next>Next</button>
+    </div>
+  </div>
+  <h2>API definitions <span class="count">{{ p.table.rows.len() }} of {{ p.table.total }}</span></h2>
+  {% if let Some(n) = p.table.partial %}
+  {% if n.budget() %}
+  <p class="banner">Partial — first {{ n.shown }} of {{ n.total }} visible rows (budget reached). Card values are lower bounds over visible rows; remaining pages were not fetched.</p>
   {% else %}
-  <p class="banner">Partial data: the {{ p.collection }} collection is incomplete — an upstream fetch failed mid-sweep.</p>
+  <p class="banner">Partial data: first {{ n.shown }} of {{ n.total }} visible rows from the {{ n.collection }} collection. Card values are lower bounds because an upstream fetch failed mid-sweep.</p>
   {% endif %}
   {% endif %}
-  <table class="dataplanes">
+  {% if p.unparsed_count != 0 %}
+  <p class="banner">Unparsed rows excluded: {{ p.unparsed_count }} unparseable row(s) remain visible but do not contribute to lifecycle, tool or binding summaries.</p>
+  {% endif %}
+  <div class="tablewrap">
+  <table class="ui-master-table">
     <thead>
-      <tr><th>API</th><th>Display name</th><th>Versions</th><th>Tools</th><th>Bindings</th><th>Updated</th></tr>
+      <tr><th>API</th><th>Description</th><th>Lifecycle</th><th>Tools</th><th>Bindings</th><th>Revision</th><th>Updated</th></tr>
     </thead>
     <tbody>
-      {% for row in t.rows %}
-      <tr>
-        <td>{{ row.name }}</td>
+      {% for row in p.table.rows %}
+      <tr class="ui-master-row" data-api-row
+          data-search="{{ row.name }} {{ row.display_name }} {{ row.description }} {{ row.lifecycle }}">
         {% if row.unparsed %}
-        <td colspan="5" class="placeholder">unparseable row (version skew?)</td>
+        <td><strong>{{ row.name }}</strong><br><span class="dim">{{ row.display_name }}</span></td>
+        <td colspan="6" class="placeholder">unparseable row (version skew?)</td>
         {% else %}
-        <td>{{ row.display_name }}</td>
-        <td>{{ row.versions }}</td>
-        <td>{{ row.tool_count }}</td>
-        <td>{{ row.route_binding_count }}</td>
-        <td>{{ row.updated }}</td>
+        <td>
+          <button type="button" class="ui-disclosure-trigger" data-api-disclosure
+                  aria-expanded="false" aria-controls="api-detail-{{ row.name }}"
+                  hx-get="/{{ nonce }}/partials/apis/detail?api={{ row.name|urlencode }}"
+                  hx-target="#api-detail-{{ row.name }}"
+                  hx-trigger="api-expand once" hx-swap="innerHTML">
+            <span class="ui-disclosure-icon" aria-hidden="true">›</span>
+            <span class="ui-master-primary"><strong>{{ row.name }}</strong><span class="dim">{{ row.display_name }}</span></span>
+          </button>
+        </td>
+        <td>{{ row.description }}</td>
+        <td>{% if row.lifecycle_tone == "good" %}<span class="pill good">{{ row.lifecycle }}</span>{% else if row.lifecycle_tone == "warn" %}<span class="pill warn">{{ row.lifecycle }}</span>{% else %}<span class="pill neutral">{{ row.lifecycle }}</span>{% endif %}</td>
+        <td><span class="mono">{{ row.enabled_tool_count }} / {{ row.tool_count }}</span></td>
+        <td class="mono">{{ row.route_binding_count }} {% if row.route_binding_count == 1 %}binding{% else %}bindings{% endif %}</td>
+        <td class="mono">revision {{ row.revision }}</td>
+        <td class="dim">{{ row.updated }}</td>
         {% endif %}
       </tr>
       {% if !row.unparsed %}
-      <tr class="detail-row">
-        <td colspan="6">
-          <details hx-get="/{{ nonce }}/partials/apis/detail?api={{ row.name|urlencode }}"
-                   hx-trigger="toggle once"
-                   hx-target="find div"
-                   hx-swap="innerHTML">
-            <summary>Lifecycle, Envoy chain &amp; tools</summary>
-            <div><p class="placeholder">Loading…</p></div>
-          </details>
-        </td>
+      <tr id="api-detail-{{ row.name }}" class="ui-detail-row ui-detail-row--indented" data-api-detail-row hidden>
+        <td colspan="7"><p class="placeholder">Loading persisted detail…</p></td>
       </tr>
       {% endif %}
       {% endfor %}
-      {% if t.rows.is_empty() %}
-      <tr><td colspan="6" class="placeholder">No API definitions.</td></tr>
+      {% if p.table.rows.is_empty() %}
+      <tr><td colspan="7" class="placeholder">No API definitions.</td></tr>
       {% endif %}
     </tbody>
   </table>
+  </div>
+</section>
 </section>
 {% else if panel.unauthorized() %}
 <section class="panel unauthorized" id="panel-apis-list">

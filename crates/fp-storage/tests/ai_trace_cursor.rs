@@ -30,6 +30,15 @@ fn unique(prefix: &str) -> String {
     )
 }
 
+/// PostgreSQL stores `timestamptz` at microsecond precision. Keep fixture
+/// expectations at the same precision so Linux nanosecond clocks do not make
+/// an otherwise identical round trip compare unequal.
+fn postgres_now() -> DateTime<Utc> {
+    let now = Utc::now();
+    DateTime::from_timestamp(now.timestamp(), now.timestamp_subsec_micros() * 1_000)
+        .expect("current timestamp is representable")
+}
+
 struct World {
     pool: PgPool,
     #[allow(dead_code)]
@@ -155,7 +164,7 @@ fn assert_strictly_ordered(rows: &[AiTraceEvent]) {
 #[tokio::test]
 async fn results_are_ordered_created_at_desc_id_desc_over_tie_heavy_fixture() {
     let Some(w) = world().await else { return };
-    let base = Utc::now() - Duration::minutes(10);
+    let base = postgres_now() - Duration::minutes(10);
 
     // Tie-heavy fixture: 5 rows at t2 (newest), 4 at t1, 3 at t0 — whole-second
     // offsets so Postgres microsecond truncation cannot merge or reorder groups.
@@ -183,7 +192,7 @@ async fn results_are_ordered_created_at_desc_id_desc_over_tie_heavy_fixture() {
 #[tokio::test]
 async fn cursor_paging_yields_every_row_exactly_once_with_ties_at_page_boundary() {
     let Some(w) = world().await else { return };
-    let base = Utc::now() - Duration::minutes(10);
+    let base = postgres_now() - Duration::minutes(10);
 
     // 12 rows, limit 4: 3 at the newest timestamp, then 6 sharing ONE identical
     // created_at (the tie group spans the page-1/page-2 boundary and fills page 2),
@@ -232,7 +241,7 @@ async fn cursor_paging_yields_every_row_exactly_once_with_ties_at_page_boundary(
 #[tokio::test]
 async fn paging_survives_deletion_of_already_seen_rows_between_fetches() {
     let Some(w) = world().await else { return };
-    let base = Utc::now() - Duration::minutes(10);
+    let base = postgres_now() - Duration::minutes(10);
 
     // 12 rows with a 5-row tie group in the middle; limit 4.
     let mut fixture: BTreeSet<Uuid> = BTreeSet::new();
@@ -293,7 +302,7 @@ async fn paging_survives_deletion_of_already_seen_rows_between_fetches() {
 #[tokio::test]
 async fn cross_team_rows_at_identical_timestamps_never_appear_in_any_page() {
     let Some(w) = world().await else { return };
-    let base = Utc::now() - Duration::minutes(10);
+    let base = postgres_now() - Duration::minutes(10);
 
     // Interleave team B rows at IDENTICAL created_at values as team A's, including
     // inside team A's tie groups, so a team-unscoped cursor would splice them in.
@@ -334,7 +343,7 @@ async fn cross_team_rows_at_identical_timestamps_never_appear_in_any_page() {
 #[tokio::test]
 async fn before_cursor_composes_with_request_id_filter() {
     let Some(w) = world().await else { return };
-    let base = Utc::now() - Duration::minutes(10);
+    let base = postgres_now() - Duration::minutes(10);
 
     // Three rows at the SAME created_at so composition is exercised on the id
     // tiebreaker, plus one strictly newer row.

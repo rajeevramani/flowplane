@@ -117,6 +117,329 @@ fn spec() -> DiscoverySessionSpec {
     }
 }
 
+fn spec_with(
+    target_sample_count: i32,
+    max_bytes: i64,
+    max_distinct_paths: i32,
+) -> DiscoverySessionSpec {
+    DiscoverySessionSpec {
+        target_sample_count,
+        max_bytes,
+        max_distinct_paths,
+        ..spec()
+    }
+}
+
+fn body_observation(request_id: &str, path: &str, response_body: &str) -> ObservationIngest {
+    let mut o = observation(request_id, path);
+    o.response_body = Some(response_body.into());
+    o
+}
+
+/// Create a discovery session in its own committed transaction and return it with a listener id.
+async fn seed_session(
+    w: &World,
+    team: TeamRef,
+    name: &str,
+    spec: &DiscoverySessionSpec,
+) -> (fp_domain::DiscoverySession, ListenerId) {
+    let listener_id = ListenerId::generate();
+    let mut tx = w.pool.begin().await.expect("session tx");
+    let session = discovery::create(
+        &mut tx,
+        team,
+        discovery::DiscoverySessionInsert {
+            id: DiscoverySessionId::generate(),
+            name,
+            spec,
+            validated_upstream_ip: "93.184.216.34",
+            cluster_name: &unique("cluster"),
+            route_config_name: &unique("route-config"),
+            listener_name: &unique("listener"),
+        },
+    )
+    .await
+    .expect("session");
+    tx.commit().await.expect("commit session");
+    (session, listener_id)
+}
+
+/// Ingest one observation in its own committed transaction (mirrors the per-observation tx in
+/// crates/fp-xds/src/capture.rs); returns the domain error when ingest is rejected, committing so
+/// drop_count persists.
+async fn ingest_committed(
+    w: &World,
+    team: TeamRef,
+    input: &ObservationIngest,
+    prov: &DiscoveryObservationProvenance,
+) -> Result<fp_domain::DiscoveryObservation, fp_domain::DomainError> {
+    let mut tx = w.pool.begin().await.expect("ingest tx");
+    let result = discovery::ingest_raw_observation(&mut tx, team, input, prov).await;
+    tx.commit().await.expect("commit ingest");
+    result
+}
+
+async fn get_session(
+    w: &World,
+    team: TeamRef,
+    session: &DiscoverySessionId,
+) -> fp_domain::DiscoverySession {
+    discovery::get(&w.pool, team.id, &session.to_string())
+        .await
+        .expect("get session")
+        .expect("session present")
+}
+
+#[tokio::test]
+async fn discovery_ingest_bumps_sample_path_and_byte_counters() {
+    let Some(w) = world().await else { return };
+    let (session, listener) = seed_session(
+        &w,
+        w.team_a,
+        &unique("counters"),
+        &spec_with(25, 1024 * 1024, 50),
+    )
+    .await;
+    let prov = provenance(session.id, listener, "api-a.example.test");
+
+    // Two observations on the same path, one on a distinct path → 3 samples, 2 distinct paths.
+    ingest_committed(
+        &w,
+        w.team_a,
+        &body_observation("req-1", "/items", "aaaa"),
+        &prov,
+    )
+    .await
+    .expect("ingest 1");
+    ingest_committed(
+        &w,
+        w.team_a,
+        &body_observation("req-2", "/items", "aaaa"),
+        &prov,
+    )
+    .await
+    .expect("ingest 2");
+    ingest_committed(
+        &w,
+        w.team_a,
+        &body_observation("req-3", "/orders", "aaaa"),
+        &prov,
+    )
+    .await
+    .expect("ingest 3");
+
+    let refreshed = get_session(&w, w.team_a, &session.id).await;
+    assert_eq!(
+        refreshed.sample_count, 3,
+        "one sample per distinct request id"
+    );
+    assert_eq!(refreshed.path_count, 2, "distinct paths counted once");
+    assert_eq!(refreshed.byte_count, 12, "4 response-body bytes per sample");
+    assert_eq!(refreshed.drop_count, 0);
+    assert_eq!(
+        refreshed.status,
+        fp_domain::DiscoverySessionStatus::Capturing
+    );
+}
+
+#[tokio::test]
+async fn discovery_ingest_auto_completes_on_target() {
+    let Some(w) = world().await else { return };
+    let (session, listener) = seed_session(
+        &w,
+        w.team_a,
+        &unique("auto-complete"),
+        &spec_with(1, 1024 * 1024, 50),
+    )
+    .await;
+    let prov = provenance(session.id, listener, "api-a.example.test");
+
+    ingest_committed(&w, w.team_a, &observation("req-1", "/done"), &prov)
+        .await
+        .expect("ingest");
+
+    let refreshed = get_session(&w, w.team_a, &session.id).await;
+    assert_eq!(
+        refreshed.status,
+        fp_domain::DiscoverySessionStatus::Completed
+    );
+    assert!(refreshed.completed_at.is_some());
+    assert_eq!(refreshed.sample_count, 1);
+}
+
+#[tokio::test]
+async fn discovery_late_body_merges_after_target_completion() {
+    let Some(w) = world().await else { return };
+    let (session, listener) = seed_session(
+        &w,
+        w.team_a,
+        &unique("late-body"),
+        &spec_with(1, 1024 * 1024, 50),
+    )
+    .await;
+    let prov = provenance(session.id, listener, "api-a.example.test");
+
+    // Metadata-only half reaches the target and auto-completes the session.
+    ingest_committed(&w, w.team_a, &observation("req-late", "/late"), &prov)
+        .await
+        .expect("metadata ingest");
+    assert_eq!(
+        get_session(&w, w.team_a, &session.id).await.status,
+        fp_domain::DiscoverySessionStatus::Completed
+    );
+
+    // Trailing body half for the SAME request must still merge, not be rejected with NotFound.
+    let mut body = observation("req-late", "/late");
+    body.metadata_seen = false;
+    body.body_seen = true;
+    body.response_status = None;
+    body.response_body = Some("late-body".into());
+    let merged = ingest_committed(&w, w.team_a, &body, &prov)
+        .await
+        .expect("late body must merge, not NotFound");
+    assert!(merged.raw.body_seen);
+    assert_eq!(merged.raw.response_body.as_deref(), Some("late-body"));
+    assert_eq!(
+        merged.raw.response_status,
+        Some(200),
+        "metadata status preserved"
+    );
+
+    let refreshed = get_session(&w, w.team_a, &session.id).await;
+    assert_eq!(
+        refreshed.status,
+        fp_domain::DiscoverySessionStatus::Completed
+    );
+    assert_eq!(refreshed.sample_count, 1, "merge is not a new sample");
+    assert_eq!(refreshed.byte_count, 9, "byte_count reflects merged body");
+    assert_eq!(refreshed.drop_count, 0);
+}
+
+#[tokio::test]
+async fn discovery_new_observation_after_completion_is_rejected_without_drop() {
+    let Some(w) = world().await else { return };
+    let (session, listener) = seed_session(
+        &w,
+        w.team_a,
+        &unique("post-complete"),
+        &spec_with(1, 1024 * 1024, 50),
+    )
+    .await;
+    let prov = provenance(session.id, listener, "api-a.example.test");
+
+    ingest_committed(&w, w.team_a, &observation("req-1", "/one"), &prov)
+        .await
+        .expect("ingest");
+
+    // A brand-new request on the now-completed session is a conflict (not a quota drop).
+    let err = ingest_committed(&w, w.team_a, &observation("req-2", "/two"), &prov)
+        .await
+        .expect_err("new observation rejected after completion");
+    assert_eq!(err.code, ErrorCode::Conflict);
+
+    let refreshed = get_session(&w, w.team_a, &session.id).await;
+    assert_eq!(refreshed.sample_count, 1);
+    assert_eq!(
+        refreshed.drop_count, 0,
+        "status conflict is not a quota drop"
+    );
+}
+
+#[tokio::test]
+async fn discovery_distinct_path_quota_drops_and_counts() {
+    let Some(w) = world().await else { return };
+    let (session, listener) = seed_session(
+        &w,
+        w.team_a,
+        &unique("path-quota"),
+        &spec_with(25, 1024 * 1024, 1),
+    )
+    .await;
+    let prov = provenance(session.id, listener, "api-a.example.test");
+
+    ingest_committed(&w, w.team_a, &observation("req-1", "/a"), &prov)
+        .await
+        .expect("first path");
+    let err = ingest_committed(&w, w.team_a, &observation("req-2", "/b"), &prov)
+        .await
+        .expect_err("second distinct path exceeds max_distinct_paths");
+    assert_eq!(err.code, ErrorCode::QuotaExceeded);
+
+    let refreshed = get_session(&w, w.team_a, &session.id).await;
+    assert_eq!(refreshed.sample_count, 1);
+    assert_eq!(refreshed.path_count, 1);
+    assert_eq!(refreshed.drop_count, 1);
+}
+
+#[tokio::test]
+async fn discovery_byte_quota_drops_and_counts() {
+    let Some(w) = world().await else { return };
+    let (session, listener) =
+        seed_session(&w, w.team_a, &unique("byte-quota"), &spec_with(25, 5, 50)).await;
+    let prov = provenance(session.id, listener, "api-a.example.test");
+
+    ingest_committed(
+        &w,
+        w.team_a,
+        &body_observation("req-1", "/a", "aaaa"),
+        &prov,
+    )
+    .await
+    .expect("4 bytes fits under max_bytes 5");
+    let err = ingest_committed(
+        &w,
+        w.team_a,
+        &body_observation("req-2", "/b", "bbbbbb"),
+        &prov,
+    )
+    .await
+    .expect_err("cumulative bytes exceed max_bytes");
+    assert_eq!(err.code, ErrorCode::QuotaExceeded);
+
+    let refreshed = get_session(&w, w.team_a, &session.id).await;
+    assert_eq!(refreshed.byte_count, 4, "rejected observation not counted");
+    assert_eq!(refreshed.sample_count, 1);
+    assert_eq!(refreshed.drop_count, 1);
+}
+
+#[tokio::test]
+async fn discovery_complete_is_idempotent_after_target_auto_completion() {
+    // Regression: ingest can auto-complete a session at its target; stop_session then calls
+    // complete() to finalize + tear down forwarding resources. complete() must accept an
+    // already-completed session (not NotFound) or teardown would be stranded.
+    let Some(w) = world().await else { return };
+    let (session, listener) = seed_session(
+        &w,
+        w.team_a,
+        &unique("stop-after-auto"),
+        &spec_with(1, 1024 * 1024, 50),
+    )
+    .await;
+    let prov = provenance(session.id, listener, "api-a.example.test");
+
+    ingest_committed(&w, w.team_a, &observation("req-1", "/done"), &prov)
+        .await
+        .expect("ingest auto-completes");
+    let auto = get_session(&w, w.team_a, &session.id).await;
+    assert_eq!(auto.status, fp_domain::DiscoverySessionStatus::Completed);
+    let auto_completed_at = auto
+        .completed_at
+        .expect("completed_at set on auto-complete");
+
+    // Explicit stop (via complete) on the already-completed session must succeed.
+    let mut tx = w.pool.begin().await.expect("complete tx");
+    let stopped = discovery::complete(&mut tx, w.team_a.id, &session.id.to_string())
+        .await
+        .expect("complete must be idempotent on an auto-completed session");
+    tx.commit().await.expect("commit complete");
+    assert_eq!(stopped.status, fp_domain::DiscoverySessionStatus::Completed);
+    assert_eq!(
+        stopped.completed_at,
+        Some(auto_completed_at),
+        "original completed_at preserved, not reset"
+    );
+}
+
 fn observation(request_id: &str, path: &str) -> ObservationIngest {
     ObservationIngest {
         request_id: request_id.into(),

@@ -17,7 +17,10 @@
 //!     - "latest_version": optional i64 — highest spec version number, key ABSENT
 //!       (not null-with-key) when the API has no spec versions;
 //!     - "published_version": optional i64 — version number of the published spec,
-//!       key ABSENT when nothing is published.
+//!       key ABSENT when nothing is published;
+//!     - "enabled_tool_count": i64 — only enabled generated tools for this API;
+//!     - "latest_decision": nullable review decision — newest by created_at DESC,
+//!       id DESC, with the key PRESENT as JSON null when the API has no review events.
 //! - Acceptance intent: the list view renders WITHOUT one /status call per row, so
 //!   each row's enrichment must EQUAL what GET .../api-definitions/{name}/status
 //!   reports for that API (tool_count, route_binding_count, latest_spec.version).
@@ -79,6 +82,7 @@ async fn env() -> Option<Env> {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
+        xds_degraded: None,
         discovery_forwarding_policy: Default::default(),
         egress_advisory: Default::default(),
         rls_repush: None,
@@ -319,6 +323,70 @@ async fn seed_spec_version(env: &Env, fx: &TeamFixture, api_id: Uuid, version: i
     .expect("seed spec version");
 }
 
+/// Resolve the imported version-1 id for fixture event inserts.
+async fn spec_version_id(env: &Env, api_id: Uuid) -> Uuid {
+    sqlx::query_scalar("SELECT id FROM spec_versions WHERE api_definition_id = $1 AND version = 1")
+        .bind(api_id)
+        .fetch_one(&env.pool)
+        .await
+        .expect("fixture spec version id")
+}
+
+/// Insert a review event with explicit ordering inputs. This is fixture setup only;
+/// the list endpoint remains a black-box HTTP request through the real router.
+async fn seed_review_event(
+    env: &Env,
+    fx: &TeamFixture,
+    api_id: Uuid,
+    version_id: Uuid,
+    event_id: Uuid,
+    decision: &str,
+    created_at: &str,
+) {
+    sqlx::query(
+        "INSERT INTO spec_version_review_events \
+         (id, team_id, org_id, api_definition_id, spec_version_id, decision, actor_type, \
+          actor_id, reason, metadata, created_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, 'user', NULL, '', '{}'::jsonb, $7::timestamptz)",
+    )
+    .bind(event_id)
+    .bind(fx.team_id.as_uuid())
+    .bind(fx.org_id.as_uuid())
+    .bind(api_id)
+    .bind(version_id)
+    .bind(decision)
+    .bind(created_at)
+    .execute(&env.pool)
+    .await
+    .expect("seed review event");
+}
+
+/// Disable the first generated tool of an API through the public product surface.
+async fn disable_first_tool(env: &Env, token: &str, team_name: &str, api_name: &str) {
+    let (status, _, tools) = get_json(
+        env,
+        &format!("/api/v1/teams/{team_name}/api-definitions/{api_name}/tools"),
+        token,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "tools fixture lookup: {tools}");
+    let victim = tools["items"][0]["name"]
+        .as_str()
+        .expect("generated tool name");
+    let response = env
+        .app
+        .clone()
+        .oneshot(request(
+            "PATCH",
+            &format!("/api/v1/teams/{team_name}/mcp/tools/{victim}"),
+            token,
+            Some(serde_json::json!({"enabled": false})),
+        ))
+        .await
+        .expect("disable tool");
+    assert_eq!(response.status(), StatusCode::OK, "disable tool fixture");
+}
+
 /// Seed a route_configs row directly (fixture only — pre-existing gateway scope
 /// the API binds to at create time).
 async fn seed_route_config(env: &Env, fx: &TeamFixture, name: &str) -> Uuid {
@@ -440,6 +508,222 @@ fn assert_enrichment(
              published: {item}"
         ),
     }
+}
+
+// --- fpv2-41r.1: enabled tools + latest lifecycle decision ----------------------------
+
+#[tokio::test]
+async fn list_reports_enabled_tools_and_deterministic_latest_decision_without_team_leakage() {
+    let Some(env) = env().await else { return };
+
+    // One unique org with TWO unique teams. Team A owns the rows under assertion; team B
+    // deliberately carries different counts and a later event to expose unscoped joins.
+    let org = identity::create_org(&env.pool, &unique("org-lifecycle"), "")
+        .await
+        .expect("org");
+    let team_a = identity::create_team(&env.pool, org.id, &unique("team-a-lifecycle"), "")
+        .await
+        .expect("team a");
+    let team_b = identity::create_team(&env.pool, org.id, &unique("team-b-lifecycle"), "")
+        .await
+        .expect("team b");
+    let fx_a = TeamFixture {
+        org_id: org.id,
+        team_id: team_a.id,
+        team_name: team_a.name,
+    };
+    let fx_b = TeamFixture {
+        org_id: org.id,
+        team_id: team_b.id,
+        team_name: team_b.name,
+    };
+    let (_, token) = user_with_org_role(&env, org.id, OrgRole::Admin).await;
+
+    // Team A reviewed API: two generated tools, then one disabled => enabled count 1.
+    let reviewed_name = unique("api-reviewed");
+    let reviewed_id = create_api(
+        &env,
+        &token,
+        &fx_a.team_name,
+        &reviewed_name,
+        Some(openapi_doc(2)),
+        None,
+    )
+    .await;
+    disable_first_tool(&env, &token, &fx_a.team_name, &reviewed_name).await;
+    let reviewed_v1 = spec_version_id(&env, reviewed_id).await;
+
+    // The newer timestamp wins; for the exact timestamp tie, the higher UUID wins.
+    let (low, high) = {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        (a.min(b), a.max(b))
+    };
+    seed_review_event(
+        &env,
+        &fx_a,
+        reviewed_id,
+        reviewed_v1,
+        Uuid::new_v4(),
+        "reviewed",
+        "2026-06-01T00:00:00Z",
+    )
+    .await;
+    // Seed high first so insertion order cannot masquerade as the id DESC tie-break.
+    seed_review_event(
+        &env,
+        &fx_a,
+        reviewed_id,
+        reviewed_v1,
+        high,
+        "rejected",
+        "2026-06-02T00:00:00Z",
+    )
+    .await;
+    seed_review_event(
+        &env,
+        &fx_a,
+        reviewed_id,
+        reviewed_v1,
+        low,
+        "published",
+        "2026-06-02T00:00:00Z",
+    )
+    .await;
+
+    // Team A event-less API still has a real imported spec/tool. Its latest_decision key
+    // must be present-null, never omitted as older optional list fields are.
+    let no_event_name = unique("api-no-events");
+    create_api(
+        &env,
+        &token,
+        &fx_a.team_name,
+        &no_event_name,
+        Some(openapi_doc(1)),
+        None,
+    )
+    .await;
+
+    // Cross-team distractor: two enabled tools and a chronologically later decision.
+    let foreign_name = unique("api-foreign");
+    let foreign_id = create_api(
+        &env,
+        &token,
+        &fx_b.team_name,
+        &foreign_name,
+        Some(openapi_doc(2)),
+        None,
+    )
+    .await;
+    let foreign_v1 = spec_version_id(&env, foreign_id).await;
+    seed_review_event(
+        &env,
+        &fx_b,
+        foreign_id,
+        foreign_v1,
+        Uuid::new_v4(),
+        "unpublished",
+        "2026-06-03T00:00:00Z",
+    )
+    .await;
+
+    let (status, _, body) = get_json(&env, &list_uri(&fx_a.team_name), &token).await;
+    assert_eq!(status, StatusCode::OK, "team A API list: {body}");
+    assert_eq!(
+        body["total"], 2,
+        "team B API must not enter team A list: {body}"
+    );
+    assert!(
+        body["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .all(|item| item["name"] != foreign_name),
+        "cross-team API leaked into team A list: {body}"
+    );
+
+    let reviewed = row(&body, &reviewed_name);
+    assert_eq!(
+        reviewed["enabled_tool_count"], 1,
+        "only one of team A's two tools remains enabled; team B tools must not affect it: {reviewed}"
+    );
+    assert_eq!(
+        reviewed["latest_decision"], "rejected",
+        "created_at DESC then id DESC must select rejected; team B's later event is irrelevant: \
+         {reviewed}"
+    );
+
+    let no_event = row(&body, &no_event_name);
+    assert_eq!(
+        no_event["enabled_tool_count"], 1,
+        "its generated tool is enabled: {no_event}"
+    );
+    assert!(
+        no_event
+            .as_object()
+            .expect("API list row object")
+            .contains_key("latest_decision"),
+        "zero-review-event API MUST contain latest_decision (missing is version skew): {no_event}"
+    );
+    assert!(
+        no_event["latest_decision"].is_null(),
+        "zero-review-event API latest_decision must be explicit JSON null: {no_event}"
+    );
+}
+
+#[test]
+fn openapi_api_definition_list_schema_documents_lifecycle_additions() {
+    let json = serde_json::to_value(fp_api::routes::openapi_document()).expect("OpenAPI JSON");
+    let schemas = json["components"]["schemas"]
+        .as_object()
+        .expect("OpenAPI component schemas");
+
+    // Locate the established enriched list row by its existing quartet rather than
+    // coupling this contract test to utoipa's generated component-name spelling.
+    let (name, schema) = schemas
+        .iter()
+        .find(|(_, schema)| {
+            let Some(properties) = schema["properties"].as_object() else {
+                return false;
+            };
+            [
+                "tool_count",
+                "route_binding_count",
+                "latest_version",
+                "published_version",
+            ]
+            .iter()
+            .all(|field| properties.contains_key(*field))
+        })
+        .unwrap_or_else(|| panic!("OpenAPI must contain the enriched API list-row schema"));
+    let properties = schema["properties"]
+        .as_object()
+        .expect("list row properties");
+    assert!(
+        properties.contains_key("enabled_tool_count"),
+        "{name} must document enabled_tool_count; properties: {:?}",
+        properties.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        properties.contains_key("latest_decision"),
+        "{name} must document latest_decision; properties: {:?}",
+        properties.keys().collect::<Vec<_>>()
+    );
+    let required = schema["required"]
+        .as_array()
+        .expect("list row required fields");
+    assert!(
+        required.iter().any(|field| field == "latest_decision"),
+        "{name} latest_decision is required-nullable, not optional: {schema}"
+    );
+    let decision_schema = &properties["latest_decision"];
+    let nullable = decision_schema["nullable"] == true
+        || decision_schema["type"]
+            .as_array()
+            .is_some_and(|types| types.iter().any(|kind| kind == "null"));
+    assert!(
+        nullable,
+        "{name} latest_decision must document explicit null: {schema}"
+    );
 }
 
 // --- Scenario 1: enrichment correctness for the three canonical shapes ----------------

@@ -70,6 +70,10 @@ pub async fn start_mock() -> MockServer {
         // MCP status reader — returns a small JSON object (fields are illustrative; only the
         // object shape matters, so the CLI can render the envelope kind for `mcp status`).
         .route("/api/v1/teams/{team}/mcp/status", get(mcp_status))
+        // NACK history window — echoes the received query string back in the body so a test can
+        // assert the CLI built the right `?since/until/limit/before` URL, and returns the
+        // `{items, window_total, next_cursor}` envelope so the CLI renders the new shape (fpv2-55x.2).
+        .route("/api/v1/teams/{team}/xds/nacks", get(list_nacks))
         // `unexpose <name>` hits DELETE on the expose surface. It must return a JSON object body
         // (NOT 204/empty) so the body path drives the envelope `kind` resolver for `unexpose`.
         .route(
@@ -88,6 +92,41 @@ pub async fn start_mock() -> MockServer {
         base_url: format!("http://{addr}"),
         handle,
     }
+}
+
+/// NACK-window reader. Echoes the raw query string into `received_query` so a test can assert the
+/// CLI's URL construction, and returns the `NackPage` envelope shape (fpv2-55x.2). The reserved
+/// `since=err-400` value returns a 400 so the malformed-input error path can be driven.
+async fn list_nacks(
+    Path(_team): Path<String>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> (StatusCode, Json<Value>) {
+    let received = query.unwrap_or_default();
+    if received.contains("since=err-400") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "code": "validation", "message": "since must be an RFC 3339 timestamp" })),
+        );
+    }
+    (
+        StatusCode::OK,
+        Json(json!({
+            "received_query": received,
+            "items": [
+                {
+                    "id": "019f9999-0000-7000-8000-000000000001",
+                    "node_id": "node-a",
+                    "type_url": "type.googleapis.com/envoy.config.cluster.v3.Cluster",
+                    "version_rejected": "42",
+                    "error_message": "boom",
+                    "quarantined_resources": ["clusters/orders"],
+                    "created_at": "2026-07-25T00:00:00Z"
+                }
+            ],
+            "window_total": 7,
+            "next_cursor": "2026-07-25T00:00:00.000000000+00:00,019f9999-0000-7000-8000-000000000001"
+        })),
+    )
 }
 
 async fn list_clusters(Path(_team): Path<String>) -> Json<Value> {

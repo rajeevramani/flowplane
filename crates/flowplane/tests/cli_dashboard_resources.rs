@@ -469,8 +469,8 @@ fn has_partial_data_notice(lower: &str) -> bool {
 }
 
 // =============================================================================================
-// Test 1: FIRST-OPEN LAZY LOADING — the `/resources` shell page triggers ZERO upstream
-// requests; only fetching a partial sweeps that partial's collection.
+// Test 1: VIEW-SCOPED LAZY LOADING — fetching the `/resources` shell itself triggers ZERO
+// upstream requests. Browser htmx loads topology/orphans on load and flat tables on first view.
 // =============================================================================================
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resources_shell_is_lazy_and_partials_fetch_only_their_collection() {
@@ -497,15 +497,21 @@ async fn resources_shell_is_lazy_and_partials_fetch_only_their_collection() {
         body.contains('<'),
         "the shell page must be HTML; body:\n{body}"
     );
-    // Static wiring of first-open lazy loading: closed-by-default <details> panels
-    // whose partial fetch fires on the first native toggle only.
+    // Static wiring follows the prototype Topology/Tables split rather than the obsolete
+    // top-level accordion: topology/orphans are the initial view, tables remain lazy.
     assert!(
-        body.contains("<details") && !body.contains("<details open"),
-        "panels must be closed-by-default <details> elements; body:\n{body}"
+        body.contains("data-ui-tab=\"topology\"")
+            && body.contains("data-ui-tab=\"tables\"")
+            && !body.contains("<details id=\"res-"),
+        "resources shell must render the Topology/Tables switch; body:\n{body}"
     );
     assert!(
-        body.matches("hx-trigger=\"toggle once\"").count() >= 3,
-        "each panel must fetch on its first toggle only; body:\n{body}"
+        body.matches("hx-trigger=\"load once\"").count() == 2
+            && body
+                .matches("hx-trigger=\"resources-tables once\"")
+                .count()
+                == 6,
+        "topology/orphans must load initially and six tables on first Tables selection; body:\n{body}"
     );
 
     // Grace period so even an asynchronously-fired upstream fetch would be caught.
@@ -822,8 +828,8 @@ async fn unauthorized_upstream_returns_286_and_names_auth_login() {
         resp.headers()
             .get("HX-Retarget")
             .and_then(|v| v.to_str().ok()),
-        Some("#resources"),
-        "the 286 response must carry HX-Retarget: #resources"
+        Some("main"),
+        "the 286 response must carry HX-Retarget: main"
     );
     assert_eq!(
         resp.headers()
