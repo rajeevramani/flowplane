@@ -276,7 +276,9 @@ jobs:
           partial=$(curl -fsS "${url}partials/overview")
           echo "$partial" | grep -q "dp-eval" \
             || { echo "::error::overview partial does not list the dp-eval dataplane"; exit 1; }
-          echo "$partial" | grep -Eq "[1-9][0-9]* total" \
+          partial_flat=$(printf '%s' "$partial" | tr '\n' ' ')
+          printf '%s' "$partial_flat" \
+            | grep -Eq '<span class="label">Dataplanes</span>[[:space:]]*<span class="value">[1-9][0-9]*</span>' \
             || { echo "::error::overview partial does not show a nonzero dataplane total"; exit 1; }
 
           no_nonce=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8081/")
