@@ -1,0 +1,17 @@
+<header class="topbar">
+  <div class="brand">flow<span>plane</span> dashboard</div>
+  <div class="ctx">
+    <span class="chip">team <b>{{ team }}</b></span>
+    <span class="chip">read-only</span>
+  </div>
+  <div class="spacer"></div>
+</header>
+<nav class="tabs">
+  <a href="/{{ nonce }}/"{% if active_tab == "overview" %} class="active"{% endif %}>Overview</a>
+  <a href="/{{ nonce }}/resources"{% if active_tab == "resources" %} class="active"{% endif %}>Resources</a>
+  <a href="/{{ nonce }}/apis"{% if active_tab == "apis" %} class="active"{% endif %}>APIs</a>
+  <a href="/{{ nonce }}/learning"{% if active_tab == "learning" %} class="active"{% endif %}>Learning</a>
+  <a href="/{{ nonce }}/ai"{% if active_tab == "ai" %} class="active"{% endif %}>AI</a>
+  <a href="/{{ nonce }}/mcp"{% if active_tab == "mcp" %} class="active"{% endif %}>MCP</a>
+  <a href="/{{ nonce }}/operations"{% if active_tab == "operations" %} class="active"{% endif %}>Operations</a>
+</nav>

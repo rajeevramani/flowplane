@@ -66,6 +66,7 @@ async fn app_with_admin() -> Option<(axum::Router, String, String, uuid::Uuid, P
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
+        xds_degraded: None,
         discovery_forwarding_policy: Default::default(),
         egress_advisory: Default::default(),
         rls_repush: None,
@@ -358,8 +359,8 @@ async fn mcp_session_reauth_removes_grants_on_next_request() {
     )
     .await;
     let grant_id: uuid::Uuid = sqlx::query(
-        "SELECT id FROM grants \
-         WHERE principal_type = 'agent' AND principal_id = $1 AND team_id = $2 \
+        "SELECT id FROM agent_grants \
+         WHERE agent_id = $1 AND team_id = $2 \
            AND resource = 'clusters' AND action = 'read'",
     )
     .bind(agent_id)

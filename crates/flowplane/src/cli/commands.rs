@@ -206,6 +206,38 @@ pub enum TeamMemberCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum AgentCommand {
+    /// List agents in the active org (org admins see all; others see agents on teams they can read).
+    List {
+        /// Filter to agents holding a grant on this team (name or UUID).
+        #[arg(long)]
+        team: Option<String>,
+        /// Max items (default 50, cap 500).
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Items to skip.
+        #[arg(long)]
+        offset: Option<i64>,
+    },
+    /// Show one agent.
+    Show {
+        /// Agent id (UUID).
+        id: String,
+    },
+    /// List an agent's grants.
+    Grants {
+        /// Agent id (UUID).
+        id: String,
+        /// Max items (default 50, cap 500).
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Items to skip.
+        #[arg(long)]
+        offset: Option<i64>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum GrantCommand {
     /// List a team's grants.
     List {
@@ -396,6 +428,10 @@ pub enum AiCommand {
         /// W3C trace id from an inbound traceparent header.
         #[arg(long)]
         trace_id: Option<String>,
+        /// Pagination cursor "<created_at RFC 3339>,<id UUID>" — the last row of the
+        /// previous page; returns strictly older rows.
+        #[arg(long)]
+        before: Option<String>,
         /// Maximum number of traces to return.
         #[arg(long, default_value_t = 50)]
         limit: i64,
@@ -416,6 +452,14 @@ pub enum AiCommand {
         /// Filter usage records to this route configuration ID.
         #[arg(long)]
         route_config_id: Option<String>,
+        /// RFC 3339 inclusive lower bound of the half-open window [since, until).
+        /// Omitted = all-time.
+        #[arg(long)]
+        since: Option<String>,
+        /// RFC 3339 exclusive upper bound; omitted = now (server-side). With --since
+        /// present the span is capped at 92 days.
+        #[arg(long)]
+        until: Option<String>,
         /// Maximum number of records to return.
         #[arg(long, default_value_t = 50)]
         limit: i64,
@@ -626,6 +670,36 @@ pub enum ApiCommand {
         #[command(subcommand)]
         command: ApiSpecCommand,
     },
+    /// List an API's route bindings (typed IDs into route configs/listeners).
+    #[command(after_help = "Example:\n  flowplane api bindings catalog --team payments")]
+    Bindings {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Name of the API whose route bindings to list.
+        api: String,
+        /// Max items (default 50, cap 500).
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        /// Items to skip.
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
+    },
+    /// List an API's generated tools, including disabled ones.
+    #[command(after_help = "Example:\n  flowplane api tools catalog --team payments")]
+    Tools {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Name of the API whose tools to list.
+        api: String,
+        /// Max items (default 50, cap 500).
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        /// Items to skip.
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
+    },
     /// Create an API definition (optionally importing an OpenAPI document).
     #[command(
         after_help = "Example:\n  flowplane api create catalog --team payments --from-openapi openapi.json"
@@ -670,6 +744,55 @@ pub enum ApiCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ApiSpecCommand {
+    /// List an API's spec versions (newest first) with their latest review decision.
+    #[command(after_help = "Example:\n  flowplane api spec list catalog --team payments")]
+    List {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Name of the API whose spec versions to list.
+        api: String,
+        /// Max items (default 50, cap 500).
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        /// Items to skip.
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
+    },
+    /// Show one spec version: metadata by default, the stored OpenAPI document with
+    /// `--content`.
+    #[command(
+        after_help = "Example:\n  flowplane api spec show catalog 2 --content --team payments"
+    )]
+    Show {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Name of the API whose spec version to show.
+        api: String,
+        /// Spec version number.
+        version: i64,
+        /// Print the stored spec document instead of the metadata row.
+        #[arg(long)]
+        content: bool,
+    },
+    /// Show a spec version's ordered review-event history (oldest first).
+    #[command(after_help = "Example:\n  flowplane api spec events catalog 3 --team payments")]
+    Events {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Name of the API whose spec version to inspect.
+        api: String,
+        /// Spec version number.
+        version: i64,
+        /// Max items (default 50, cap 500).
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        /// Items to skip.
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
+    },
     /// Reject a pending spec version.
     #[command(after_help = "Example:\n  flowplane api spec reject catalog 3 --reason superseded")]
     Reject {
@@ -713,6 +836,15 @@ pub enum McpCommand {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
         team: Option<String>,
+    },
+    /// List the team's MCP tool catalog (static cp_*/ops_* tools plus generated api_* tools).
+    Tools {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Include disabled generated tools (requires the mcp-tools:update grant).
+        #[arg(long)]
+        include_disabled: bool,
     },
     /// Expose an API as an MCP tool.
     #[command(after_help = "Example:\n  flowplane mcp enable --api catalog --team payments")]
@@ -1175,11 +1307,23 @@ pub enum XdsCommand {
         #[arg(long)]
         team: Option<String>,
     },
-    /// Show recent xDS NACKs.
+    /// Show a team's xDS NACK history over a filtered `[since, until)` window, newest first.
     Nacks {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
         team: Option<String>,
+        /// Inclusive lower bound (RFC 3339, e.g. 2026-07-25T00:00:00Z). Rows at/after this time.
+        #[arg(long)]
+        since: Option<String>,
+        /// Exclusive upper bound (RFC 3339). Rows strictly before this time.
+        #[arg(long)]
+        until: Option<String>,
+        /// Page size (default 50, max 200).
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Opaque cursor from a prior response's `next_cursor` to fetch the next (older) page.
+        #[arg(long)]
+        before: Option<String>,
     },
 }
 

@@ -82,16 +82,26 @@ awk -F'\t' -v cred="$AI_SECRET_VALUE" -v host="127.0.0.1:$AI_PROVIDER_PORT" \
 awk -F'\t' -v cred="Bearer fp-e2e-ai-fallback-secret" -v host="127.0.0.1:$AI_FALLBACK_PROVIDER_PORT" \
   '$1 != cred || $2 != host { print "bad line: " $0; exit 1 }' /tmp/fp-e2e-ai-fallback-auth.log \
   || fail "alt provider saw a mismatched credential/Host pair (fpv2-ti2)"
+# fpv2-l8x: gateway rows materialized for an AI route are owned by a per-materialization
+# uuid::now_v7 (ai.rs create_ai_owned/create_ai_*), NOT the ai_routes id — so counting by the
+# route id is always 0 and the orphan check passes vacuously. Capture the real owner_id (shared by
+# the cluster/route_config/listener triple) from the known materialized listener name, prove the
+# query matches live rows BEFORE deletion (non-vacuous), then assert it drops to 0 after.
+AI_MULTI_OWNER_ID=$(psql "$PG_DB_URL" -Atc "SELECT owner_id FROM listeners WHERE team_id = '$TEAM_ID' AND owner_kind = 'ai' AND name = 'ai-ai-e2e-multi-listener'")
+[ -n "$AI_MULTI_OWNER_ID" ] || fail "AI multi-backend materialization owner_id not found (cannot verify cleanup)"
+ai_owned_count() { psql "$PG_DB_URL" -Atc "SELECT \
+  (SELECT count(*) FROM clusters WHERE team_id = '$TEAM_ID' AND owner_kind = 'ai' AND owner_id = '$1') + \
+  (SELECT count(*) FROM route_configs WHERE team_id = '$TEAM_ID' AND owner_kind = 'ai' AND owner_id = '$1') + \
+  (SELECT count(*) FROM listeners WHERE team_id = '$TEAM_ID' AND owner_kind = 'ai' AND owner_id = '$1')"; }
+AI_MULTI_OWNED_BEFORE=$(ai_owned_count "$AI_MULTI_OWNER_ID")
+[ "${AI_MULTI_OWNED_BEFORE:-0}" -ge 1 ] || fail "AI multi-backend orphan check is vacuous: no owned gateway rows matched owner_id before delete"
 AI_MULTI_ROUTE_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_routes WHERE id = '$AI_MULTI_ROUTE_ID'")
 curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_MULTI_ROUTE_REV" \
   http://$API/api/v1/teams/default/ai/routes/ai-e2e-multi >/dev/null
 AI_ALT_PROVIDER_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_providers WHERE id = '$AI_ALT_PROVIDER_ID'")
 curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_ALT_PROVIDER_REV" \
   http://$API/api/v1/teams/default/ai/providers/ai-e2e-alt-provider >/dev/null
-AI_MULTI_ORPHANS=$(psql "$PG_DB_URL" -Atc "SELECT \
-  (SELECT count(*) FROM clusters WHERE owner_kind = 'ai' AND owner_id = '$AI_MULTI_ROUTE_ID') + \
-  (SELECT count(*) FROM route_configs WHERE owner_kind = 'ai' AND owner_id = '$AI_MULTI_ROUTE_ID') + \
-  (SELECT count(*) FROM listeners WHERE owner_kind = 'ai' AND owner_id = '$AI_MULTI_ROUTE_ID')")
+AI_MULTI_ORPHANS=$(ai_owned_count "$AI_MULTI_OWNER_ID")
 [ "$AI_MULTI_ORPHANS" = "0" ] || fail "AI multi-backend route cleanup left $AI_MULTI_ORPHANS owned gateway rows"
 # (fallback secret already created for the weighted-pair section above)
 AI_UNAVAILABLE_PROVIDER_BODY=$(curl -fsS "${auth[@]}" -X POST http://$API/api/v1/teams/default/ai/providers \
@@ -176,13 +186,16 @@ PY
 AI_BUDGET_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_budgets WHERE id = '$AI_BUDGET_ID'")
 curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_BUDGET_REV" \
   http://$API/api/v1/teams/default/ai/budgets/ai-e2e-budget >/dev/null
+# fpv2-l8x: same real-owner_id check for the single route (owner_id shared by the materialized
+# cluster/route_config/listener; AI_ROUTE_CONFIG_ID is that route_config's id).
+AI_OWNER_ID=$(psql "$PG_DB_URL" -Atc "SELECT owner_id FROM route_configs WHERE team_id = '$TEAM_ID' AND owner_kind = 'ai' AND id = '$AI_ROUTE_CONFIG_ID'")
+[ -n "$AI_OWNER_ID" ] || fail "AI route materialization owner_id not found (cannot verify cleanup)"
+AI_OWNED_BEFORE=$(ai_owned_count "$AI_OWNER_ID")
+[ "${AI_OWNED_BEFORE:-0}" -ge 1 ] || fail "AI route orphan check is vacuous: no owned gateway rows matched owner_id before delete"
 AI_ROUTE_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_routes WHERE id = '$AI_ROUTE_ID'")
 curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_ROUTE_REV" \
   http://$API/api/v1/teams/default/ai/routes/ai-e2e >/dev/null
-AI_ORPHANS=$(psql "$PG_DB_URL" -Atc "SELECT \
-  (SELECT count(*) FROM clusters WHERE owner_kind = 'ai' AND owner_id = '$AI_ROUTE_ID') + \
-  (SELECT count(*) FROM route_configs WHERE owner_kind = 'ai' AND owner_id = '$AI_ROUTE_ID') + \
-  (SELECT count(*) FROM listeners WHERE owner_kind = 'ai' AND owner_id = '$AI_ROUTE_ID')")
+AI_ORPHANS=$(ai_owned_count "$AI_OWNER_ID")
 [ "$AI_ORPHANS" = "0" ] || fail "AI route cleanup left $AI_ORPHANS owned gateway rows"
 AI_PROVIDER_REV=$(psql "$PG_DB_URL" -Atc "SELECT version FROM ai_providers WHERE id = '$AI_PROVIDER_ID'")
 curl -fsS "${auth[@]}" -X DELETE -H "If-Match: $AI_PROVIDER_REV" \

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Flowplane — {{ team }} — APIs</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/{{ nonce }}/assets/dashboard.css">
+  <script src="/{{ nonce }}/assets/htmx.min.js" defer></script>
+  <script src="/{{ nonce }}/assets/ui.js" defer></script>
+  <script src="/{{ nonce }}/assets/apis.js" defer></script>
+</head>
+<body>
+  {% let active_tab = "apis" %}
+  {% include "dashboard/_shell.html" %}
+  <main id="apis">
+    <div aria-live="polite">
+    <section id="apis-list"
+             hx-get="/{{ nonce }}/partials/apis/list"
+             hx-trigger="load once"
+             hx-swap="outerHTML">
+      <p class="placeholder">Loading API definitions…</p>
+    </section>
+    </div>
+  </main>
+</body>
+</html>

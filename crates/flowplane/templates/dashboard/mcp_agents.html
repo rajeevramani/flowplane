@@ -1,0 +1,49 @@
+{% if let Some(agents) = panel.data() %}
+<section class="panel" id="panel-mcp-agents">
+  <h2>Agents <span class="count">organization-wide · requires org authority</span></h2>
+  <p class="banner">Agent credentials are shown once at create/rotate and are never stored or displayed here.</p>
+  {% if let Some(t) = agents.truncated %}
+  <p class="banner">Showing first {{ t.shown }} of {{ t.total }} agents — the remaining agents were not fetched.</p>
+  {% endif %}
+  <div class="tablewrap">
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Kind</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+      {% for row in agents.rows %}
+      <tr>
+        <td>{{ row.name }}</td>
+        <td>{{ row.kind }}</td>
+        <td>{% if row.status == "active" %}<span class="pill good">{{ row.status }}</span>{% else if row.status == "suspended" %}<span class="pill warn">{{ row.status }}</span>{% else %}<span class="pill neutral">{{ row.status }}</span>{% endif %}</td>
+      </tr>
+      <tr class="ui-detail-row">
+        <td colspan="3">
+          <details hx-get="/{{ nonce }}/partials/mcp/agent-grants?id={{ row.id|urlencode }}"
+                   hx-trigger="toggle once"
+                   hx-target="find div"
+                   hx-swap="innerHTML">
+            <summary class="ui-disclosure-summary">Grants</summary>
+            <div><p class="placeholder">Loading…</p></div>
+          </details>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if agents.rows.is_empty() %}
+      <tr><td colspan="3" class="placeholder">No agents in this organization.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% else if panel.unauthorized() %}
+<section class="panel unauthorized" id="panel-mcp-agents">
+  <h2>Agents</h2>
+  <p>Not authorized to view agents — this is an organization-wide view that requires org authority.</p>
+</section>
+{% else %}
+<section class="panel unavailable" id="panel-mcp-agents">
+  <h2>Agents</h2>
+  <p>Agents are currently unavailable.</p>
+</section>
+{% endif %}

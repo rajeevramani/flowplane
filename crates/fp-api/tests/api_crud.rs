@@ -99,10 +99,10 @@ fn openapi_document_covers_every_registered_operation() {
     for item in paths.values() {
         operations += item.as_object().map(|o| o.len()).unwrap_or(0);
     }
-    // whoami + 3 resources x 5 + 9 team/member/grant + 5 agent + 7 org + 4 dataplane
+    // whoami + 3 resources x 5 + 9 team/member/grant + 6 agent + 7 org + 4 dataplane
     // + 4 proxy-certificate + 3 ops/xds diagnostics operations.
     // + 4 secrets operations + 2 dataplane/stats telemetry operations.
-    // + 10 API lifecycle/MCP tool operations + 6 learning-session operations.
+    // + 16 API lifecycle/MCP tool operations + 6 learning-session operations.
     // + 5 discovery-session operations.
     // + 2 expose shortcut operations.
     // + 2 route-generation plan operations.
@@ -114,8 +114,8 @@ fn openapi_document_covers_every_registered_operation() {
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 113,
-        "expected 113 documented operations, got {operations}"
+        operations, 120,
+        "expected 120 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     let schemas = json["components"]["schemas"].as_object().expect("schemas");
@@ -214,6 +214,7 @@ async fn learning_session_lifecycle_over_http() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
+        xds_degraded: None,
         discovery_forwarding_policy: Default::default(),
         egress_advisory: Default::default(),
         rls_repush: None,
@@ -369,6 +370,7 @@ async fn api_definition_import_status_and_delete_over_http() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
+        xds_degraded: None,
         discovery_forwarding_policy: Default::default(),
         egress_advisory: Default::default(),
         rls_repush: None,
@@ -497,6 +499,7 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
+        xds_degraded: None,
         discovery_forwarding_policy: Default::default(),
         egress_advisory: Default::default(),
         rls_repush: None,
@@ -898,6 +901,7 @@ async fn multi_org_user_selects_active_org_with_header() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
+        xds_degraded: None,
         discovery_forwarding_policy: Default::default(),
         egress_advisory: Default::default(),
         rls_repush: None,
@@ -998,6 +1002,7 @@ async fn proxy_certificate_registry_flow_over_http() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
+        xds_degraded: None,
         discovery_forwarding_policy: Default::default(),
         egress_advisory: Default::default(),
         rls_repush: None,
@@ -1306,6 +1311,7 @@ async fn secret_values_are_write_only_over_http() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
+        xds_degraded: None,
         discovery_forwarding_policy: Default::default(),
         egress_advisory: Default::default(),
         rls_repush: None,
@@ -1571,6 +1577,12 @@ async fn secret_values_are_write_only_over_http() {
     let body = json_of(response).await;
     assert_eq!(body["name"], budget_name);
     assert_eq!(body["revision"], 1);
+    // A freshly created budget has no counter row: state is 0-used with the
+    // server-computed aligned window_start and the spec's limit/window echoed.
+    assert_eq!(body["state"]["used_units"], 0);
+    assert_eq!(body["state"]["limit_units"], 100);
+    assert_eq!(body["state"]["window_seconds"], 3600);
+    assert!(body["state"]["window_start"].is_string());
 
     fp_storage::repos::ai::record_usage_event_and_settle_budgets(
         &query_pool,
@@ -1599,6 +1611,18 @@ async fn secret_values_are_write_only_over_http() {
             .expect("budget counter");
     assert_eq!(used_units, 11);
 
+    // The settled counter surfaces as the budget's current-window state on GET.
+    let response = app
+        .clone()
+        .oneshot(request("GET", &format!("{budgets}/{budget_name}"), None))
+        .await
+        .expect("get AI budget with state");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["state"]["used_units"], 11);
+    assert_eq!(body["spec"]["mode"], "shadow");
+    assert!(body["state"]["window_start"].is_string());
+
     let response = app
         .clone()
         .oneshot(request(
@@ -1610,9 +1634,47 @@ async fn secret_values_are_write_only_over_http() {
         .expect("get AI usage");
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_of(response).await;
-    assert_eq!(body[0]["prompt_tokens"], 3);
-    assert_eq!(body[0]["completion_tokens"], 4);
-    assert_eq!(body[0]["total_tokens"], 7);
+    assert_eq!(body["items"][0]["prompt_tokens"], 3);
+    assert_eq!(body["items"][0]["completion_tokens"], 4);
+    assert_eq!(body["items"][0]["total_tokens"], 7);
+    assert_eq!(body["total"], 1);
+
+    // Windowed read spanning now still sees the row; the window is half-open [since, until).
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!(
+                "/api/v1/teams/{}/ai/usage?since={}",
+                team.name,
+                (chrono::Utc::now() - chrono::Duration::hours(1))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            ),
+            None,
+        ))
+        .await
+        .expect("get windowed AI usage");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_of(response).await;
+    assert_eq!(body["items"][0]["total_tokens"], 7);
+    assert_eq!(body["total"], 1);
+
+    // A span beyond the 92-day cap (since present) is rejected with 400.
+    let response = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!(
+                "/api/v1/teams/{}/ai/usage?since={}",
+                team.name,
+                (chrono::Utc::now() - chrono::Duration::days(93))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            ),
+            None,
+        ))
+        .await
+        .expect("get over-cap AI usage");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     let response = app
         .clone()
@@ -1624,11 +1686,9 @@ async fn secret_values_are_write_only_over_http() {
         .await
         .expect("get other-team AI usage");
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(json_of(response)
-        .await
-        .as_array()
-        .expect("usage")
-        .is_empty());
+    let body = json_of(response).await;
+    assert!(body["items"].as_array().expect("usage items").is_empty());
+    assert_eq!(body["total"], 0);
 
     let response = app
         .clone()
@@ -1800,6 +1860,7 @@ async fn malformed_json_body_returns_validation_envelope() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
+        xds_degraded: None,
         discovery_forwarding_policy: Default::default(),
         egress_advisory: Default::default(),
         rls_repush: None,
@@ -1934,6 +1995,7 @@ async fn ai_trace_retrieval_over_http() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
+        xds_degraded: None,
         discovery_forwarding_policy: Default::default(),
         egress_advisory: Default::default(),
         rls_repush: None,
@@ -1973,6 +2035,45 @@ async fn ai_trace_retrieval_over_http() {
         body.get("miss").is_none(),
         "hit must not carry a miss: {body}"
     );
+
+    // Cursor paging: `before` at the seeded row's (created_at, id) excludes it (strictly
+    // older only); a malformed cursor is a 400.
+    let cursor = format!(
+        "{},{}",
+        traces[0]["created_at"].as_str().expect("created_at"),
+        traces[0]["id"].as_str().expect("id")
+    );
+    let response = app
+        .clone()
+        .oneshot(request(
+            &admin_token,
+            &format!(
+                "/api/v1/teams/{}/ai/trace?before={}",
+                team.name,
+                cursor.replace('+', "%2B")
+            ),
+        ))
+        .await
+        .expect("trace before cursor");
+    assert_eq!(response.status(), StatusCode::OK);
+    let paged = json_of(response).await;
+    assert!(
+        !paged["traces"]
+            .as_array()
+            .expect("traces")
+            .iter()
+            .any(|t| t["request_id"] == request_id.as_str()),
+        "before-cursor page must exclude the cursor row itself: {paged}"
+    );
+    let response = app
+        .clone()
+        .oneshot(request(
+            &admin_token,
+            &format!("/api/v1/teams/{}/ai/trace?before=not-a-cursor", team.name),
+        ))
+        .await
+        .expect("trace malformed cursor");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     // trace_id filter returns the same row.
     let response = app
@@ -2171,6 +2272,7 @@ async fn ai_retention_crud_authz_and_audit_over_http() {
         validator: Some(std::sync::Arc::new(validator)),
         write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
         xds_readiness: None,
+        xds_degraded: None,
         discovery_forwarding_policy: Default::default(),
         egress_advisory: Default::default(),
         rls_repush: None,

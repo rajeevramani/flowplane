@@ -105,6 +105,11 @@ enum Command {
         #[command(subcommand)]
         command: cli::SecretCommand,
     },
+    /// Agent identities (read-only): list agents and view an agent's grants.
+    Agent {
+        #[command(subcommand)]
+        command: cli::AgentCommand,
+    },
     /// Dataplane registration and certificates.
     Dataplane {
         #[command(subcommand)]
@@ -123,6 +128,11 @@ enum Command {
     Unexpose {
         #[command(flatten)]
         command: cli::UnexposeCommand,
+    },
+    /// Open a read-only local dashboard for the resolved team (loopback by default).
+    Dashboard {
+        #[command(flatten)]
+        command: cli::DashboardOptions,
     },
     /// Team stats.
     Stats {
@@ -232,9 +242,11 @@ fn run() -> anyhow::Result<()> {
         }
         Command::Learn { command } => runtime.block_on(cli::run_learn(cli.client, command)),
         Command::Secret { command } => runtime.block_on(cli::run_secret(cli.client, command)),
+        Command::Agent { command } => runtime.block_on(cli::run_agent(cli.client, command)),
         Command::Dataplane { command } => runtime.block_on(cli::run_dataplane(cli.client, command)),
         Command::Expose { command } => runtime.block_on(cli::run_expose(cli.client, command)),
         Command::Unexpose { command } => runtime.block_on(cli::run_unexpose(cli.client, command)),
+        Command::Dashboard { command } => runtime.block_on(cli::run_dashboard(cli.client, command)),
         Command::Stats { command } => runtime.block_on(cli::run_stats(cli.client, command)),
         Command::Ops { command } => runtime.block_on(cli::run_ops(cli.client, command)),
         Command::Apply { command } => runtime.block_on(cli::run_apply(cli.client, command)),
@@ -589,7 +601,7 @@ mod tests {
         // from `--help`. The union guard forces every FUTURE leaf to be classified one way or the
         // other. Pure in-process (no temp dir / network) so it is inherently parallel-safe.
 
-        // 46 SPINE leaves (space-joined paths) — each must expose a parseable example.
+        // 51 SPINE leaves (space-joined paths) — each must expose a parseable example.
         const SPINE: &[&str] = &[
             "auth login",
             "config set-context",
@@ -608,6 +620,11 @@ mod tests {
             "api create",
             "api spec reject",
             "api spec publish",
+            "api spec list",
+            "api spec events",
+            "api spec show",
+            "api bindings",
+            "api tools",
             "mcp enable",
             "mcp disable",
             "ai providers create",
@@ -639,9 +656,13 @@ mod tests {
             "apply",
         ];
 
-        // 78 EXEMPT leaves (space-joined paths) — no example required.
+        // 82 EXEMPT leaves (space-joined paths) — no example required.
         const EXEMPT: &[&str] = &[
+            "agent grants",
+            "agent list",
+            "agent show",
             "ai budgets delete",
+            "dashboard",
             "ai budgets get",
             "ai budgets list",
             "ai providers delete",
@@ -685,6 +706,7 @@ mod tests {
             "listener list",
             "mcp connections",
             "mcp status",
+            "mcp tools",
             "openapi",
             "ops trace",
             "ops xds nacks",

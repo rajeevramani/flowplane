@@ -1,0 +1,128 @@
+{% if let Some(d) = panel.data() %}
+<td colspan="7">
+<section class="ui-detail-content">
+  <h3>{{ d.api }} <span class="pill neutral">{{ d.pill }}</span></h3>
+  {% for n in d.notices %}
+  {% if n.budget() %}
+  <p class="banner">Partial — first {{ n.shown }} of {{ n.total }} {{ n.collection }} (budget reached).</p>
+  {% else %}
+  <p class="banner">Partial data: the {{ n.collection }} collection is incomplete.</p>
+  {% endif %}
+  {% endfor %}
+
+  <p class="ui-metadata">
+    <span>{{ d.description }}</span>
+    · {% if let Some(v) = d.latest_version %}latest v{{ v }}{% else %}no spec{% endif %}
+    · {% if let Some(v) = d.published_version %}published v{{ v }}{% else %}not published{% endif %}
+    · format {{ d.latest_format }}
+    · hash <code>{{ d.latest_hash }}</code>
+    · revision {{ d.revision }}
+    · updated {{ d.updated }}
+  </p>
+
+  {% if !d.events_available %}
+  <p class="banner">Review events are currently unavailable — the event history could not be fetched.</p>
+  {% endif %}
+
+  <h4>Persisted pipeline</h4>
+  <ol class="ui-steps compact-pipeline">
+    {% for stage in d.pipeline %}
+    <li class="pipeline-stage {{ stage.kind }}"><span class="pill neutral">{{ stage.label }}</span></li>
+    {% endfor %}
+  </ol>
+
+  {% if let Some(v) = d.latest_version %}
+  <details class="ui-secondary-disclosure review-history">
+    <summary>Review pipeline — v{{ v }} (event history, oldest first)</summary>
+    {% if let Some(events) = d.events %}
+    {% if events.is_empty() %}
+    <p class="placeholder">No review events for v{{ v }}.</p>
+    {% else %}
+    <ol class="ui-steps">
+      {% for e in events %}
+      <li><span class="pill neutral">{{ e.decision }}</span>
+          by {{ e.actor_type }}{% if !e.reason.is_empty() %} — “{{ e.reason }}”{% endif %}
+          <span class="hint">{{ e.created }}</span></li>
+      {% endfor %}
+    </ol>
+    {% endif %}
+    {% else %}
+    <p class="placeholder">Event history unavailable; see the panel notice above.</p>
+    {% endif %}
+  </details>
+  {% endif %}
+
+  <h4>Spec lineage</h4>
+  <div class="tablewrap compact-lineage">
+  <table>
+    <thead><tr><th>Version</th><th>Source</th><th>Hash</th><th>Latest decision</th><th>Published</th><th>Created</th></tr></thead>
+    <tbody>
+      {% for s in d.lineage %}
+      <tr>
+        <td>v{{ s.version }}</td>
+        <td>{{ s.source_kind }}</td>
+        <td><code>{{ s.hash_short }}</code></td>
+        <td><span class="pill neutral">{{ s.decision }}</span></td>
+        <td>{% if s.published %}yes{% else %}—{% endif %}</td>
+        <td>{{ s.created }}</td>
+      </tr>
+      {% endfor %}
+      {% if d.lineage.is_empty() %}
+      <tr><td colspan="6" class="placeholder">No spec versions.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  </div>
+
+  <h4>Route bindings</h4>
+  {% if d.chain_names_unresolved %}
+  <p class="banner">Gateway resource names are currently unavailable — chain rows show raw IDs.</p>
+  {% endif %}
+  <div class="tablewrap">
+  <table class="binding-chips">
+    <thead><tr><th>Binding</th><th>Route config</th><th>Scope</th><th>Listener</th></tr></thead>
+    <tbody>
+      {% for c in d.chain %}
+      <tr><td><span class="chip">{{ c.binding }}</span></td><td><span class="chip">{{ c.route_config }}</span></td><td><span class="chip">{{ c.scope }}</span></td><td><span class="chip">{{ c.listener }}</span></td></tr>
+      {% endfor %}
+      {% if d.chain.is_empty() %}
+      <tr><td colspan="4" class="placeholder">No route bindings.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  </div>
+
+  <h4>Tools <span class="hint">{{ d.tool_summary }}</span></h4>
+  <details class="ui-secondary-disclosure tools-detail">
+    <summary>Full tool and schema table</summary>
+    <div class="tablewrap">
+    <table>
+      <thead><tr><th>Tool</th><th>Operation</th><th>Method</th><th>Path</th><th>Enabled</th><th>Schemas</th></tr></thead>
+      <tbody>
+        {% for t in d.tools %}
+        <tr>
+          <td>{{ t.name }}</td>
+          <td>{{ t.operation_id }}</td>
+          <td>{{ t.method }}</td>
+          <td>{{ t.path }}</td>
+          <td>{% if t.enabled %}<span class="pill neutral">yes</span>{% else %}<span class="pill warn">disabled</span>{% endif %}</td>
+          <td>
+            <span class="hint">input</span><pre>{{ t.input_schema }}</pre>
+            <span class="hint">output</span><pre>{{ t.output_schema }}</pre>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if d.tools.is_empty() %}
+        <tr><td colspan="6" class="placeholder">No generated tools.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+    </div>
+  </details>
+</section>
+</td>
+{% else if panel.unauthorized() %}
+<td colspan="7"><section class="panel unauthorized"><p>Not authorized to view this API.</p></section></td>
+{% else %}
+<td colspan="7"><section class="panel unavailable"><p>This API's details are currently unavailable.</p></section></td>
+{% endif %}

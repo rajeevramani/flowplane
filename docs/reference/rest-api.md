@@ -61,7 +61,7 @@ Most paged collection endpoints (clusters, listeners, route-configs, api-definit
 | `limit`   | `50`    | Clamped to `1..=500`. |
 | `offset`  | `0`     | Floored at `0`. |
 
-Not every collection uses this. Some endpoints return a plain JSON array or a custom query/response shape instead — for example `GET /api/v1/teams`, `GET /api/v1/orgs`, `GET /api/v1/agents`, `GET /api/v1/teams/{team}/proxy-certificates`, `GET /api/v1/teams/{team}/xds/nacks`, and `GET /api/v1/teams/{team}/ai/usage`. The generated OpenAPI document is authoritative for each endpoint's exact request/response shape.
+Not every collection uses this. Some endpoints return a plain JSON array or a custom query/response shape instead — for example `GET /api/v1/teams`, `GET /api/v1/orgs`, and `GET /api/v1/teams/{team}/proxy-certificates` return arrays, while `GET /api/v1/teams/{team}/xds/nacks` returns the cursor-aware `NackPage` shape. In 3.1, `GET /api/v1/agents` and `GET /api/v1/teams/{team}/ai/usage` use `Page<T>`. The generated OpenAPI document is authoritative for each endpoint's exact request/response shape.
 
 Endpoints that use `ListQuery` return the uniform `Page<T>` envelope:
 
@@ -134,6 +134,7 @@ Grouped by resource. Per-field request/response schemas are in the generated Ope
 | GET  | `/api/v1/agents` |
 | POST | `/api/v1/agents` |
 | GET  | `/api/v1/agents/{agent_id}` |
+| GET  | `/api/v1/agents/{agent_id}/grants` |
 | POST | `/api/v1/agents/{agent_id}/rotate-token` |
 | POST | `/api/v1/agents/{agent_id}/disable` |
 
@@ -379,8 +380,15 @@ configured). The 60 s reconcile loop is the backstop; this is only a fast path.
 | GET    | `/api/v1/teams/{team}/api-definitions/{name}` |
 | DELETE | `/api/v1/teams/{team}/api-definitions/{name}` |
 | GET    | `/api/v1/teams/{team}/api-definitions/{name}/status` |
+| GET    | `/api/v1/teams/{team}/api-definitions/{name}/specs` |
+| GET    | `/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/events` |
+| GET    | `/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/content` |
+| GET    | `/api/v1/teams/{team}/api-definitions/{name}/route-bindings` |
+| GET    | `/api/v1/teams/{team}/api-definitions/{name}/tools` |
 | POST   | `/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/reject` |
 | POST   | `/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/publish` |
+
+The spec-content endpoint supports conditional reads: it returns `ETag`, accepts `If-None-Match`, and returns `304 Not Modified` when the stored document is unchanged.
 
 ### MCP (tools & status)
 
@@ -388,6 +396,7 @@ configured). The 60 s reconcile loop is the backstop; this is only a fast path.
 |--------|------|
 | GET   | `/api/v1/teams/{team}/mcp/status` |
 | GET   | `/api/v1/teams/{team}/mcp/connections` |
+| GET   | `/api/v1/teams/{team}/mcp/tools` |
 | PATCH | `/api/v1/teams/{team}/mcp/tools/{name}` |
 | POST  | `/api/v1/mcp` |
 
@@ -452,7 +461,7 @@ configured). The 60 s reconcile loop is the backstop; this is only a fast path.
 | GET    | `/api/v1/teams/{team}/ai/retention` |
 | PUT    | `/api/v1/teams/{team}/ai/retention` |
 
-`GET ai/trace` takes `request_id`, `trace_id`, and `limit` query parameters and returns the per-hop trace timeline for AI data-plane requests; a lookup with no matching row returns an explicit miss object naming the never-traced request classes. `PUT ai/retention` sets the team's trace TTL in days (1–365; default 30 when no policy exists) and requires the `ai-usage` update grant.
+`GET ai/usage` returns `Page<AiUsageSummary>` and accepts provider/route filters plus a half-open `[since, until)` RFC 3339 window. `since` is inclusive, `until` is exclusive and defaults to now, and a supplied `since` caps the span at 92 days. `GET ai/trace` takes `request_id`, `trace_id`, `limit`, and the total-order `before=<created_at>,<id>` cursor; it returns strictly older rows for the next page. A lookup with no matching row returns an explicit miss object naming the never-traced request classes. Every budget-returning endpoint includes the budget's computed current-window `state`. `PUT ai/retention` sets the team's trace TTL in days (1–365; default 30 when no policy exists) and requires the `ai-usage` update grant.
 
 ### Dataplanes (+ proxy certificates, telemetry, envoy config)
 
@@ -491,6 +500,8 @@ configured). The 60 s reconcile loop is the backstop; this is only a fast path.
 | GET | `/api/v1/teams/{team}/xds/status` |
 | GET | `/api/v1/teams/{team}/ops/trace` |
 
+`GET xds/nacks` returns `NackPage`: `items`, the `[since, until)` window-relative `window_total`, and an optional opaque `next_cursor`. It accepts inclusive `since`, exclusive `until`, `limit` (default 50, maximum 200), and `before` for the next older page. `GET xds/status` includes `withdrawn[]`, describing resources omitted from the current served snapshot or held on last-known-good bytes after a translation failure or NACK.
+
 ### Operational (root, public)
 
 | Method | Path |
@@ -502,7 +513,7 @@ configured). The 60 s reconcile loop is the backstop; this is only a fast path.
 
 ## OpenAPI: source of truth
 
-The **generated OpenAPI document is the source of truth** for per-field request and response schemas. The router and the document are built from the same `routes!` registration, so they cannot drift. Per-field detail is intentionally **not** hand-copied into this reference (it would drift).
+The **generated OpenAPI document is the source of truth** for per-field request and response schemas. Registered OpenAPI routes and their schemas are built from the same `routes!` declarations; the prose endpoint catalogue above is maintained separately and must be updated when routes are added. Per-field detail is intentionally **not** hand-copied into this reference (it would drift).
 
 Known exception: the public bootstrap endpoints are documented in the endpoint catalogue above and
 in [Bootstrap the first platform admin](../how-to/bootstrap-platform.md), but they are not included

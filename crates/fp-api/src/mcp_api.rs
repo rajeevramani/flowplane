@@ -4,6 +4,7 @@ use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::{body::Body, Json};
+use fp_core::mcp_declarations::{StaticToolDecl, STATIC_TOOL_DECLS};
 use fp_core::services::{deny_to_error, record_authz_denial};
 use fp_core::{check_resource_access, Decision, PrincipalCtx};
 use fp_domain::api_lifecycle::{ApiRouteBinding, ApiTool};
@@ -242,7 +243,7 @@ pub async fn status(
                 .collect(),
             session_ttl_seconds: SESSION_TTL.as_secs(),
             active_sessions,
-            static_tool_count: STATIC_TOOLS.len(),
+            static_tool_count: STATIC_TOOL_DECLS.len(),
             dynamic_enabled_tool_count,
             tools_list_changed: false,
             sse_enabled: false,
@@ -281,11 +282,76 @@ pub async fn connections(
     run.await.map(Json).map_err(|e| ApiError::new(e, rid))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ToolRisk {
-    Read,
-    Mutate,
-    Delete,
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct McpToolCatalogRowView {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
+    pub resource: String,
+    pub action: String,
+    pub risk: String,
+    /// "static" (cp_*/ops_* registry declaration) or "dynamic" (generated api_* tool).
+    pub kind: String,
+    pub enabled: bool,
+    /// Authorization AND every serving gate execution enforces for this caller on the path
+    /// team; a disabled dynamic tool is never executable regardless of grants.
+    pub executable_by_caller: bool,
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+pub struct ToolCatalogQuery {
+    /// Include disabled dynamic tools. Requires `mcp-tools:update` (the pair gating tool
+    /// enable/disable); fails closed with 403 without it — never a silent downgrade.
+    #[serde(default)]
+    pub include_disabled: bool,
+}
+
+/// The team's declared MCP tool catalog: every static registry entry plus dynamic `api_*`
+/// tools of currently published spec versions, each annotated with per-caller
+/// executability. A catalog row is a declaration, not MCP exposure.
+#[utoipa::path(get, path = "/api/v1/teams/{team}/mcp/tools",
+    tag = "McpTools",
+    params(("team" = String, Path, description = "Team name or UUID"), ToolCatalogQuery),
+    responses(
+        (status = 200, body = [McpToolCatalogRowView]),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    ))]
+pub async fn tool_catalog(
+    State(state): State<AppState>,
+    Path(team): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ToolCatalogQuery>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<Vec<McpToolCatalogRowView>>, ApiError> {
+    let run = async {
+        let team = resolve_team(&state, &ctx, &team).await?;
+        let rows = fp_core::services::mcp::tool_catalog(
+            &state.pool,
+            &ctx,
+            team,
+            query.include_disabled,
+            rid,
+        )
+        .await?;
+        Ok::<_, DomainError>(
+            rows.into_iter()
+                .map(|row| McpToolCatalogRowView {
+                    name: row.name,
+                    description: row.description,
+                    input_schema: row.input_schema,
+                    resource: row.resource.to_string(),
+                    action: row.action.to_string(),
+                    risk: row.risk.to_string(),
+                    kind: row.kind.as_str().to_string(),
+                    enabled: row.enabled,
+                    executable_by_caller: row.executable_by_caller,
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+    run.await.map(Json).map_err(|e| ApiError::new(e, rid))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -327,333 +393,46 @@ enum ToolExecutor {
     AiUsage,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct StaticTool {
-    name: &'static str,
-    description: &'static str,
-    resource: Resource,
-    action: Action,
-    risk: ToolRisk,
-    input_schema: fn() -> Value,
-    executor: ToolExecutor,
-}
-
-const STATIC_TOOLS: &[StaticTool] = &[
-    StaticTool {
-        name: "cp_clusters_list",
-        description: "List upstream clusters for one team.",
-        resource: Resource::Clusters,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_list,
-        executor: ToolExecutor::ClusterList,
-    },
-    StaticTool {
-        name: "cp_clusters_get",
-        description: "Read one upstream cluster by name.",
-        resource: Resource::Clusters,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_named,
-        executor: ToolExecutor::ClusterGet,
-    },
-    StaticTool {
-        name: "cp_clusters_create",
-        description: "Create an upstream cluster.",
-        resource: Resource::Clusters,
-        action: Action::Create,
-        risk: ToolRisk::Mutate,
-        input_schema: schema_named_spec,
-        executor: ToolExecutor::ClusterCreate,
-    },
-    StaticTool {
-        name: "cp_clusters_update",
-        description: "Update an upstream cluster using an expected revision.",
-        resource: Resource::Clusters,
-        action: Action::Update,
-        risk: ToolRisk::Mutate,
-        input_schema: schema_named_spec_revision,
-        executor: ToolExecutor::ClusterUpdate,
-    },
-    StaticTool {
-        name: "cp_clusters_delete",
-        description: "Delete an upstream cluster using an expected revision.",
-        resource: Resource::Clusters,
-        action: Action::Delete,
-        risk: ToolRisk::Delete,
-        input_schema: schema_named_revision,
-        executor: ToolExecutor::ClusterDelete,
-    },
-    StaticTool {
-        name: "cp_route_configs_list",
-        description: "List route configs for one team.",
-        resource: Resource::RouteConfigs,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_list,
-        executor: ToolExecutor::RouteConfigList,
-    },
-    StaticTool {
-        name: "cp_route_configs_get",
-        description: "Read one route config by name.",
-        resource: Resource::RouteConfigs,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_named,
-        executor: ToolExecutor::RouteConfigGet,
-    },
-    StaticTool {
-        name: "cp_route_configs_create",
-        description: "Create a route config.",
-        resource: Resource::RouteConfigs,
-        action: Action::Create,
-        risk: ToolRisk::Mutate,
-        input_schema: schema_named_spec,
-        executor: ToolExecutor::RouteConfigCreate,
-    },
-    StaticTool {
-        name: "cp_route_configs_update",
-        description: "Update a route config using an expected revision.",
-        resource: Resource::RouteConfigs,
-        action: Action::Update,
-        risk: ToolRisk::Mutate,
-        input_schema: schema_named_spec_revision,
-        executor: ToolExecutor::RouteConfigUpdate,
-    },
-    StaticTool {
-        name: "cp_route_configs_delete",
-        description: "Delete a route config using an expected revision.",
-        resource: Resource::RouteConfigs,
-        action: Action::Delete,
-        risk: ToolRisk::Delete,
-        input_schema: schema_named_revision,
-        executor: ToolExecutor::RouteConfigDelete,
-    },
-    StaticTool {
-        name: "cp_listeners_list",
-        description: "List listeners for one team.",
-        resource: Resource::Listeners,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_list,
-        executor: ToolExecutor::ListenerList,
-    },
-    StaticTool {
-        name: "cp_listeners_get",
-        description: "Read one listener by name.",
-        resource: Resource::Listeners,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_named,
-        executor: ToolExecutor::ListenerGet,
-    },
-    StaticTool {
-        name: "cp_listeners_create",
-        description: "Create a listener.",
-        resource: Resource::Listeners,
-        action: Action::Create,
-        risk: ToolRisk::Mutate,
-        input_schema: schema_named_spec,
-        executor: ToolExecutor::ListenerCreate,
-    },
-    StaticTool {
-        name: "cp_listeners_update",
-        description: "Update a listener using an expected revision.",
-        resource: Resource::Listeners,
-        action: Action::Update,
-        risk: ToolRisk::Mutate,
-        input_schema: schema_named_spec_revision,
-        executor: ToolExecutor::ListenerUpdate,
-    },
-    StaticTool {
-        name: "cp_listeners_delete",
-        description: "Delete a listener using an expected revision.",
-        resource: Resource::Listeners,
-        action: Action::Delete,
-        risk: ToolRisk::Delete,
-        input_schema: schema_named_revision,
-        executor: ToolExecutor::ListenerDelete,
-    },
-    StaticTool {
-        name: "cp_apis_list",
-        description: "List API definitions for one team.",
-        resource: Resource::ApiDefinitions,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_list,
-        executor: ToolExecutor::ApiList,
-    },
-    StaticTool {
-        name: "cp_apis_get",
-        description: "Read one API definition by name.",
-        resource: Resource::ApiDefinitions,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_named,
-        executor: ToolExecutor::ApiGet,
-    },
-    StaticTool {
-        name: "cp_apis_status",
-        description: "Read publish/spec/tool status for one API definition.",
-        resource: Resource::ApiDefinitions,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_named,
-        executor: ToolExecutor::ApiStatus,
-    },
-    StaticTool {
-        name: "cp_learning_sessions_list",
-        description: "List learning capture sessions for one team.",
-        resource: Resource::LearningSessions,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_list,
-        executor: ToolExecutor::LearningList,
-    },
-    StaticTool {
-        name: "cp_learning_sessions_get",
-        description: "Read one learning capture session by name or UUID.",
-        resource: Resource::LearningSessions,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_named,
-        executor: ToolExecutor::LearningGet,
-    },
-    StaticTool {
-        name: "cp_discovery_sessions_list",
-        description: "List passive discovery sessions for one team.",
-        resource: Resource::LearningSessions,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_list,
-        executor: ToolExecutor::DiscoveryList,
-    },
-    StaticTool {
-        name: "cp_discovery_sessions_get",
-        description: "Read one passive discovery session by name or UUID.",
-        resource: Resource::LearningSessions,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_named,
-        executor: ToolExecutor::DiscoveryGet,
-    },
-    StaticTool {
-        name: "ops_xds_status",
-        description: "Summarize xDS dataplane and recent NACK status for one team.",
-        resource: Resource::Stats,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_team,
-        executor: ToolExecutor::OpsXdsStatus,
-    },
-    StaticTool {
-        name: "ops_xds_nacks",
-        description: "List recent xDS NACK events for one team.",
-        resource: Resource::Stats,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_list,
-        executor: ToolExecutor::OpsXdsNacks,
-    },
-    StaticTool {
-        name: "ops_xds_trace",
-        description: "Trace audit/outbox rows by request id, trace id, or path fragment.",
-        resource: Resource::Stats,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_trace,
-        executor: ToolExecutor::OpsXdsTrace,
-    },
-    StaticTool {
-        name: "ops_stats_overview",
-        description: "Summarize dataplane request/error telemetry for one team.",
-        resource: Resource::Stats,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_team,
-        executor: ToolExecutor::OpsStatsOverview,
-    },
-    StaticTool {
-        name: "cp_secrets_list",
-        description: "List secret metadata for one team. Secret values are never returned.",
-        resource: Resource::Secrets,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_list,
-        executor: ToolExecutor::SecretsList,
-    },
-    StaticTool {
-        name: "cp_secrets_get",
-        description: "Read one secret metadata record. Secret values are never returned.",
-        resource: Resource::Secrets,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_named,
-        executor: ToolExecutor::SecretsGet,
-    },
-    StaticTool {
-        name: "cp_ai_providers_list",
-        description: "List AI providers for one team.",
-        resource: Resource::AiProviders,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_list,
-        executor: ToolExecutor::AiProvidersList,
-    },
-    StaticTool {
-        name: "cp_ai_providers_get",
-        description: "Read one AI provider by name.",
-        resource: Resource::AiProviders,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_named,
-        executor: ToolExecutor::AiProvidersGet,
-    },
-    StaticTool {
-        name: "cp_ai_routes_list",
-        description: "List AI routes for one team.",
-        resource: Resource::AiRoutes,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_list,
-        executor: ToolExecutor::AiRoutesList,
-    },
-    StaticTool {
-        name: "cp_ai_routes_get",
-        description: "Read one AI route by name.",
-        resource: Resource::AiRoutes,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_named,
-        executor: ToolExecutor::AiRoutesGet,
-    },
-    StaticTool {
-        name: "cp_ai_budgets_list",
-        description: "List AI budgets for one team.",
-        resource: Resource::AiBudgets,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_list,
-        executor: ToolExecutor::AiBudgetsList,
-    },
-    StaticTool {
-        name: "cp_ai_budgets_get",
-        description: "Read one AI budget by name.",
-        resource: Resource::AiBudgets,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_named,
-        executor: ToolExecutor::AiBudgetsGet,
-    },
-    StaticTool {
-        name: "cp_ai_usage",
-        description: "Read AI usage summary rows for one team.",
-        resource: Resource::AiUsage,
-        action: Action::Read,
-        risk: ToolRisk::Read,
-        input_schema: schema_list,
-        executor: ToolExecutor::AiUsage,
-    },
+/// Executor bindings for the shared static-tool declarations (fp-core
+/// `mcp_declarations::STATIC_TOOL_DECLS`), keyed by declaration name. Dispatch-only:
+/// authz/risk/schema metadata lives on the declaration. The bijection test below pins
+/// declaration<->binding completeness in both directions.
+const EXECUTOR_BINDINGS: &[(&str, ToolExecutor)] = &[
+    ("cp_clusters_list", ToolExecutor::ClusterList),
+    ("cp_clusters_get", ToolExecutor::ClusterGet),
+    ("cp_clusters_create", ToolExecutor::ClusterCreate),
+    ("cp_clusters_update", ToolExecutor::ClusterUpdate),
+    ("cp_clusters_delete", ToolExecutor::ClusterDelete),
+    ("cp_route_configs_list", ToolExecutor::RouteConfigList),
+    ("cp_route_configs_get", ToolExecutor::RouteConfigGet),
+    ("cp_route_configs_create", ToolExecutor::RouteConfigCreate),
+    ("cp_route_configs_update", ToolExecutor::RouteConfigUpdate),
+    ("cp_route_configs_delete", ToolExecutor::RouteConfigDelete),
+    ("cp_listeners_list", ToolExecutor::ListenerList),
+    ("cp_listeners_get", ToolExecutor::ListenerGet),
+    ("cp_listeners_create", ToolExecutor::ListenerCreate),
+    ("cp_listeners_update", ToolExecutor::ListenerUpdate),
+    ("cp_listeners_delete", ToolExecutor::ListenerDelete),
+    ("cp_apis_list", ToolExecutor::ApiList),
+    ("cp_apis_get", ToolExecutor::ApiGet),
+    ("cp_apis_status", ToolExecutor::ApiStatus),
+    ("cp_learning_sessions_list", ToolExecutor::LearningList),
+    ("cp_learning_sessions_get", ToolExecutor::LearningGet),
+    ("cp_discovery_sessions_list", ToolExecutor::DiscoveryList),
+    ("cp_discovery_sessions_get", ToolExecutor::DiscoveryGet),
+    ("ops_xds_status", ToolExecutor::OpsXdsStatus),
+    ("ops_xds_nacks", ToolExecutor::OpsXdsNacks),
+    ("ops_xds_trace", ToolExecutor::OpsXdsTrace),
+    ("ops_stats_overview", ToolExecutor::OpsStatsOverview),
+    ("cp_secrets_list", ToolExecutor::SecretsList),
+    ("cp_secrets_get", ToolExecutor::SecretsGet),
+    ("cp_ai_providers_list", ToolExecutor::AiProvidersList),
+    ("cp_ai_providers_get", ToolExecutor::AiProvidersGet),
+    ("cp_ai_routes_list", ToolExecutor::AiRoutesList),
+    ("cp_ai_routes_get", ToolExecutor::AiRoutesGet),
+    ("cp_ai_budgets_list", ToolExecutor::AiBudgetsList),
+    ("cp_ai_budgets_get", ToolExecutor::AiBudgetsGet),
+    ("cp_ai_usage", ToolExecutor::AiUsage),
 ];
 
 fn initialize(
@@ -718,7 +497,7 @@ async fn tools_list(
         Ok(team) => team,
         Err(e) => return rpc_error(id, -32600, e.message, rid, "validation").into_response(),
     };
-    let tools = STATIC_TOOLS
+    let tools = STATIC_TOOL_DECLS
         .iter()
         .filter(|tool| tool_allowed(ctx, tool, team))
         .map(|tool| {
@@ -966,12 +745,17 @@ async fn record_dynamic_tool_audit(
 async fn execute_static_tool(
     state: &AppState,
     ctx: &PrincipalCtx,
-    tool: &StaticTool,
+    tool: &StaticToolDecl,
     team: TeamRef,
     arguments: Value,
     rid: RequestId,
 ) -> DomainResult<Value> {
-    match tool.executor {
+    // Fail closed if a declaration has no dispatch binding; the bijection test makes this
+    // unreachable, but a missing binding must never fall through to another tool.
+    let executor = executor_binding(tool.name).ok_or_else(|| {
+        DomainError::internal(format!("no executor binding for tool {}", tool.name))
+    })?;
+    match executor {
         ToolExecutor::ClusterList => {
             let (items, total) = fp_core::services::clusters::list_clusters(
                 &state.pool,
@@ -1291,15 +1075,30 @@ async fn execute_static_tool(
             }))
         }
         ToolExecutor::OpsXdsNacks => {
-            let nacks = fp_core::services::xds_status::list_nack_events(
-                &state.pool,
-                ctx,
-                team,
-                integer_arg(&arguments, "limit").unwrap_or(50),
-                rid,
-            )
-            .await?;
-            let items = nacks
+            // Same window contract as REST (fpv2-55x.3 parity): half-open [since, until), cursor
+            // paging, window-relative total. Cursor codec is shared with xds_api so the emitted
+            // `next_cursor` is byte-identical between REST and MCP.
+            let query = fp_core::services::xds_status::NackQuery {
+                since: optional_timestamp_arg(&arguments, "since")?,
+                until: optional_timestamp_arg(&arguments, "until")?,
+                // A present `before` must be a string cursor; a non-string value is a client
+                // error, not a silent "no cursor" (parity with the stricter since/until + REST).
+                before: match arguments.get("before") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(raw)) => Some(crate::xds_api::decode_nack_cursor(raw)?),
+                    Some(_) => {
+                        return Err(DomainError::validation(
+                            "before must be a string cursor (<created_at>,<id>)",
+                        ))
+                    }
+                },
+                limit: integer_arg(&arguments, "limit"),
+            };
+            let window =
+                fp_core::services::xds_status::list_nack_window(&state.pool, ctx, team, query, rid)
+                    .await?;
+            let items = window
+                .events
                 .into_iter()
                 .map(|nack| {
                     json!({
@@ -1313,7 +1112,13 @@ async fn execute_static_tool(
                     })
                 })
                 .collect::<Vec<_>>();
-            Ok(json!({ "items": items }))
+            Ok(json!({
+                "items": items,
+                "window_total": window.window_total,
+                "next_cursor": window
+                    .next_cursor
+                    .map(|(created_at, id)| crate::xds_api::encode_nack_cursor(created_at, id)),
+            }))
         }
         ToolExecutor::OpsXdsTrace => {
             let query = fp_core::services::xds_status::TraceQuery {
@@ -1463,20 +1268,22 @@ async fn execute_static_tool(
             serde_json::to_value(item).map_err(json_err)
         }
         ToolExecutor::AiUsage => {
-            let items = fp_core::services::ai::usage_summary(
+            let (items, total) = fp_core::services::ai::usage_summary(
                 &state.pool,
                 ctx,
                 team,
                 fp_storage::repos::ai::AiUsageQuery {
                     route_config_id: None,
                     provider_id: None,
+                    since: optional_timestamp_arg(&arguments, "since")?,
+                    until: optional_timestamp_arg(&arguments, "until")?,
                     limit: integer_arg(&arguments, "limit").unwrap_or(50),
                     offset: integer_arg(&arguments, "offset").unwrap_or(0),
                 },
                 rid,
             )
             .await?;
-            serde_json::to_value(items).map_err(json_err)
+            Ok(json!({ "items": items, "total": total }))
         }
     }
 }
@@ -1666,13 +1473,16 @@ fn visible_sessions(ctx: &PrincipalCtx, team: TeamRef) -> Vec<McpConnectionView>
 
 fn dynamic_tool_view(tool: ApiTool) -> Value {
     json!({
-        "name": format!("api_{}", tool.name),
-        "description": format!("{} {}", tool.method.as_str(), tool.path),
-        "inputSchema": dynamic_input_schema(&tool.input_schema),
+        "name": fp_core::mcp_declarations::dynamic_tool_name(&tool.name),
+        "description": fp_core::mcp_declarations::dynamic_tool_description(
+            tool.method.as_str(),
+            &tool.path,
+        ),
+        "inputSchema": fp_core::mcp_declarations::dynamic_input_schema(&tool.input_schema),
         "annotations": {
             "resource": Resource::McpTools.as_str(),
             "action": Action::Execute.as_str(),
-            "risk": "mutate",
+            "risk": fp_core::mcp_declarations::DYNAMIC_TOOL_RISK,
             "apiToolId": tool.id.as_uuid(),
             "apiDefinitionId": tool.api_definition_id.as_uuid(),
             "specVersionId": tool.spec_version_id.as_uuid(),
@@ -1681,39 +1491,6 @@ fn dynamic_tool_view(tool: ApiTool) -> Value {
             "path": tool.path,
         }
     })
-}
-
-fn dynamic_input_schema(schema: &Value) -> Value {
-    let mut schema = schema.as_object().cloned().unwrap_or_default();
-    schema.insert("type".into(), json!("object"));
-    let mut properties = schema
-        .remove("properties")
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default();
-    properties.insert(
-        "team".into(),
-        json!({ "type": "string", "description": "Team name or UUID" }),
-    );
-    properties
-        .entry("pathParams")
-        .or_insert_with(|| json!({ "type": "object" }));
-    properties
-        .entry("query")
-        .or_insert_with(|| json!({ "type": "object" }));
-    properties
-        .entry("headers")
-        .or_insert_with(|| json!({ "type": "object" }));
-    properties.entry("body").or_insert_with(|| json!({}));
-    schema.insert("properties".into(), Value::Object(properties));
-    let mut required = schema
-        .remove("required")
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default();
-    if !required.iter().any(|v| v.as_str() == Some("team")) {
-        required.push(json!("team"));
-    }
-    schema.insert("required".into(), Value::Array(required));
-    Value::Object(schema)
 }
 
 fn dynamic_tool_descriptor(
@@ -1844,11 +1621,18 @@ fn encode_path_segment(value: &str) -> String {
     out
 }
 
-fn static_tool(name: &str) -> Option<&'static StaticTool> {
-    STATIC_TOOLS.iter().find(|tool| tool.name == name)
+fn static_tool(name: &str) -> Option<&'static StaticToolDecl> {
+    STATIC_TOOL_DECLS.iter().find(|tool| tool.name == name)
 }
 
-fn tool_allowed(ctx: &PrincipalCtx, tool: &StaticTool, team: TeamRef) -> bool {
+fn executor_binding(name: &str) -> Option<ToolExecutor> {
+    EXECUTOR_BINDINGS
+        .iter()
+        .find(|(bound_name, _)| *bound_name == name)
+        .map(|(_, executor)| *executor)
+}
+
+fn tool_allowed(ctx: &PrincipalCtx, tool: &StaticToolDecl, team: TeamRef) -> bool {
     matches!(
         check_resource_access(ctx, tool.resource, tool.action, Some(team)),
         Decision::Allow(_)
@@ -1945,16 +1729,6 @@ fn origin_matches(allowed: &str, origin: &str) -> bool {
     scheme_host(allowed) == scheme_host(origin)
 }
 
-impl ToolRisk {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Read => "read",
-            Self::Mutate => "mutate",
-            Self::Delete => "delete",
-        }
-    }
-}
-
 fn required_value(args: &Value, key: &'static str) -> DomainResult<Value> {
     args.get(key)
         .cloned()
@@ -1969,6 +1743,25 @@ fn string_arg<'a>(args: &'a Value, key: &'static str) -> DomainResult<&'a str> {
 
 fn integer_arg(args: &Value, key: &'static str) -> Option<i64> {
     args.get(key).and_then(Value::as_i64)
+}
+
+/// Optional RFC 3339 timestamp argument; any PRESENT value that is not an RFC 3339
+/// string — wrong JSON type included — is a validation error, never silently ignored.
+fn optional_timestamp_arg(
+    args: &Value,
+    key: &'static str,
+) -> DomainResult<Option<chrono::DateTime<chrono::Utc>>> {
+    match args.get(key) {
+        None => Ok(None),
+        Some(value) => {
+            let raw = value.as_str().ok_or_else(|| {
+                DomainError::validation(format!("{key} must be an RFC 3339 string"))
+            })?;
+            chrono::DateTime::parse_from_rfc3339(raw)
+                .map(|dt| Some(dt.with_timezone(&chrono::Utc)))
+                .map_err(|e| DomainError::validation(format!("{key} is not RFC 3339: {e}")))
+        }
+    }
 }
 
 fn required_revision(args: &Value) -> DomainResult<i64> {
@@ -2020,97 +1813,6 @@ fn tool_result_error(id: Option<Value>, error: DomainError) -> Json<JsonRpcRespo
             }
         }),
     )
-}
-
-fn schema_team() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "team": { "type": "string", "description": "Team name or UUID" }
-        },
-        "required": ["team"],
-        "additionalProperties": false
-    })
-}
-
-fn schema_list() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "team": { "type": "string", "description": "Team name or UUID" },
-            "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 },
-            "offset": { "type": "integer", "minimum": 0, "default": 0 }
-        },
-        "required": ["team"],
-        "additionalProperties": false
-    })
-}
-
-fn schema_named() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "team": { "type": "string", "description": "Team name or UUID" },
-            "name": { "type": "string" }
-        },
-        "required": ["team", "name"],
-        "additionalProperties": false
-    })
-}
-
-fn schema_named_spec() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "team": { "type": "string", "description": "Team name or UUID" },
-            "name": { "type": "string" },
-            "spec": { "type": "object" }
-        },
-        "required": ["team", "name", "spec"],
-        "additionalProperties": false
-    })
-}
-
-fn schema_named_revision() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "team": { "type": "string", "description": "Team name or UUID" },
-            "name": { "type": "string" },
-            "revision": { "type": "integer" }
-        },
-        "required": ["team", "name", "revision"],
-        "additionalProperties": false
-    })
-}
-
-fn schema_named_spec_revision() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "team": { "type": "string", "description": "Team name or UUID" },
-            "name": { "type": "string" },
-            "spec": { "type": "object" },
-            "revision": { "type": "integer" }
-        },
-        "required": ["team", "name", "spec", "revision"],
-        "additionalProperties": false
-    })
-}
-
-fn schema_trace() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "team": { "type": "string", "description": "Team name or UUID" },
-            "requestId": { "type": "string" },
-            "traceId": { "type": "string" },
-            "path": { "type": "string" },
-            "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
-        },
-        "required": ["team"],
-        "additionalProperties": false
-    })
 }
 
 fn principal_key(ctx: &PrincipalCtx) -> String {
@@ -2818,7 +2520,7 @@ mod tests {
 
     #[test]
     fn dynamic_input_schema_keeps_spec_required_fields() {
-        let schema = dynamic_input_schema(&json!({
+        let schema = fp_core::mcp_declarations::dynamic_input_schema(&json!({
             "properties": { "pathParams": { "type": "object" } },
             "required": ["pathParams"]
         }));
@@ -2846,6 +2548,7 @@ mod tests {
             validator: None,
             write_throttle: std::sync::Arc::new(crate::throttle::WriteThrottle::new(1000)),
             xds_readiness: None,
+            xds_degraded: None,
             discovery_forwarding_policy: Default::default(),
             egress_advisory: Default::default(),
             rls_repush: None,
@@ -2886,22 +2589,36 @@ mod tests {
     }
 
     #[test]
-    fn static_registry_has_unique_names_and_matching_executor_authz() {
-        let mut names = HashSet::new();
-        for tool in STATIC_TOOLS {
-            assert!(names.insert(tool.name), "duplicate tool {}", tool.name);
-            assert!(!tool.description.is_empty(), "missing description");
-            assert!(matches!(
-                (tool.risk, tool.action),
-                (ToolRisk::Read, Action::Read)
-                    | (ToolRisk::Mutate, Action::Create | Action::Update)
-                    | (ToolRisk::Delete, Action::Delete)
-            ));
+    fn declarations_and_executor_bindings_are_a_bijection_with_matching_authz() {
+        // Completeness/uniqueness both directions: a declaration without a binding would
+        // be listed/catalogued but undispatchable; a binding without a declaration would
+        // be dispatchable but invisible. Either is contract drift (invariant 13).
+        let mut bound_names = HashSet::new();
+        for (name, _) in EXECUTOR_BINDINGS {
+            assert!(
+                bound_names.insert(*name),
+                "duplicate executor binding {name}"
+            );
+        }
+        assert_eq!(
+            STATIC_TOOL_DECLS.len(),
+            EXECUTOR_BINDINGS.len(),
+            "declaration/binding count mismatch"
+        );
+        for tool in STATIC_TOOL_DECLS {
+            let executor = executor_binding(tool.name)
+                .unwrap_or_else(|| panic!("{} has no executor binding", tool.name));
             assert_eq!(
                 (tool.resource, tool.action),
-                executor_authz(tool.executor),
+                executor_authz(executor),
                 "{} authz metadata drifted from executor",
                 tool.name
+            );
+        }
+        for (name, _) in EXECUTOR_BINDINGS {
+            assert!(
+                static_tool(name).is_some(),
+                "executor binding {name} names no declaration"
             );
         }
     }

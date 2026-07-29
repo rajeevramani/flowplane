@@ -3,9 +3,9 @@
 
 use crate::error::{ApiError, ErrorBody};
 use crate::extract::ApiJson;
-use crate::resources::resolve_team;
+use crate::resources::{resolve_team, ListQuery, Page};
 use crate::state::AppState;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use fp_core::services::teams as svc;
@@ -14,7 +14,7 @@ use fp_domain::authz::{Action, Resource};
 use fp_domain::{Agent, AgentId, AgentKind, DomainError, RequestId, UserId};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 #[derive(Serialize, ToSchema)]
 pub struct TeamView {
@@ -103,6 +103,27 @@ fn agent_view(agent: Agent) -> AgentView {
         name: agent.name,
         kind: agent.kind.as_str().into(),
         status: agent.status.as_str().into(),
+    }
+}
+
+/// One row of an agent's grant listing. Carries the grant `id` (the delete route keys off it on
+/// the sibling team-grants surface) and the resolved `team_name`. No credential material.
+#[derive(Serialize, ToSchema)]
+pub struct AgentGrantView {
+    pub id: uuid::Uuid,
+    pub team_id: uuid::Uuid,
+    pub team_name: String,
+    pub resource: String,
+    pub action: String,
+}
+
+fn agent_grant_view(row: fp_storage::repos::identity::AgentGrantRow) -> AgentGrantView {
+    AgentGrantView {
+        id: row.id,
+        team_id: row.team_id,
+        team_name: row.team_name,
+        resource: row.resource,
+        action: row.action,
     }
 }
 
@@ -323,17 +344,56 @@ pub async fn remove_grant(
         .map_err(|e| ApiError::new(e, rid))
 }
 
+fn default_agent_list_limit() -> i64 {
+    50
+}
+
+/// Query for the agent list: an optional `?team=` filter (team name or UUID) plus the
+/// uniform pagination controls.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct AgentListQuery {
+    /// Narrow to agents holding at least one grant on this team (name or UUID).
+    pub team: Option<String>,
+    /// Max items (default 50, cap 500).
+    #[serde(default = "default_agent_list_limit")]
+    pub limit: i64,
+    /// Items to skip.
+    #[serde(default)]
+    pub offset: i64,
+}
+
 #[utoipa::path(get, path = "/api/v1/agents", tag = "Agents",
-    responses((status = 200, body = [AgentView]), (status = 403, body = ErrorBody)))]
+    params(AgentListQuery),
+    responses((status = 200, body = Page<AgentView>), (status = 400, body = ErrorBody),
+              (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn list_agents(
     State(state): State<AppState>,
+    Query(query): Query<AgentListQuery>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
-) -> Result<Json<Vec<AgentView>>, ApiError> {
-    let agents = fp_core::services::agents::list_agents(&state.pool, &ctx)
+) -> Result<Json<Page<AgentView>>, ApiError> {
+    let run = async {
+        let team_filter = match &query.team {
+            Some(raw) => Some(resolve_team(&state, &ctx, raw).await?),
+            None => None,
+        };
+        fp_core::services::agents::list_agents(
+            &state.pool,
+            &ctx,
+            team_filter,
+            query.limit,
+            query.offset,
+            rid,
+        )
         .await
-        .map_err(|e| ApiError::new(e, rid))?;
-    Ok(Json(agents.into_iter().map(agent_view).collect()))
+    };
+    let (agents, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok(Json(Page {
+        items: agents.into_iter().map(agent_view).collect(),
+        total,
+        limit: query.limit.clamp(1, 500),
+        offset: query.offset.max(0),
+    }))
 }
 
 #[utoipa::path(post, path = "/api/v1/agents", tag = "Agents",
@@ -372,11 +432,43 @@ pub async fn get_agent(
 ) -> Result<Json<AgentView>, ApiError> {
     let run = async {
         let agent_id = parse_agent_id(&agent_id)?;
-        fp_core::services::agents::get_agent(&state.pool, &ctx, agent_id).await
+        fp_core::services::agents::get_agent(&state.pool, &ctx, agent_id, rid).await
     };
     run.await
         .map(|agent| Json(agent_view(agent)))
         .map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(get, path = "/api/v1/agents/{agent_id}/grants", tag = "Agents",
+    params(("agent_id" = uuid::Uuid, Path, description = "Agent id"), ListQuery),
+    responses((status = 200, body = Page<AgentGrantView>), (status = 400, body = ErrorBody),
+              (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+pub async fn list_agent_grants(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(query): Query<ListQuery>,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<Json<Page<AgentGrantView>>, ApiError> {
+    let run = async {
+        let agent_id = parse_agent_id(&agent_id)?;
+        fp_core::services::agents::list_agent_grants(
+            &state.pool,
+            &ctx,
+            agent_id,
+            query.limit,
+            query.offset,
+            rid,
+        )
+        .await
+    };
+    let (items, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
+    Ok(Json(Page {
+        items: items.into_iter().map(agent_grant_view).collect(),
+        total,
+        limit: query.limit.clamp(1, 500),
+        offset: query.offset.max(0),
+    }))
 }
 
 #[utoipa::path(post, path = "/api/v1/agents/{agent_id}/rotate-token", tag = "Agents",

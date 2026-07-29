@@ -73,6 +73,7 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             identity_api::create_agent
         ))
         .routes(routes!(identity_api::get_agent))
+        .routes(routes!(identity_api::list_agent_grants))
         .routes(routes!(identity_api::rotate_agent_token))
         .routes(routes!(identity_api::disable_agent))
         .routes(routes!(
@@ -136,8 +137,14 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             api_lifecycle_api::delete_api
         ))
         .routes(routes!(api_lifecycle_api::api_status))
+        .routes(routes!(api_lifecycle_api::list_spec_versions))
+        .routes(routes!(api_lifecycle_api::list_spec_review_events))
+        .routes(routes!(api_lifecycle_api::get_spec_version_content))
+        .routes(routes!(api_lifecycle_api::list_route_bindings))
+        .routes(routes!(api_lifecycle_api::list_api_tools))
         .routes(routes!(crate::mcp_api::status))
         .routes(routes!(crate::mcp_api::connections))
+        .routes(routes!(crate::mcp_api::tool_catalog))
         .routes(routes!(api_lifecycle_api::update_mcp_tool))
         .routes(routes!(api_lifecycle_api::reject_spec_version))
         .routes(routes!(api_lifecycle_api::publish_spec_version))

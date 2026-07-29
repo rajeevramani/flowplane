@@ -5,6 +5,7 @@ pub mod authz;
 pub mod config;
 #[cfg(feature = "dev-oidc")]
 pub mod dev;
+pub mod mcp_declarations;
 pub mod oidc;
 pub mod services;
 

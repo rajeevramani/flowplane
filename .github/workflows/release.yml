@@ -6,9 +6,10 @@ name: Release
 # `ubuntu-24.04-arm` — then the per-arch digests are joined into one manifest list with
 # `docker buildx imagetools create`. No QEMU, no self-hosted runner (DECISIONS.md D-025).
 #
-# The eval image is NEVER tagged `:latest` (D-022). The first public push is a HUMAN-GATE:
-# the build/manifest jobs run in the `release` GitHub Environment, so a human reviewer (configured
-# in repo Settings → Environments → release) must approve before anything reaches GHCR.
+# The eval image is NEVER tagged `:latest` (D-022). Native candidate images are built once as OCI
+# archives, identified by their manifest digest plus transport SHA-256, and smoke-tested after
+# artifact transport. The sole HUMAN-GATE is the `publish` job in the `release` GitHub Environment.
+# Only after approval are those exact OCI manifests copied by digest to GHCR without conversion.
 #
 # Both run paths build from the immutable `v<version>` tag commit:
 #   - tag push  (`v1.2.3`)            → version from the ref
@@ -39,6 +40,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
       image: ${{ steps.v.outputs.image }}
+      revision: ${{ steps.tag.outputs.revision }}
     steps:
       - name: Resolve and validate version
         id: v
@@ -68,13 +70,24 @@ jobs:
           ref: refs/tags/v${{ steps.v.outputs.version }}
           fetch-depth: 0
 
-  build:
+      - name: Verify tag and Cargo workspace versions agree
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          manifest_version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          [ "$manifest_version" = "$VERSION" ] || {
+            echo "::error::tag version ${VERSION} != Cargo workspace version ${manifest_version}"; exit 1;
+          }
+
+      - name: Record immutable tag revision
+        id: tag
+        run: echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build-candidate:
     needs: resolve-version
-    # HUMAN-GATE: first public artifact push. Requires an approver on the `release` environment.
-    environment: release
     permissions:
       contents: read
-      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -90,66 +103,47 @@ jobs:
       - name: Checkout the tagged commit
         uses: actions/checkout@v4
         with:
-          ref: refs/tags/v${{ needs.resolve-version.outputs.version }}
+          ref: ${{ needs.resolve-version.outputs.revision }}
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # --- Pre-push gates (native, on the just-built single-arch image, loaded locally) ---
-
-      - name: Build eval image (load) for the image-only compose smoke
-        run: |
-          docker buildx build --platform ${{ matrix.platform }} \
-            -f Containerfile.eval -t flowplane:eval-smoke --load .
-
-      - name: Image-only evaluator smoke (no --build; uses the built eval image)
+      - name: Build immutable native candidates once
+        env:
+          IMAGE: ${{ needs.resolve-version.outputs.image }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+          REVISION: ${{ needs.resolve-version.outputs.revision }}
         run: |
           set -euo pipefail
-          export FLOWPLANE_EVAL_IMAGE=flowplane:eval-smoke
-          docker compose -f compose.eval.yml up -d --no-build
-          ok=
-          for _ in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:10000/ | grep -q "hello from the flowplane eval demo upstream"; then
-              ok=1; break
-            fi
-            sleep 2
+          mkdir -p "${{ runner.temp }}/candidate-images"
+          for kind in eval hardened; do
+            if [ "$kind" = eval ]; then file=Containerfile.eval; else file=Containerfile.release; fi
+            archive="${{ runner.temp }}/candidate-images/${kind}-${{ matrix.arch }}.oci.tar"
+            metadata="${{ runner.temp }}/candidate-images/${kind}-${{ matrix.arch }}.metadata.json"
+            docker buildx build --platform ${{ matrix.platform }} \
+              -f "$file" \
+              --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+              --label "org.opencontainers.image.version=${VERSION}" \
+              --label "org.opencontainers.image.revision=${REVISION}" \
+              --provenance=false \
+              --sbom=false \
+              --output "type=oci,dest=${archive},name=${IMAGE}" \
+              --metadata-file "$metadata" .
+
+            digest=$(jq -er '."containerimage.digest"' "$metadata")
+            printf '%s\n' "$digest" \
+              > "${{ runner.temp }}/candidate-images/${kind}-${{ matrix.arch }}.digest"
+            layout_digest=$(tar -xOf "$archive" index.json | jq -er '
+              if (.manifests | length) == 1 then .manifests[0].digest
+              else error("OCI candidate must contain exactly one manifest") end')
+            [ "$layout_digest" = "$digest" ] || {
+              echo "::error::${kind}/${{ matrix.arch }} OCI digest mismatch"; exit 1;
+            }
+            (
+              cd "${{ runner.temp }}/candidate-images"
+              sha256sum "${kind}-${{ matrix.arch }}.oci.tar" \
+                > "${kind}-${{ matrix.arch }}.oci.tar.sha256"
+            )
           done
-          docker compose -f compose.eval.yml logs --no-color > compose-smoke.log 2>&1 || true
-          docker compose -f compose.eval.yml down -v
-          [ -n "$ok" ] || { echo "::error::eval image smoke did not return the demo body"; exit 1; }
-
-      - name: Build hardened image (load) for the sanity gate
-        run: |
-          docker buildx build --platform ${{ matrix.platform }} \
-            -f Containerfile.release -t flowplane:hardened-smoke --load .
-
-      - name: Hardened image sanity (binary runs in the slim image)
-        run: |
-          docker run --rm --entrypoint /usr/local/bin/flowplane flowplane:hardened-smoke --help >/dev/null
-          docker run --rm --entrypoint /usr/local/bin/flowplane-agent flowplane:hardened-smoke --help >/dev/null
-          docker run --rm --entrypoint /usr/local/bin/fp-agent flowplane:hardened-smoke --help >/dev/null
-          set +e
-          # Since 3.0.0 (fpv2-9sf) flowplane-rls fails closed on plaintext binds: a
-          # loopback-plaintext boot requires the explicit dev-only acknowledgements, else it
-          # exits 1 instead of running. This liveness smoke uses the documented loopback dev
-          # path, so it must pass both acks (production binds use the TLS triads instead).
-          docker run --rm \
-            --entrypoint /usr/bin/timeout \
-            -e FLOWPLANE_RLS_GRPC_LISTEN=127.0.0.1:0 \
-            -e FLOWPLANE_RLS_ADMIN_LISTEN=127.0.0.1:0 \
-            -e FLOWPLANE_RLS_ALLOW_INSECURE_GRPC=yes-this-is-local-only \
-            -e FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN=yes-this-is-local-only \
-            flowplane:hardened-smoke \
-            3 /usr/local/bin/flowplane-rls
-          rls_status=$?
-          set -e
-          [ "$rls_status" -eq 124 ] || { echo "::error::flowplane-rls smoke exited with $rls_status"; exit 1; }
 
       - name: Build binary release artifact
         env:
@@ -181,52 +175,14 @@ jobs:
             fi
           ) > "${{ runner.temp }}/release-assets/SHA256SUMS-linux-${{ matrix.arch }}"
 
-      # --- Push each image by digest (cached layers from the load builds above) ---
-
-      - name: Push eval image by digest
-        id: eval
-        env:
-          IMAGE: ${{ needs.resolve-version.outputs.image }}
-          VERSION: ${{ needs.resolve-version.outputs.version }}
-        run: |
-          set -euo pipefail
-          docker buildx build --platform ${{ matrix.platform }} \
-            -f Containerfile.eval \
-            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
-            --label "org.opencontainers.image.version=${VERSION}" \
-            --label "org.opencontainers.image.revision=${{ github.sha }}" \
-            --output "type=image,name=${IMAGE},push-by-digest=true,name-canonical=true,push=true" \
-            --metadata-file eval-meta.json .
-          echo "digest=$(jq -r '."containerimage.digest"' eval-meta.json)" >> "$GITHUB_OUTPUT"
-
-      - name: Push hardened image by digest
-        id: hardened
-        env:
-          IMAGE: ${{ needs.resolve-version.outputs.image }}
-          VERSION: ${{ needs.resolve-version.outputs.version }}
-        run: |
-          set -euo pipefail
-          docker buildx build --platform ${{ matrix.platform }} \
-            -f Containerfile.release \
-            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
-            --label "org.opencontainers.image.version=${VERSION}" \
-            --label "org.opencontainers.image.revision=${{ github.sha }}" \
-            --output "type=image,name=${IMAGE},push-by-digest=true,name-canonical=true,push=true" \
-            --metadata-file hardened-meta.json .
-          echo "digest=$(jq -r '."containerimage.digest"' hardened-meta.json)" >> "$GITHUB_OUTPUT"
-
-      - name: Record per-arch digests
-        run: |
-          mkdir -p "${{ runner.temp }}/digests"
-          echo "${{ steps.eval.outputs.digest }}"     > "${{ runner.temp }}/digests/eval-${{ matrix.arch }}"
-          echo "${{ steps.hardened.outputs.digest }}" > "${{ runner.temp }}/digests/hardened-${{ matrix.arch }}"
-
-      - name: Upload digests
+      - name: Upload immutable image candidates
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.arch }}
-          path: ${{ runner.temp }}/digests/*
+          name: candidate-images-${{ matrix.arch }}
+          path: ${{ runner.temp }}/candidate-images/*
           if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
       - name: Upload binary release assets
         uses: actions/upload-artifact@v4
@@ -234,79 +190,296 @@ jobs:
           name: binary-assets-${{ matrix.arch }}
           path: ${{ runner.temp }}/release-assets/*
           if-no-files-found: error
+          retention-days: 7
 
-  manifest:
-    needs: [resolve-version, build]
-    environment: release
-    runs-on: ubuntu-latest
+  validate-candidate:
+    needs: [resolve-version, build-candidate]
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-version.outputs.revision }}
+
+      - name: Download immutable native candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-images-${{ matrix.arch }}
+          path: candidate
+
+      - name: Install OCI transport
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+
+      - name: Verify and import exact OCI candidates
+        run: |
+          set -euo pipefail
+          for kind in eval hardened; do
+            archive="candidate/${kind}-${{ matrix.arch }}.oci.tar"
+            (cd candidate && sha256sum -c "${kind}-${{ matrix.arch }}.oci.tar.sha256")
+            expected=$(cat "candidate/${kind}-${{ matrix.arch }}.digest")
+            actual="sha256:$(skopeo inspect --raw "oci-archive:${archive}" | sha256sum | cut -d' ' -f1)"
+            [ "$actual" = "$expected" ] || {
+              echo "::error::${kind}/${{ matrix.arch }} manifest ${actual} != ${expected}"; exit 1;
+            }
+            skopeo copy "oci-archive:${archive}" "docker-daemon:flowplane:${kind}-candidate"
+          done
+
+      - name: Exact-candidate evaluator smoke
+        run: |
+          set -euo pipefail
+          export FLOWPLANE_EVAL_IMAGE=flowplane:eval-candidate
+          docker compose -f compose.eval.yml up -d --no-build
+
+          ok=
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:10000/ | grep -q "hello from the flowplane eval demo upstream"; then
+              ok=1; break
+            fi
+            sleep 2
+          done
+          [ -n "$ok" ] || { echo "::error::eval image smoke did not return the demo body"; exit 1; }
+
+          ok=
+          for _ in $(seq 1 60); do
+            state=$(docker inspect -f '{{.State.Health.Status}}' \
+              "$(docker compose -f compose.eval.yml ps -q flowplane-dashboard)" \
+              2>/dev/null || echo starting)
+            if [ "$state" = "healthy" ]; then ok=1; break; fi
+            sleep 2
+          done
+          [ -n "$ok" ] || { echo "::error::dashboard container never became healthy"; exit 1; }
+
+          binding=$(docker compose -f compose.eval.yml port flowplane-dashboard 8081)
+          case "$binding" in
+            127.0.0.1:*) ;;
+            *) echo "::error::dashboard host binding is not loopback-only: $binding"; exit 1;;
+          esac
+
+          url=$(docker compose -f compose.eval.yml exec -T flowplane-dashboard \
+            cat /shared/dashboard-url | tr -d '\r\n')
+          case "$url" in
+            http://127.0.0.1:8081/*) ;;
+            *) echo "::error::unexpected dashboard url: $url"; exit 1;;
+          esac
+          curl -fsS "$url" | grep -q "Flowplane" \
+            || { echo "::error::dashboard overview page did not render"; exit 1; }
+          partial=$(curl -fsS "${url}partials/overview")
+          echo "$partial" | grep -q "dp-eval" \
+            || { echo "::error::overview partial does not list the dp-eval dataplane"; exit 1; }
+          echo "$partial" | grep -Eq "[1-9][0-9]* total" \
+            || { echo "::error::overview partial does not show a nonzero dataplane total"; exit 1; }
+
+          no_nonce=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8081/")
+          [ "$no_nonce" = "404" ] \
+            || { echo "::error::nonce-less request from the host was not rejected (got $no_nonce)"; exit 1; }
+          net=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' \
+            "$(docker compose -f compose.eval.yml ps -q flowplane-dashboard)")
+          neighbor=$(docker run --rm --network "$net" \
+            curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b \
+            -s -o /dev/null -w '%{http_code}' "http://flowplane-dashboard:8081/")
+          [ "$neighbor" = "404" ] \
+            || { echo "::error::nonce-less request from a neighbor container was not rejected (got $neighbor)"; exit 1; }
+
+      - name: Evaluator smoke logs + teardown (always)
+        if: always()
+        run: |
+          docker compose -f compose.eval.yml logs --no-color > compose-smoke.log 2>&1 || true
+          docker compose -f compose.eval.yml down -v
+          remaining=$(docker compose -f compose.eval.yml ps -q | wc -l)
+          [ "$remaining" -eq 0 ] \
+            || { echo "::error::teardown left $remaining container(s) running"; exit 1; }
+
+      - name: Exact-candidate hardened image sanity
+        run: |
+          docker run --rm --entrypoint /usr/local/bin/flowplane flowplane:hardened-candidate --help >/dev/null
+          docker run --rm --entrypoint /usr/local/bin/flowplane-agent flowplane:hardened-candidate --help >/dev/null
+          docker run --rm --entrypoint /usr/local/bin/fp-agent flowplane:hardened-candidate --help >/dev/null
+          set +e
+          docker run --rm \
+            --entrypoint /usr/bin/timeout \
+            -e FLOWPLANE_RLS_GRPC_LISTEN=127.0.0.1:0 \
+            -e FLOWPLANE_RLS_ADMIN_LISTEN=127.0.0.1:0 \
+            -e FLOWPLANE_RLS_ALLOW_INSECURE_GRPC=yes-this-is-local-only \
+            -e FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN=yes-this-is-local-only \
+            flowplane:hardened-candidate \
+            3 /usr/local/bin/flowplane-rls
+          rls_status=$?
+          set -e
+          [ "$rls_status" -eq 124 ] || { echo "::error::flowplane-rls smoke exited with $rls_status"; exit 1; }
+
+      - name: Record validated candidate identity
+        run: |
+          mkdir -p validation
+          cp candidate/*-${{ matrix.arch }}.digest validation/
+          cp candidate/*-${{ matrix.arch }}.oci.tar.sha256 validation/
+          printf '%s\n' '${{ needs.resolve-version.outputs.revision }}' \
+            > "validation/tag-revision-${{ matrix.arch }}"
+
+      - name: Upload validation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-validation-${{ matrix.arch }}
+          path: validation/*
+          if-no-files-found: error
+          retention-days: 90
+
+  publish:
+    needs: [resolve-version, build-candidate, validate-candidate]
+    # Sole HUMAN-GATE. Candidates above are built and validated without public registry writes.
+    environment: release
+    concurrency:
+      group: release-${{ needs.resolve-version.outputs.version }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
       packages: write
     steps:
       - name: Checkout the tagged commit
         uses: actions/checkout@v4
         with:
-          ref: refs/tags/v${{ needs.resolve-version.outputs.version }}
+          ref: ${{ needs.resolve-version.outputs.revision }}
+          fetch-depth: 0
+
+      - name: Reverify immutable release-tag provenance
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+          REVISION: ${{ needs.resolve-version.outputs.revision }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/v${VERSION}:refs/tags/v${VERSION}"
+          current=$(git rev-list -n 1 "refs/tags/v${VERSION}")
+          [ "$current" = "$REVISION" ] || {
+            echo "::error::v${VERSION} moved from ${REVISION} to ${current}"; exit 1;
+          }
+
       - uses: docker/setup-buildx-action@v3
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Download per-arch digests
+
+      - name: Install OCI transport
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+
+      - name: Download validated image candidates
         uses: actions/download-artifact@v4
         with:
-          path: digests
-          pattern: digests-*
+          path: candidate
+          pattern: candidate-images-*
           merge-multiple: true
-      - name: Create + verify multi-arch manifest lists
-        env:
-          IMAGE: ${{ needs.resolve-version.outputs.image }}
-          VERSION: ${{ needs.resolve-version.outputs.version }}
-        run: |
-          set -euo pipefail
-          # Hardened: flowplane:<ver>  (no :latest in this MVP)
-          docker buildx imagetools create -t "${IMAGE}:${VERSION}" \
-            "${IMAGE}@$(cat digests/hardened-amd64)" \
-            "${IMAGE}@$(cat digests/hardened-arm64)"
-          # Eval: flowplane:<ver>-eval  (NEVER :latest — D-022)
-          docker buildx imagetools create -t "${IMAGE}:${VERSION}-eval" \
-            "${IMAGE}@$(cat digests/eval-amd64)" \
-            "${IMAGE}@$(cat digests/eval-arm64)"
-          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
-          docker buildx imagetools inspect "${IMAGE}:${VERSION}-eval"
 
-  verify-publish:
-    needs: [resolve-version, manifest]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write   # attach compose.eval.yml as a release asset
-      packages: read
-    steps:
-      - name: Checkout the tagged commit
-        uses: actions/checkout@v4
+      - name: Download validation evidence
+        uses: actions/download-artifact@v4
         with:
-          ref: refs/tags/v${{ needs.resolve-version.outputs.version }}
-      - name: Assert both tags are multi-arch (amd64 + arm64)
-        env:
-          IMAGE: ${{ needs.resolve-version.outputs.image }}
-          VERSION: ${{ needs.resolve-version.outputs.version }}
-        run: |
-          set -euo pipefail
-          for ref in "${IMAGE}:${VERSION}" "${IMAGE}:${VERSION}-eval"; do
-            echo "== $ref =="
-            out="$(docker buildx imagetools inspect "$ref")"
-            echo "$out"
-            echo "$out" | grep -q "linux/amd64" || { echo "::error::$ref missing linux/amd64"; exit 1; }
-            echo "$out" | grep -q "linux/arm64" || { echo "::error::$ref missing linux/arm64"; exit 1; }
-          done
+          path: validation
+          pattern: candidate-validation-*
+          merge-multiple: true
+
       - name: Download binary release assets
         uses: actions/download-artifact@v4
         with:
           path: release-assets
           pattern: binary-assets-*
           merge-multiple: true
+
+      - name: Reverify approved candidate identities
+        env:
+          REVISION: ${{ needs.resolve-version.outputs.revision }}
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            test "$(cat "validation/tag-revision-${arch}")" = "$REVISION"
+            for kind in eval hardened; do
+              (cd candidate && sha256sum -c "${kind}-${arch}.oci.tar.sha256")
+              cmp "candidate/${kind}-${arch}.digest" "validation/${kind}-${arch}.digest"
+              cmp "candidate/${kind}-${arch}.oci.tar.sha256" \
+                "validation/${kind}-${arch}.oci.tar.sha256"
+              expected=$(cat "candidate/${kind}-${arch}.digest")
+              actual="sha256:$(skopeo inspect --raw \
+                "oci-archive:candidate/${kind}-${arch}.oci.tar" | sha256sum | cut -d' ' -f1)"
+              [ "$actual" = "$expected" ] || {
+                echo "::error::${kind}/${arch} manifest ${actual} != ${expected}"; exit 1;
+              }
+            done
+          done
+
+      - name: Publish exact per-architecture candidates
+        env:
+          IMAGE: ${{ needs.resolve-version.outputs.image }}
+        run: |
+          set -euo pipefail
+          mkdir -p published-digests
+          authfile="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+          for arch in amd64 arm64; do
+            for kind in eval hardened; do
+              archive="candidate/${kind}-${arch}.oci.tar"
+              digest=$(cat "candidate/${kind}-${arch}.digest")
+              skopeo copy --all --preserve-digests \
+                --dest-authfile "$authfile" \
+                "oci-archive:${archive}" \
+                "docker://${IMAGE}@${digest}"
+              remote="sha256:$(skopeo inspect --raw --authfile "$authfile" \
+                "docker://${IMAGE}@${digest}" | sha256sum | cut -d' ' -f1)"
+              [ "$remote" = "$digest" ] || {
+                echo "::error::${kind}/${arch} remote manifest ${remote} != ${digest}"; exit 1;
+              }
+              cp "candidate/${kind}-${arch}.digest" published-digests/
+            done
+          done
+
+      - name: Create and verify final multi-architecture manifests
+        env:
+          IMAGE: ${{ needs.resolve-version.outputs.image }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          verify_index() {
+            file=$1
+            kind=$2
+            amd=$(cat "published-digests/${kind}-amd64.digest")
+            arm=$(cat "published-digests/${kind}-arm64.digest")
+            jq -e --arg amd "$amd" --arg arm "$arm" '
+              (.manifests | length == 2) and
+              any(.manifests[]; .platform.os == "linux" and .platform.architecture == "amd64" and .digest == $amd) and
+              any(.manifests[]; .platform.os == "linux" and .platform.architecture == "arm64" and .digest == $arm)
+            ' "$file" >/dev/null
+          }
+          for kind in hardened eval; do
+            if [ "$kind" = eval ]; then
+              ref="${IMAGE}:${VERSION}-eval"
+            else
+              ref="${IMAGE}:${VERSION}"
+            fi
+            manifest="published-digests/${kind}-multiarch-manifest.json"
+            if docker buildx imagetools inspect --raw "$ref" > "$manifest" 2>/dev/null; then
+              verify_index "$manifest" "$kind" || {
+                echo "::error::existing ${ref} does not match approved candidate digests"; exit 1;
+              }
+            else
+              docker buildx imagetools create -t "$ref" \
+                "${IMAGE}@$(cat "published-digests/${kind}-amd64.digest")" \
+                "${IMAGE}@$(cat "published-digests/${kind}-arm64.digest")"
+              docker buildx imagetools inspect --raw "$ref" > "$manifest"
+              verify_index "$manifest" "$kind" || {
+                echo "::error::published ${ref} does not match approved candidate digests"; exit 1;
+              }
+            fi
+            docker buildx imagetools inspect "$ref"
+          done
 
       - name: Assemble release checksums
         run: |
@@ -315,6 +488,26 @@ jobs:
           test -s release-assets/SHA256SUMS
           test -f release-assets/flowplane-${{ needs.resolve-version.outputs.version }}-linux-amd64.tar.gz
           test -f release-assets/flowplane-${{ needs.resolve-version.outputs.version }}-linux-arm64.tar.gz
+
+      - name: Upload publication evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-digests
+          path: published-digests/*
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Reverify release tag immediately before creating the GitHub Release
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+          REVISION: ${{ needs.resolve-version.outputs.revision }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/v${VERSION}:refs/tags/v${VERSION}"
+          current=$(git rev-list -n 1 "refs/tags/v${VERSION}")
+          [ "$current" = "$REVISION" ] || {
+            echo "::error::v${VERSION} moved from ${REVISION} to ${current} before GitHub Release creation"; exit 1;
+          }
 
       - name: Attach release assets (stable no-clone download URLs)
         uses: softprops/action-gh-release@v2
@@ -326,3 +519,4 @@ jobs:
             release-assets/*.sbom.json
             release-assets/SHA256SUMS
           fail_on_unmatched_files: true
+          draft: false

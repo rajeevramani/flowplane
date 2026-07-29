@@ -1259,6 +1259,20 @@ mod tests {
         for (path, expected) in exact {
             assert_eq!(&resolve_kind(path, &obj), expected, "kind for {path}");
         }
+
+        // The MCP tool catalog returns an array; both the query-param and bare forms of the
+        // `mcp tools` endpoint must render the `toolList` kind (fpv2-zl8.4).
+        let arr = serde_json::json!([{ "name": "cp_clusters_list" }]);
+        assert_eq!(
+            resolve_kind("/api/v1/teams/p/mcp/tools", &arr),
+            "toolList",
+            "mcp tools list kind"
+        );
+        assert_eq!(
+            resolve_kind("/api/v1/teams/p/mcp/tools?include_disabled=true", &arr),
+            "toolList",
+            "mcp tools list kind ignores the query string"
+        );
     }
 
     #[test]

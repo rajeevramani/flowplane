@@ -11,6 +11,7 @@ pub mod egress_advisory;
 pub mod expose;
 pub mod gateway;
 pub mod learning;
+pub mod mcp;
 pub mod orgs;
 pub mod quota;
 pub mod rate_limit;

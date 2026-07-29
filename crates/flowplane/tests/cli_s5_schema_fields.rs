@@ -9,7 +9,7 @@
 //!     network call. Envelope is `{schemaVersion, kind, data}` with `kind == "cliSchema"`,
 //!     integer `data.catalogVersion`, and `data.command` the recursive root command tree
 //!     (`name`, `about`, `args`, `subcommands`). Each arg has the documented arg-shape keys.
-//!     The catalog contains EVERY top-level command (25 of them) including `schema` itself.
+//!     The catalog contains EVERY top-level command (27 of them) including `schema` itself.
 //!   * `--fields a,b,c` (CLI-R-51) projects reader output to exactly those keys INSIDE `data`
 //!     (per item for lists). The envelope `schemaVersion`/`kind` always survive; an absent
 //!     requested key is omitted (no null injected).
@@ -135,8 +135,8 @@ fn schema_is_valid_cli_schema_envelope_no_network() {
     }
     assert_eq!(
         subs.len(),
-        25,
-        "catalog must list EXACTLY 25 top-level commands, got {}: {names:?}",
+        27,
+        "catalog must list EXACTLY 27 top-level commands, got {}: {names:?}",
         subs.len()
     );
 

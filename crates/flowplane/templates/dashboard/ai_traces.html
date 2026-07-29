@@ -1,0 +1,53 @@
+{% if let Some(p) = panel.data() %}
+{% if let Some(miss) = p.miss %}
+<p class="banner" id="ai-trace-miss"><strong>{{ miss.0 }}</strong> {{ miss.1 }}</p>
+{% endif %}
+{% if p.unparsed > 0 %}
+<p class="banner">{{ p.unparsed }} trace row(s) could not be parsed (version skew?).</p>
+{% endif %}
+<div class="ui-disclosure-list" id="ai-trace-table">
+  {% for t in p.rows %}
+  <details class="ui-disclosure-row">
+    <summary class="ui-disclosure-summary">
+      <span class="mono">{{ t.request_id }}</span>
+      <span class="hint">{{ t.trace_id }}</span>
+      <span>{{ t.model }}</span>
+      {# Trace status is the request's HTTP status code (digits, or — when absent): a
+         descriptive value, not a fixed enum. Per the design's descriptive carve-out it
+         stays `pill neutral` and is never folded into the good/warn/crit status map — the
+         failure signal is `.trace-failure` (below) and per-hop `.hop.failed`. #}
+      <span><span class="pill neutral">{{ t.status }}</span></span>
+      {% if !t.failure_hop.is_empty() %}<span class="is-critical">failed: {{ t.failure_hop }}</span>{% endif %}
+      <span class="hint">{{ t.age }}</span>
+    </summary>
+    <ol class="ui-timeline">
+      {% for h in t.hops %}
+      <li class="ui-timeline-item{% if h.failed %} is-critical{% endif %}">
+        <span class="ui-timeline-name">{{ h.hop }}</span>
+        <span class="ui-timeline-outcome">{{ h.label }}</span>
+        {% if !h.started_at.is_empty() %}
+        <span class="hint ui-timeline-meta">{{ h.started_at }}{% if !h.ended_at.is_empty() %} → {{ h.ended_at }}{% endif %}</span>
+        {% endif %}
+      </li>
+      {% endfor %}
+      {% if t.hops.is_empty() %}
+      <li class="placeholder">no hop entries</li>
+      {% endif %}
+    </ol>
+  </details>
+  {% endfor %}
+  {% if p.rows.is_empty() %}
+  <p class="placeholder">No traces.</p>
+  {% endif %}
+</div>
+{% if let Some(cursor) = p.older_cursor %}
+<button class="ui-button ui-button--panel" id="ai-trace-older"
+        hx-get="/{{ nonce }}/partials/ai/traces?before={{ cursor|urlencode }}"
+        hx-target="#ai-traces-body"
+        hx-swap="innerHTML">Load older</button>
+{% endif %}
+{% else if panel.unauthorized() %}
+<p>Not authorized to view AI traces.</p>
+{% else %}
+<p>AI traces are currently unavailable.</p>
+{% endif %}

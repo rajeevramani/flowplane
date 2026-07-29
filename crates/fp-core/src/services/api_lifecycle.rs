@@ -4,7 +4,7 @@ use crate::authz::{check_resource_access, Decision, PrincipalCtx};
 use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::api_lifecycle::{
     ApiDefinition, ApiDefinitionSpec, ApiRouteBindingSpec, ApiTool, ApiToolSpec, HttpMethod,
-    SpecFormat, SpecReviewDecision, SpecSourceKind, SpecVersion, SpecVersionInput,
+    SpecFormat, SpecReviewDecision, SpecSourceKind, SpecVersion, SpecVersionInput, SpecVersionMeta,
 };
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::event::{DomainEvent, EventScope};
@@ -43,6 +43,23 @@ pub struct PublishSpecResult {
     pub tool_count: i64,
 }
 
+async fn authorize_as(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    resource: Resource,
+    action: Action,
+    team: TeamRef,
+    request_id: RequestId,
+) -> DomainResult<()> {
+    match check_resource_access(ctx, resource, action, Some(team)) {
+        Decision::Allow(_) => Ok(()),
+        Decision::Deny(reason) => {
+            record_authz_denial(pool, ctx, request_id, resource, action, Some(team), reason).await;
+            Err(deny_to_error(resource, action, reason))
+        }
+    }
+}
+
 async fn authorize(
     pool: &PgPool,
     ctx: &PrincipalCtx,
@@ -50,22 +67,15 @@ async fn authorize(
     team: TeamRef,
     request_id: RequestId,
 ) -> DomainResult<()> {
-    match check_resource_access(ctx, Resource::ApiDefinitions, action, Some(team)) {
-        Decision::Allow(_) => Ok(()),
-        Decision::Deny(reason) => {
-            record_authz_denial(
-                pool,
-                ctx,
-                request_id,
-                Resource::ApiDefinitions,
-                action,
-                Some(team),
-                reason,
-            )
-            .await;
-            Err(deny_to_error(Resource::ApiDefinitions, action, reason))
-        }
-    }
+    authorize_as(
+        pool,
+        ctx,
+        Resource::ApiDefinitions,
+        action,
+        team,
+        request_id,
+    )
+    .await
 }
 
 fn mutation_audit(
@@ -247,6 +257,153 @@ pub async fn list_apis(
 ) -> DomainResult<(Vec<ApiDefinition>, i64)> {
     authorize(pool, ctx, Action::Read, team, request_id).await?;
     api_lifecycle::list_api_definitions(pool, team.id, limit, offset).await
+}
+
+/// Enriched definition list (counts + latest/published version numbers) via the single
+/// measured aggregate query — the list view needs no per-row `/status` call.
+pub async fn list_apis_overview(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    limit: i64,
+    offset: i64,
+    request_id: RequestId,
+) -> DomainResult<(Vec<fp_domain::api_lifecycle::ApiDefinitionOverview>, i64)> {
+    authorize(pool, ctx, Action::Read, team, request_id).await?;
+    api_lifecycle::list_api_definitions_enriched(pool, team.id, limit, offset).await
+}
+
+#[derive(Debug, Clone)]
+pub struct SpecVersionListItem {
+    pub meta: SpecVersionMeta,
+    /// Latest review decision, or `None` for a version with no review events yet.
+    pub latest_decision: Option<SpecReviewDecision>,
+}
+
+/// Paginated spec-version metadata for one API (newest first), each row carrying its
+/// latest review decision resolved in a single batched query.
+pub async fn list_spec_versions(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    api_name: &str,
+    limit: i64,
+    offset: i64,
+    request_id: RequestId,
+) -> DomainResult<(Vec<SpecVersionListItem>, i64)> {
+    authorize(pool, ctx, Action::Read, team, request_id).await?;
+    let api = api_lifecycle::get_api_definition(pool, team.id, api_name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("api", api_name))?;
+    let (metas, total) =
+        api_lifecycle::list_spec_versions_meta(pool, team.id, api.id, limit, offset).await?;
+    let ids: Vec<_> = metas.iter().map(|m| m.id).collect();
+    let decisions = api_lifecycle::latest_spec_review_decisions(pool, team.id, &ids).await?;
+    let items = metas
+        .into_iter()
+        .map(|meta| {
+            let latest_decision = decisions
+                .iter()
+                .find(|(id, _)| *id == meta.id)
+                .map(|(_, d)| *d);
+            SpecVersionListItem {
+                meta,
+                latest_decision,
+            }
+        })
+        .collect();
+    Ok((items, total))
+}
+
+#[derive(Debug, Clone)]
+pub struct SpecEventsQuery {
+    pub api: String,
+    pub version: i64,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+/// Paginated review-event history for one spec version, oldest first — rendered verbatim
+/// by consumers; no synthesized state machine.
+pub async fn list_spec_review_events(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    query: SpecEventsQuery,
+    request_id: RequestId,
+) -> DomainResult<(Vec<fp_domain::api_lifecycle::SpecVersionReviewEvent>, i64)> {
+    authorize(pool, ctx, Action::Read, team, request_id).await?;
+    let api = api_lifecycle::get_api_definition(pool, team.id, &query.api)
+        .await?
+        .ok_or_else(|| DomainError::not_found("api", &query.api))?;
+    let spec = api_lifecycle::get_spec_version_meta(pool, team.id, api.id, query.version)
+        .await?
+        .ok_or_else(|| DomainError::not_found("spec version", &query.version.to_string()))?;
+    api_lifecycle::list_spec_review_events(pool, team.id, spec.id, query.limit, query.offset).await
+}
+
+/// Full spec-version content for one version. Spec content can embed captured-traffic-derived
+/// material, so this requires BOTH `api-definitions:read` AND `learning-sessions:read` —
+/// uniformly for every source_kind (imported specs are held to the same bar; fail closed).
+pub async fn get_spec_version_content(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    api_name: &str,
+    version: i64,
+    request_id: RequestId,
+) -> DomainResult<SpecVersion> {
+    authorize(pool, ctx, Action::Read, team, request_id).await?;
+    authorize_as(
+        pool,
+        ctx,
+        Resource::LearningSessions,
+        Action::Read,
+        team,
+        request_id,
+    )
+    .await?;
+    let api = api_lifecycle::get_api_definition(pool, team.id, api_name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("api", api_name))?;
+    api_lifecycle::get_spec_version_by_api_version(pool, team.id, api.id, version)
+        .await?
+        .ok_or_else(|| DomainError::not_found("spec version", &version.to_string()))
+}
+
+/// Paginated route bindings for one API (typed IDs; consumers join names themselves).
+pub async fn list_route_bindings(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    api_name: &str,
+    limit: i64,
+    offset: i64,
+    request_id: RequestId,
+) -> DomainResult<(Vec<fp_domain::api_lifecycle::ApiRouteBinding>, i64)> {
+    authorize(pool, ctx, Action::Read, team, request_id).await?;
+    let api = api_lifecycle::get_api_definition(pool, team.id, api_name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("api", api_name))?;
+    api_lifecycle::list_route_bindings_paged(pool, team.id, api.id, limit, offset).await
+}
+
+/// Paginated api tools for one API — including disabled rows (the dashboard/CLI view;
+/// MCP serving keeps its own enabled+published query).
+pub async fn list_api_tools(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    api_name: &str,
+    limit: i64,
+    offset: i64,
+    request_id: RequestId,
+) -> DomainResult<(Vec<ApiTool>, i64)> {
+    authorize(pool, ctx, Action::Read, team, request_id).await?;
+    let api = api_lifecycle::get_api_definition(pool, team.id, api_name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("api", api_name))?;
+    api_lifecycle::list_api_tools_paged(pool, team.id, api.id, limit, offset).await
 }
 
 pub async fn api_status(

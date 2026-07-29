@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Flowplane — {{ team }} — resources</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/{{ nonce }}/assets/dashboard.css">
+  <script src="/{{ nonce }}/assets/htmx.min.js" defer></script>
+  <script src="/{{ nonce }}/assets/ui.js" defer></script>
+  <script src="/{{ nonce }}/assets/resources.js" defer></script>
+</head>
+<body>
+  {% let active_tab = "resources" %}
+  {% include "dashboard/_shell.html" %}
+  <main id="resources" data-resources-shell>
+    <div class="ui-segmented" role="tablist" aria-label="Resources view">
+      <button type="button" class="is-active" role="tab" id="resources-tab-topology"
+              aria-selected="true" aria-controls="resources-view-topology"
+              data-ui-tab="topology">Topology</button>
+      <button type="button" role="tab" id="resources-tab-tables"
+              aria-selected="false" aria-controls="resources-view-tables" tabindex="-1"
+              data-ui-tab="tables">Tables</button>
+    </div>
+
+    <section class="ui-view is-active" id="resources-view-topology" role="tabpanel"
+             aria-labelledby="resources-tab-topology" data-ui-tab-panel="topology">
+      <div hx-get="/{{ nonce }}/partials/resources/topology"
+           hx-trigger="load once" hx-swap="innerHTML">
+        <section class="panel"><p class="placeholder">Loading traffic topology…</p></section>
+      </div>
+      <div hx-get="/{{ nonce }}/partials/resources/orphans"
+           hx-trigger="load once" hx-swap="innerHTML">
+        <section class="panel"><p class="placeholder">Loading unchained resources…</p></section>
+      </div>
+    </section>
+
+    <section class="ui-view" id="resources-view-tables" role="tabpanel"
+             aria-labelledby="resources-tab-tables" data-ui-tab-panel="tables" hidden>
+      <div hx-get="/{{ nonce }}/partials/resources/clusters"
+           hx-trigger="resources-tables once" hx-swap="innerHTML"><section class="panel"><p class="placeholder">Loading clusters…</p></section></div>
+      <div hx-get="/{{ nonce }}/partials/resources/route-configs"
+           hx-trigger="resources-tables once" hx-swap="innerHTML"><section class="panel"><p class="placeholder">Loading route configs…</p></section></div>
+      <div hx-get="/{{ nonce }}/partials/resources/listeners"
+           hx-trigger="resources-tables once" hx-swap="innerHTML"><section class="panel"><p class="placeholder">Loading listeners…</p></section></div>
+      <div hx-get="/{{ nonce }}/partials/resources/filters"
+           hx-trigger="resources-tables once" hx-swap="innerHTML"><section class="panel"><p class="placeholder">Loading HTTP filters…</p></section></div>
+      <div hx-get="/{{ nonce }}/partials/resources/rate-limits"
+           hx-trigger="resources-tables once" hx-swap="innerHTML"><section class="panel"><p class="placeholder">Loading rate limits…</p></section></div>
+      <div hx-get="/{{ nonce }}/partials/resources/secrets"
+           hx-trigger="resources-tables once" hx-swap="innerHTML"><section class="panel"><p class="placeholder">Loading secrets…</p></section></div>
+    </section>
+  </main>
+</body>
+</html>

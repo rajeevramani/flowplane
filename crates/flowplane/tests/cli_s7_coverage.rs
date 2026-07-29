@@ -55,6 +55,7 @@ const SNAPSHOT_COVERED: &[&str] = &[
 /// Each carries a one-line reason for the exemption.
 const EXEMPT: &[&str] = &[
     "serve",                   // long-running daemon, never returns an envelope
+    "dashboard",               // long-running local presentation server (fpv2-03m), no envelope
     "completion",              // emits a shell completion script, not the envelope
     "db migrate",              // database migration runner
     "auth login",              // interactive OIDC browser/device flow
@@ -119,9 +120,15 @@ const SHARED_LAYER_COVERED: &[&str] = &[
     "api delete",
     "api spec reject",
     "api spec publish",
+    "api spec list",
+    "api spec events",
+    "api spec show",
+    "api bindings",
+    "api tools",
     // mcp
     "mcp status",
     "mcp connections",
+    "mcp tools",
     "mcp enable",
     "mcp disable",
     // ai providers
@@ -186,6 +193,10 @@ const SHARED_LAYER_COVERED: &[&str] = &[
     "secret get",
     "secret create",
     "secret rotate",
+    // agent (read-only: list agents, show one, view an agent's grants)
+    "agent list",
+    "agent show",
+    "agent grants",
     // dataplane
     "dataplane list",
     "dataplane get",

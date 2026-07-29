@@ -8,11 +8,17 @@ use fp_domain::dataplane::Dataplane;
 use fp_domain::{DomainError, DomainResult, RequestId};
 use fp_storage::outbox::EventTraceRow;
 use fp_storage::repos::audit::AuditTraceRow;
-use fp_storage::repos::xds_nacks::NackEvent;
+use fp_storage::repos::xds_nacks::{NackEvent, NackWindowQuery};
+use sqlx::types::chrono::{DateTime, Utc};
 use sqlx::PgPool;
+use uuid::Uuid;
 
 const LIVE_HEARTBEAT_SECONDS: i64 = 60;
 const RECENT_NACK_MINUTES: i64 = 15;
+/// Default page size for the NACK-window read (fpv2-55x.1) when the caller omits `limit`.
+pub const DEFAULT_NACK_LIMIT: i64 = 50;
+/// Hard cap on the NACK-window page size.
+pub const MAX_NACK_LIMIT: i64 = 200;
 const MIN_TRACE_PATH_QUERY_LEN: usize = 3;
 const MAX_TRACE_PATH_QUERY_LEN: usize = 256;
 const MIN_TRACE_ID_QUERY_LEN: usize = 3;
@@ -69,30 +75,68 @@ pub struct OpsTrace {
     pub events: Vec<EventTraceRow>,
 }
 
-pub async fn list_nack_events(
+/// A filtered/paged NACK-window query (fpv2-55x.1). `limit` is the caller-requested page size
+/// (`None` → [`DEFAULT_NACK_LIMIT`], clamped to [`MAX_NACK_LIMIT`]); `before` is the total-order
+/// cursor `(created_at, id)` of the last row of the previous page.
+#[derive(Debug, Clone, Default)]
+pub struct NackQuery {
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
+    pub before: Option<(DateTime<Utc>, Uuid)>,
+    pub limit: Option<i64>,
+}
+
+/// One page of NACK history plus the window-relative total and the cursor to the next page.
+#[derive(Debug, Clone)]
+pub struct NackWindow {
+    pub events: Vec<NackEvent>,
+    /// Count of rows matching the `since`/`until` filter (window-relative, not collection total).
+    pub window_total: i64,
+    /// `(created_at, id)` of the last returned row when a further page exists; `None` on the last
+    /// page. Determined by a `limit + 1` probe, never by `events.len() == limit`.
+    pub next_cursor: Option<(DateTime<Utc>, Uuid)>,
+}
+
+/// Filtered, cursor-paged NACK history for one team (the read behind REST/CLI/MCP/dashboard). Same
+/// `check_resource_access(Stats, Read, team)` gate as every other xDS read — a platform admin with
+/// no tenant membership/grant is denied here.
+pub async fn list_nack_window(
     pool: &PgPool,
     ctx: &PrincipalCtx,
     team: TeamRef,
-    limit: i64,
+    query: NackQuery,
     request_id: RequestId,
-) -> DomainResult<Vec<NackEvent>> {
-    match check_resource_access(ctx, Resource::Stats, Action::Read, Some(team)) {
-        Decision::Allow(_) => {}
-        Decision::Deny(reason) => {
-            record_authz_denial(
-                pool,
-                ctx,
-                request_id,
-                Resource::Stats,
-                Action::Read,
-                Some(team),
-                reason,
-            )
-            .await;
-            return Err(deny_to_error(Resource::Stats, Action::Read, reason));
-        }
-    }
-    fp_storage::repos::xds_nacks::list(pool, team.id, limit).await
+) -> DomainResult<NackWindow> {
+    authorize_read(pool, ctx, team, request_id).await?;
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_NACK_LIMIT)
+        .clamp(1, MAX_NACK_LIMIT);
+    let window_total =
+        fp_storage::repos::xds_nacks::count_window(pool, team.id, query.since, query.until).await?;
+    // Fetch limit + 1 so the extra row (if any) is the sole has-more signal.
+    let mut events = fp_storage::repos::xds_nacks::list_window(
+        pool,
+        &NackWindowQuery {
+            team_id: team.id,
+            since: query.since,
+            until: query.until,
+            before: query.before,
+            limit: limit + 1,
+        },
+    )
+    .await?;
+    let next_cursor = if events.len() as i64 > limit {
+        events.truncate(limit as usize);
+        events.last().map(|e| (e.created_at, e.id))
+    } else {
+        None
+    };
+    Ok(NackWindow {
+        events,
+        window_total,
+        next_cursor,
+    })
 }
 
 pub async fn status(

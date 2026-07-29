@@ -12,9 +12,10 @@ use fp_domain::gateway::route_config::{
 };
 use fp_domain::{
     ai_error_envelope, validate_ai_budget_name, validate_ai_provider_name, validate_ai_route_name,
-    validate_trace_ttl_days, AiBudget, AiBudgetSpec, AiProvider, AiProviderSpec, AiRetentionPolicy,
-    AiRoute, AiRouteMaterializedResources, AiRouteSpec, AiTraceEvent, AiUsageSummary, DomainError,
-    DomainResult, RequestId, AI_MODEL_HEADER, DEFAULT_AI_ROUTE_TIMEOUT_SECS,
+    validate_trace_ttl_days, AiBudget, AiBudgetSpec, AiBudgetWithState, AiProvider, AiProviderSpec,
+    AiRetentionPolicy, AiRoute, AiRouteMaterializedResources, AiRouteSpec, AiTraceEvent,
+    AiUsageSummary, DomainError, DomainResult, RequestId, AI_MODEL_HEADER,
+    DEFAULT_AI_ROUTE_TIMEOUT_SECS,
 };
 use fp_storage::repos::{ai, ai_trace, audit, clusters as cluster_repo, gateway as gateway_repo};
 use sqlx::PgPool;
@@ -421,7 +422,7 @@ pub async fn create_budget(
     name: &str,
     spec: AiBudgetSpec,
     request_id: RequestId,
-) -> DomainResult<AiBudget> {
+) -> DomainResult<AiBudgetWithState> {
     authorize(
         pool,
         ctx,
@@ -454,7 +455,48 @@ pub async fn create_budget(
     tx.commit()
         .await
         .map_err(crate::services::db_err("create AI budget: commit"))?;
-    Ok(budget)
+    attach_budget_state(pool, team.id, budget).await
+}
+
+/// Attach each budget's current-window state via ONE batched aligned-window read (no
+/// per-row N+1). Every budget id passed in exists in `ai_budgets` (they were just read
+/// or written), so a missing state row is an internal error, never silently skipped.
+async fn attach_budget_states(
+    pool: &PgPool,
+    team_id: fp_domain::TeamId,
+    budgets: Vec<AiBudget>,
+) -> DomainResult<Vec<AiBudgetWithState>> {
+    if budgets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<uuid::Uuid> = budgets.iter().map(|b| b.id.as_uuid()).collect();
+    let states: BTreeMap<_, _> = ai::budget_window_states(pool, team_id, &ids)
+        .await?
+        .into_iter()
+        .collect();
+    budgets
+        .into_iter()
+        .map(|budget| {
+            let state = states.get(&budget.id).cloned().ok_or_else(|| {
+                DomainError::internal(format!(
+                    "AI budget \"{}\" has no window-state row",
+                    budget.name
+                ))
+            })?;
+            Ok(AiBudgetWithState { budget, state })
+        })
+        .collect()
+}
+
+async fn attach_budget_state(
+    pool: &PgPool,
+    team_id: fp_domain::TeamId,
+    budget: AiBudget,
+) -> DomainResult<AiBudgetWithState> {
+    let mut with_state = attach_budget_states(pool, team_id, vec![budget]).await?;
+    with_state
+        .pop()
+        .ok_or_else(|| DomainError::internal("AI budget window-state read returned no row"))
 }
 
 pub async fn list_budgets(
@@ -464,7 +506,7 @@ pub async fn list_budgets(
     limit: i64,
     offset: i64,
     request_id: RequestId,
-) -> DomainResult<(Vec<AiBudget>, i64)> {
+) -> DomainResult<(Vec<AiBudgetWithState>, i64)> {
     authorize(
         pool,
         ctx,
@@ -474,7 +516,8 @@ pub async fn list_budgets(
         request_id,
     )
     .await?;
-    ai::list_budgets(pool, team.id, limit, offset).await
+    let (budgets, total) = ai::list_budgets(pool, team.id, limit, offset).await?;
+    Ok((attach_budget_states(pool, team.id, budgets).await?, total))
 }
 
 pub async fn get_budget(
@@ -483,7 +526,7 @@ pub async fn get_budget(
     team: TeamRef,
     name: &str,
     request_id: RequestId,
-) -> DomainResult<AiBudget> {
+) -> DomainResult<AiBudgetWithState> {
     authorize(
         pool,
         ctx,
@@ -493,9 +536,10 @@ pub async fn get_budget(
         request_id,
     )
     .await?;
-    ai::get_budget(pool, team.id, name)
+    let budget = ai::get_budget(pool, team.id, name)
         .await?
-        .ok_or_else(|| DomainError::not_found("AI budget", name))
+        .ok_or_else(|| DomainError::not_found("AI budget", name))?;
+    attach_budget_state(pool, team.id, budget).await
 }
 
 pub async fn update_budget(
@@ -506,7 +550,7 @@ pub async fn update_budget(
     spec: AiBudgetSpec,
     expected_version: i64,
     request_id: RequestId,
-) -> DomainResult<AiBudget> {
+) -> DomainResult<AiBudgetWithState> {
     authorize(
         pool,
         ctx,
@@ -537,7 +581,7 @@ pub async fn update_budget(
     tx.commit()
         .await
         .map_err(crate::services::db_err("update AI budget: commit"))?;
-    Ok(budget)
+    attach_budget_state(pool, team.id, budget).await
 }
 
 pub async fn delete_budget(
@@ -580,15 +624,56 @@ pub async fn delete_budget(
     Ok(())
 }
 
+/// The largest span `until - since` a windowed usage read may request. An omitted `since`
+/// is an explicit all-time read and is exempt (it preserves the endpoint's original
+/// all-time semantics); the cap only applies when the caller pins the lower bound.
+pub const MAX_USAGE_WINDOW_DAYS: i64 = 92;
+
+/// Windowed, team-scoped usage summary. Window semantics (design ui-f5): half-open
+/// `[since, until)`; an omitted `until` resolves server-side to `now` BEFORE validation;
+/// `since >= until` (after resolution) and spans over [`MAX_USAGE_WINDOW_DAYS`] fail
+/// validation. Returns the summary rows plus the total grouped-row count for the same
+/// filters (the `Page.total`).
 pub async fn usage_summary(
     pool: &PgPool,
     ctx: &PrincipalCtx,
     team: TeamRef,
-    query: ai::AiUsageQuery,
+    mut query: ai::AiUsageQuery,
     request_id: RequestId,
-) -> DomainResult<Vec<AiUsageSummary>> {
+) -> DomainResult<(Vec<AiUsageSummary>, i64)> {
     authorize(pool, ctx, Resource::AiUsage, Action::Read, team, request_id).await?;
+    query.until = Some(resolve_usage_window(
+        query.since,
+        query.until,
+        chrono::Utc::now(),
+    )?);
     ai::usage_summary(pool, team.id, query).await
+}
+
+/// Pure window resolution: returns the effective `until` (caller value or `now`), after
+/// validating `since < until` and the [`MAX_USAGE_WINDOW_DAYS`] span cap (which only
+/// applies when `since` is present — an omitted `since` is an explicit all-time read).
+pub fn resolve_usage_window(
+    since: Option<chrono::DateTime<chrono::Utc>>,
+    until: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> DomainResult<chrono::DateTime<chrono::Utc>> {
+    let until = until.unwrap_or(now);
+    if let Some(since) = since {
+        if since >= until {
+            return Err(DomainError::validation(
+                "usage window is empty: `since` must be strictly before `until` \
+                 (`until` defaults to now when omitted)",
+            ));
+        }
+        if until - since > chrono::Duration::days(MAX_USAGE_WINDOW_DAYS) {
+            return Err(DomainError::validation(format!(
+                "usage window span exceeds the {MAX_USAGE_WINDOW_DAYS}-day maximum; \
+                 omit `since` for an all-time read"
+            )));
+        }
+    }
+    Ok(until)
 }
 
 /// Team-scoped read of AI trace rows: authorization happens before any repo read, and the
@@ -1720,5 +1805,60 @@ mod tests {
                 r#"{"code":"no_eligible_ai_backend","message":"no eligible AI backend for requested model"}"#
             )
         );
+    }
+
+    mod usage_window {
+        use super::super::{resolve_usage_window, MAX_USAGE_WINDOW_DAYS};
+        use chrono::{DateTime, Duration, Utc};
+
+        fn ts(raw: &str) -> DateTime<Utc> {
+            raw.parse().expect("test timestamp")
+        }
+
+        #[test]
+        fn omitted_until_resolves_to_now() {
+            let now = ts("2026-07-19T12:00:00Z");
+            let until = resolve_usage_window(None, None, now).unwrap();
+            assert_eq!(until, now);
+        }
+
+        #[test]
+        fn explicit_until_is_kept() {
+            let now = ts("2026-07-19T12:00:00Z");
+            let explicit = ts("2026-07-01T00:00:00Z");
+            let until = resolve_usage_window(None, Some(explicit), now).unwrap();
+            assert_eq!(until, explicit);
+        }
+
+        #[test]
+        fn since_equal_to_resolved_until_is_empty_window() {
+            let now = ts("2026-07-19T12:00:00Z");
+            let err = resolve_usage_window(Some(now), None, now).unwrap_err();
+            assert_eq!(err.code, fp_domain::ErrorCode::ValidationFailed);
+        }
+
+        #[test]
+        fn since_after_until_rejected() {
+            let now = ts("2026-07-19T12:00:00Z");
+            let err =
+                resolve_usage_window(Some(now), Some(now - Duration::hours(1)), now).unwrap_err();
+            assert_eq!(err.code, fp_domain::ErrorCode::ValidationFailed);
+        }
+
+        #[test]
+        fn span_at_cap_allowed_beyond_cap_rejected() {
+            let now = ts("2026-07-19T12:00:00Z");
+            let at_cap = now - Duration::days(MAX_USAGE_WINDOW_DAYS);
+            assert!(resolve_usage_window(Some(at_cap), None, now).is_ok());
+            let beyond = at_cap - Duration::seconds(1);
+            let err = resolve_usage_window(Some(beyond), None, now).unwrap_err();
+            assert_eq!(err.code, fp_domain::ErrorCode::ValidationFailed);
+        }
+
+        #[test]
+        fn omitted_since_is_exempt_from_span_cap() {
+            let now = ts("2026-07-19T12:00:00Z");
+            assert!(resolve_usage_window(None, Some(now), now).is_ok());
+        }
     }
 }

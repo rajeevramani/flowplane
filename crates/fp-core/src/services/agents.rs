@@ -1,8 +1,8 @@
 //! Agent lifecycle for S11 MCP prerequisites.
 
-use crate::authz::PrincipalCtx;
-use crate::services::actor_of;
-use fp_domain::authz::{Action, Resource};
+use crate::authz::{check_resource_access, Decision, PrincipalCtx};
+use crate::services::{actor_of, deny_to_error, record_authz_denial};
+use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::{
     Agent, AgentId, AgentKind, DomainError, DomainResult, ErrorCode, OrgId, RequestId, TeamId,
     UserId,
@@ -173,20 +173,191 @@ pub async fn create_agent(
     Ok(AgentWithToken { agent, token })
 }
 
-pub async fn list_agents(pool: &PgPool, ctx: &PrincipalCtx) -> DomainResult<Vec<Agent>> {
-    let (org_id, _) = require_org_admin(ctx)?;
-    identity::list_agents_for_org(pool, org_id).await
+/// The org and row scope an authorized agent read runs under.
+struct AgentReadScope {
+    org_id: OrgId,
+    /// `None` — org admin, reads every agent in the org. `Some(teams)` — non-admin, reads only
+    /// agents holding a grant on one of these teams (empty ⇒ nothing).
+    team_scope: Option<Vec<TeamId>>,
+}
+
+/// Shared read gate for the agent read surface (`list_agents`, `get_agent`, `list_agent_grants`).
+/// Unlike the grant surface's `teams::authorize`, this authorizes at `team: None` and returns the
+/// caller's row scope instead of unit. `resource` is `Resource::Agents` for the agent reads and
+/// `Resource::Grants` for the grants read — it drives both the engine call and the team scope, so
+/// a non-admin's visible rows are exactly the teams it holds `<resource>:read` on.
+///
+/// Order is load-bearing (see the ui-f6b design §3): the `org_selector_required` short-circuit
+/// runs **before** the engine so a multi-org caller with no selector gets a client-correctable
+/// `400`, never an audited authz denial — the auth middleware only records the flag, and the
+/// `require_org_admin` matcher that produced that `400` no longer runs for these reads. After the
+/// engine allows, the caller has a resolved active org (the engine denies team-less tenant reads
+/// with `org: None`), so row scope comes from the active org role, org-admin first.
+async fn authorize_read(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    resource: Resource,
+    request_id: RequestId,
+) -> DomainResult<AgentReadScope> {
+    if let PrincipalCtx::User {
+        org: None,
+        org_selector_required: true,
+        ..
+    } = ctx
+    {
+        return Err(DomainError::org_selector_required());
+    }
+
+    match check_resource_access(ctx, resource, Action::Read, None) {
+        Decision::Allow(_) => {}
+        Decision::Deny(reason) => {
+            record_authz_denial(pool, ctx, request_id, resource, Action::Read, None, reason).await;
+            return Err(deny_to_error(resource, Action::Read, reason));
+        }
+    }
+
+    let scope = match ctx {
+        PrincipalCtx::User {
+            org: Some((org_id, role)),
+            grants,
+            ..
+        } => {
+            if role.is_org_admin() {
+                AgentReadScope {
+                    org_id: *org_id,
+                    team_scope: None,
+                }
+            } else {
+                AgentReadScope {
+                    org_id: *org_id,
+                    team_scope: Some(
+                        grants
+                            .teams_for_in_org(resource, Action::Read, *org_id)
+                            .into_iter()
+                            .collect(),
+                    ),
+                }
+            }
+        }
+        PrincipalCtx::Agent { org_id, grants, .. } => AgentReadScope {
+            org_id: *org_id,
+            team_scope: Some(
+                grants
+                    .teams_for_in_org(resource, Action::Read, *org_id)
+                    .into_iter()
+                    .collect(),
+            ),
+        },
+        // The engine denies a team-less tenant read with no active org, so an Allow here always
+        // carries one. Reaching this arm would be an engine/authz contract violation — fail closed.
+        PrincipalCtx::User { org: None, .. } => {
+            return Err(DomainError::internal(
+                "agent read authorized without an active org",
+            ));
+        }
+    };
+    Ok(scope)
+}
+
+/// Paged agent list, row-scoped and optionally filtered to one team. Returns `(page, total)`.
+///
+/// `team_filter` is a resolved [`TeamRef`] (the handler resolves `?team=` by name or UUID). The
+/// UUID resolver is **global** — it discloses no org and never runs the engine's cross-org branch
+/// because this endpoint authorizes at `team: None` — so the cross-org check is made explicit
+/// here: a filter team outside the caller's active org renders `404` (same as an unresolvable
+/// value), before any row query. `total` is the post-scope, post-filter authorized count.
+pub async fn list_agents(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team_filter: Option<TeamRef>,
+    limit: i64,
+    offset: i64,
+    request_id: RequestId,
+) -> DomainResult<(Vec<Agent>, i64)> {
+    let scope = authorize_read(pool, ctx, Resource::Agents, request_id).await?;
+
+    let filter_team_id = match team_filter {
+        Some(team) => {
+            if team.org_id != scope.org_id {
+                return Err(DomainError::not_found("team", &team.id.to_string()));
+            }
+            Some(team.id)
+        }
+        None => None,
+    };
+
+    let (is_admin, caller_teams) = match scope.team_scope {
+        None => (true, Vec::new()),
+        Some(teams) => (false, teams),
+    };
+
+    identity::list_agents_paged(
+        pool,
+        scope.org_id,
+        is_admin,
+        &caller_teams,
+        filter_team_id,
+        limit,
+        offset,
+    )
+    .await
 }
 
 pub async fn get_agent(
     pool: &PgPool,
     ctx: &PrincipalCtx,
     agent_id: AgentId,
+    request_id: RequestId,
 ) -> DomainResult<Agent> {
-    let (org_id, _) = require_org_admin(ctx)?;
-    identity::get_agent(pool, org_id, agent_id)
+    let scope = authorize_read(pool, ctx, Resource::Agents, request_id).await?;
+    identity::get_agent_scoped(pool, scope.org_id, agent_id, scope.team_scope.as_deref())
         .await?
         .ok_or_else(|| DomainError::not_found("agent", &agent_id.to_string()))
+}
+
+/// Paged listing of one agent's grant rows, authorized on `Resource::Grants` and row-scoped to the
+/// caller's `grants:read` teams. Returns `(page, total)`.
+///
+/// Authorization is the shared read gate on `Resource::Grants` — a caller holding `agents:read`
+/// but no `grants:read` is denied `403` here even though it can list agents. The addressed agent
+/// must be in the caller's active org (a cross-org or unknown id renders `404`, anti-enumeration),
+/// checked before the grant query. Unlike the agents list, this endpoint **rejects a negative
+/// `offset` with `400`** (design §1), rather than flooring it.
+pub async fn list_agent_grants(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    agent_id: AgentId,
+    limit: i64,
+    offset: i64,
+    request_id: RequestId,
+) -> DomainResult<(Vec<identity::AgentGrantRow>, i64)> {
+    let scope = authorize_read(pool, ctx, Resource::Grants, request_id).await?;
+
+    if offset < 0 {
+        return Err(DomainError::validation("offset must not be negative"));
+    }
+
+    // The agent must exist in the caller's active org; otherwise 404 (same for cross-org and
+    // unknown — no existence oracle). This runs before the grant query.
+    identity::get_agent(pool, scope.org_id, agent_id)
+        .await?
+        .ok_or_else(|| DomainError::not_found("agent", &agent_id.to_string()))?;
+
+    let (is_admin, caller_teams) = match scope.team_scope {
+        None => (true, Vec::new()),
+        Some(teams) => (false, teams),
+    };
+
+    identity::list_agent_grants_paged(
+        pool,
+        scope.org_id,
+        agent_id,
+        is_admin,
+        &caller_teams,
+        limit,
+        offset,
+    )
+    .await
 }
 
 pub async fn rotate_agent_token(
@@ -196,7 +367,11 @@ pub async fn rotate_agent_token(
     request_id: RequestId,
 ) -> DomainResult<AgentWithToken> {
     let (org_id, _) = require_org_admin(ctx)?;
-    let current = get_agent(pool, ctx, agent_id).await?;
+    // Admin path: fetch org-scoped directly (the read-surface `get_agent` now row-scopes and is
+    // for readers, not this admin mutation). `require_same_org` stays an explicit invariant.
+    let current = identity::get_agent(pool, org_id, agent_id)
+        .await?
+        .ok_or_else(|| DomainError::not_found("agent", &agent_id.to_string()))?;
     require_same_org(&current, org_id)?;
     let token = mint_agent_token();
     let mut tx = pool

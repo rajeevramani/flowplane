@@ -17,13 +17,14 @@ published **evaluation** image and stands up the whole stack — Postgres, the d
 demo upstream, and Envoy — then routes a real request through the gateway. No repo checkout, no
 `cargo build`.
 
-> Set `VER` to a published release. The example below uses `3.0.0`, whose evaluator bundle and
-> `:${VER}-eval` image are published for `linux/amd64` and `linux/arm64`. For newer releases,
-> use the version shown on the GitHub Releases page. The image is **multi-arch**: a plain
-> `docker pull` resolves the native variant — no `--platform` flag, no emulation.
+> Set `VER` to a published release. The example below uses `3.1.0`, whose evaluator bundle and
+> `:${VER}-eval` image are published for `linux/amd64` and `linux/arm64` (the dashboard step
+> needs `3.1.0` or newer). For newer releases, use the version shown on the GitHub Releases
+> page. The image is **multi-arch**: a plain `docker pull` resolves the native variant — no
+> `--platform` flag, no emulation.
 
 ```bash
-VER=3.0.0
+VER=3.1.0
 
 # 1. Fetch the evaluator bundle at the matching release tag (the only file you need)
 curl -fsSLO https://raw.githubusercontent.com/rajeevramani/flowplane/v${VER}/compose.eval.yml
@@ -35,7 +36,11 @@ FLOWPLANE_EVAL_IMAGE=ghcr.io/rajeevramani/flowplane:${VER}-eval \
 # 3. A request flows through Envoy (:10000) to the demo upstream
 curl http://127.0.0.1:10000/        # -> hello from the flowplane eval demo upstream
 
-# 4. (optional) confirm authentication from inside the control-plane container
+# 4. Open the read-only dashboard (the URL carries a per-launch security nonce)
+docker compose -f compose.eval.yml exec flowplane-dashboard cat /shared/dashboard-url
+# -> open the printed http://127.0.0.1:8081/<nonce>/ in your browser
+
+# 5. (optional) confirm authentication from inside the control-plane container
 docker compose -f compose.eval.yml exec flowplane-eval \
   sh -c 'FLOWPLANE_TOKEN=$(cat /shared/dev-token) flowplane auth whoami'
 
@@ -143,8 +148,9 @@ Flowplane is the **control plane**: it stores gateway configuration (clusters, r
 - **API schema learning + discovery** — capture live traffic and infer JSON schemas with confidence scoring, exported as OpenAPI 3.1. *Learning* enriches an existing API definition; *discovery* spins up a throwaway listener and creates new API definitions from observed traffic.
 - **AI gateway** — register LLM providers (OpenAI / OpenAI-compatible), publish AI routes, and cap token spend with budgets that run in `shadow` (observe-only) then `enforcing`. Provider credentials are encrypted at rest.
 - **REST API + CLI** — a JSON API and a full-surface `flowplane` CLI covering auth/context, org/team management, gateway resources, expose/unexpose, learning, AI, secrets, dataplane registration, and ops diagnostics. Print the exact contract with `flowplane openapi`.
+- **Read-only team dashboard** — run `flowplane dashboard` for Overview, Resources, APIs, Learning, AI, MCP, and Operations views using the CLI's resolved credentials. The bearer token stays in the CLI process and every browser route requires a per-launch nonce.
 
-> An MCP control-plane surface is present in the codebase and evolving; a web dashboard is planned (the REST API already backs one).
+> An MCP control-plane surface is present in the codebase and evolving. The dashboard is a CLI-hosted read-only presentation layer over the existing REST API, not a second control plane.
 
 ## Documentation
 
@@ -160,6 +166,7 @@ The [documentation home](docs/README.md) is organised by [Diátaxis](https://dia
 | Cap a route globally across all Envoys | [Enable global rate limiting](docs/how-to/global-rate-limit.md) |
 | Learn an API spec from live traffic | [Learn & publish an API spec](docs/how-to/learn-and-publish-api-spec.md) |
 | Front an LLM with a token budget | [AI gateway route & budget](docs/how-to/ai-gateway-route-budget.md) |
+| Inspect a team's gateway in the dashboard | [View your team's gateway dashboard](docs/how-to/view-team-dashboard.md) |
 | Secure the data plane with mTLS | [Register a dataplane (mTLS)](docs/how-to/register-dataplane-mtls.md) |
 | Understand tenancy, grants, and xDS | [Tenancy, grants & the xDS pipeline](docs/concepts/tenancy-grants-xds.md) |
 | Understand global rate limiting | [Global rate limiting](docs/concepts/global-rate-limiting.md) |

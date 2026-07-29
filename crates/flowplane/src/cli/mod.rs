@@ -2,6 +2,7 @@ mod client;
 mod commands;
 mod config;
 pub(crate) mod confirm;
+mod dashboard;
 pub(crate) mod output;
 pub(crate) mod schema;
 
@@ -17,18 +18,19 @@ use std::time::{Duration, Instant};
 
 use client::RestClient;
 pub use commands::{
-    AiCommand, AiRetentionCommand, ApiCommand, ApplyCommand, AuthCommand, CertCommand,
-    ConfigCommand, DataplaneBootstrapMode, DataplaneCommand, ExposeCommand, GrantCommand,
-    LearnCommand, LearnDiscoverCommand, McpCommand, OpsCommand, OrgCommand, OrgMemberCommand,
-    RateLimitCommand, RateLimitOverrideCommand, RateLimitPolicyCommand, ResourceCommand,
-    RouteCommand, SecretCommand, StatsCommand, TeamCommand, TeamMemberCommand, UnexposeCommand,
-    XdsCommand,
+    AgentCommand, AiCommand, AiRetentionCommand, ApiCommand, ApplyCommand, AuthCommand,
+    CertCommand, ConfigCommand, DataplaneBootstrapMode, DataplaneCommand, ExposeCommand,
+    GrantCommand, LearnCommand, LearnDiscoverCommand, McpCommand, OpsCommand, OrgCommand,
+    OrgMemberCommand, RateLimitCommand, RateLimitOverrideCommand, RateLimitPolicyCommand,
+    ResourceCommand, RouteCommand, SecretCommand, StatsCommand, TeamCommand, TeamMemberCommand,
+    UnexposeCommand, XdsCommand,
 };
 pub use config::GlobalOptions;
 use config::{
     config_path, credentials_path, effective, read_config, write_config, write_private_file,
     NamedContext, OutputFormat,
 };
+pub use dashboard::DashboardOptions;
 use output::{format_row, render};
 
 #[cfg(test)]
@@ -760,6 +762,71 @@ async fn run_org_member(client: RestClient, command: OrgMemberCommand) -> Result
     Ok(())
 }
 
+pub async fn run_agent(global: GlobalOptions, command: AgentCommand) -> Result<()> {
+    let client = RestClient::new(global)?;
+    match command {
+        AgentCommand::List {
+            team,
+            limit,
+            offset,
+        } => {
+            let mut query: Vec<(&str, String)> = Vec::new();
+            if let Some(team) = team {
+                query.push(("team", team));
+            }
+            if let Some(limit) = limit {
+                query.push(("limit", limit.to_string()));
+            }
+            if let Some(offset) = offset {
+                query.push(("offset", offset.to_string()));
+            }
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &with_query("/api/v1/agents", query),
+                    None,
+                )
+                .await?
+        }
+        AgentCommand::Show { id } => {
+            client
+                .request(reqwest::Method::GET, &format!("/api/v1/agents/{id}"), None)
+                .await?
+        }
+        AgentCommand::Grants { id, limit, offset } => {
+            let mut query: Vec<(&str, String)> = Vec::new();
+            if let Some(limit) = limit {
+                query.push(("limit", limit.to_string()));
+            }
+            if let Some(offset) = offset {
+                query.push(("offset", offset.to_string()));
+            }
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &with_query(&format!("/api/v1/agents/{id}/grants"), query),
+                    None,
+                )
+                .await?
+        }
+    };
+    Ok(())
+}
+
+/// Append a `?key=value&...` query string (URL-encoded) to `path`, or return `path` unchanged
+/// when there are no params.
+fn with_query(path: &str, query: Vec<(&str, String)>) -> String {
+    if query.is_empty() {
+        return path.to_string();
+    }
+    let q = query
+        .into_iter()
+        .map(|(key, value)| format!("{key}={}", query_component(&value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{path}?{q}")
+}
+
 pub async fn run_team(global: GlobalOptions, command: TeamCommand) -> Result<()> {
     let client = RestClient::new(global)?;
     match command {
@@ -1028,6 +1095,7 @@ pub async fn run_ai(global: GlobalOptions, command: AiCommand) -> Result<()> {
             team,
             request_id,
             trace_id,
+            before,
             limit,
         } => {
             let client = RestClient::new(global)?;
@@ -1038,6 +1106,9 @@ pub async fn run_ai(global: GlobalOptions, command: AiCommand) -> Result<()> {
             }
             if let Some(trace_id) = trace_id {
                 query.push(("trace_id", trace_id));
+            }
+            if let Some(before) = before {
+                query.push(("before", before));
             }
             query.push(("limit", limit.to_string()));
             let query = query
@@ -1084,6 +1155,8 @@ pub async fn run_ai(global: GlobalOptions, command: AiCommand) -> Result<()> {
             team,
             provider_id,
             route_config_id,
+            since,
+            until,
             limit,
             offset,
         } => {
@@ -1098,6 +1171,12 @@ pub async fn run_ai(global: GlobalOptions, command: AiCommand) -> Result<()> {
                     "route_config_id={}",
                     query_component(&route_config_id)
                 ));
+            }
+            if let Some(since) = since {
+                query.push(format!("since={}", query_component(&since)));
+            }
+            if let Some(until) = until {
+                query.push(format!("until={}", query_component(&until)));
             }
             client
                 .request(
@@ -1363,6 +1442,7 @@ fn imported_create_hint(format: OutputFormat, api_name: &str) -> Option<String> 
 
 pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
     let format = global.format();
+    let render_global = global.clone();
     let client = RestClient::new(global)?;
     match command {
         ApiCommand::List { team } => {
@@ -1395,7 +1475,156 @@ pub async fn run_api(global: GlobalOptions, command: ApiCommand) -> Result<()> {
                 )
                 .await?
         }
+        ApiCommand::Bindings {
+            team,
+            api,
+            limit,
+            offset,
+        } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!(
+                        "/api/v1/teams/{team}/api-definitions/{}/route-bindings?limit={limit}&offset={offset}",
+                        query_component(&api)
+                    ),
+                    None,
+                )
+                .await?
+        }
+        ApiCommand::Tools {
+            team,
+            api,
+            limit,
+            offset,
+        } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!(
+                        "/api/v1/teams/{team}/api-definitions/{}/tools?limit={limit}&offset={offset}",
+                        query_component(&api)
+                    ),
+                    None,
+                )
+                .await?
+        }
         ApiCommand::Spec { command } => match command {
+            commands::ApiSpecCommand::List {
+                team,
+                api,
+                limit,
+                offset,
+            } => {
+                let team = client.team(team)?;
+                client
+                    .request(
+                        reqwest::Method::GET,
+                        &format!(
+                            "/api/v1/teams/{team}/api-definitions/{}/specs?limit={limit}&offset={offset}",
+                            query_component(&api)
+                        ),
+                        None,
+                    )
+                    .await?
+            }
+            commands::ApiSpecCommand::Show {
+                team,
+                api,
+                version,
+                content,
+            } => {
+                let team = client.team(team)?;
+                if content {
+                    client
+                        .request(
+                            reqwest::Method::GET,
+                            &format!(
+                                "/api/v1/teams/{team}/api-definitions/{}/specs/{version}/content",
+                                query_component(&api)
+                            ),
+                            None,
+                        )
+                        .await?
+                } else {
+                    // Metadata view: one row of the specs list (the list endpoint is the
+                    // only metadata source; there is deliberately no per-version GET).
+                    // Page through the whole list — the target version may sit beyond the
+                    // first 500-row page, and a capped single fetch would false-404 it.
+                    let mut item = None;
+                    let mut offset = 0_i64;
+                    loop {
+                        let page = client
+                            .request_quiet(
+                                reqwest::Method::GET,
+                                &format!(
+                                    "/api/v1/teams/{team}/api-definitions/{}/specs?limit=500&offset={offset}",
+                                    query_component(&api)
+                                ),
+                                None,
+                                None,
+                            )
+                            .await?;
+                        let Some(page) = page else { break };
+                        let items = page
+                            .get("items")
+                            .and_then(serde_json::Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        if let Some(hit) = items.iter().find(|i| {
+                            i.get("version").and_then(serde_json::Value::as_i64) == Some(version)
+                        }) {
+                            item = Some(hit.clone());
+                            break;
+                        }
+                        let total = page
+                            .get("total")
+                            .and_then(serde_json::Value::as_i64)
+                            .unwrap_or(0);
+                        offset += items.len() as i64;
+                        if items.is_empty() || offset >= total {
+                            break;
+                        }
+                    }
+                    match item {
+                        Some(item) => {
+                            crate::cli::output::render(&render_global, "api-spec-version", &item)?;
+                            Some(item)
+                        }
+                        None => {
+                            return Err(crate::cli::output::render_error(
+                                &render_global,
+                                reqwest::StatusCode::NOT_FOUND,
+                                None,
+                                &format!(
+                                    "{{\"code\":\"not_found\",\"message\":\"spec version {version} not found\"}}"
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+            commands::ApiSpecCommand::Events {
+                team,
+                api,
+                version,
+                limit,
+                offset,
+            } => {
+                let team = client.team(team)?;
+                client
+                    .request(
+                        reqwest::Method::GET,
+                        &format!(
+                            "/api/v1/teams/{team}/api-definitions/{}/specs/{version}/events?limit={limit}&offset={offset}",
+                            query_component(&api)
+                        ),
+                        None,
+                    )
+                    .await?
+            }
             commands::ApiSpecCommand::Reject {
                 team,
                 api,
@@ -1530,6 +1759,18 @@ pub async fn run_mcp(global: GlobalOptions, command: McpCommand) -> Result<()> {
                     None,
                 )
                 .await?;
+        }
+        McpCommand::Tools {
+            team,
+            include_disabled,
+        } => {
+            let team = client.team(team)?;
+            let path = if include_disabled {
+                format!("/api/v1/teams/{team}/mcp/tools?include_disabled=true")
+            } else {
+                format!("/api/v1/teams/{team}/mcp/tools")
+            };
+            client.request(reqwest::Method::GET, &path, None).await?;
         }
         McpCommand::Enable { api, team } => update_mcp_tool(client, team, api, true).await?,
         McpCommand::Disable { api, team } => update_mcp_tool(client, team, api, false).await?,
@@ -2006,6 +2247,11 @@ async fn run_cert(client: RestClient, command: CertCommand) -> Result<()> {
     Ok(())
 }
 
+/// `flowplane dashboard` (fpv2-03m): loopback read-only presentation server.
+pub async fn run_dashboard(global: GlobalOptions, options: DashboardOptions) -> Result<()> {
+    dashboard::run(global, options).await
+}
+
 pub async fn run_stats(global: GlobalOptions, command: StatsCommand) -> Result<()> {
     let client = RestClient::new(global)?;
     match command {
@@ -2039,16 +2285,40 @@ pub async fn run_ops(global: GlobalOptions, command: OpsCommand) -> Result<()> {
                 .await?;
         }
         OpsCommand::Xds {
-            command: XdsCommand::Nacks { team },
+            command:
+                XdsCommand::Nacks {
+                    team,
+                    since,
+                    until,
+                    limit,
+                    before,
+                },
         } => {
             let team = client.team(team)?;
-            client
-                .request(
-                    reqwest::Method::GET,
-                    &format!("/api/v1/teams/{team}/xds/nacks"),
-                    None,
-                )
-                .await?;
+            let mut query: Vec<(&str, String)> = Vec::new();
+            if let Some(since) = since {
+                query.push(("since", since));
+            }
+            if let Some(until) = until {
+                query.push(("until", until));
+            }
+            if let Some(limit) = limit {
+                query.push(("limit", limit.to_string()));
+            }
+            if let Some(before) = before {
+                query.push(("before", before));
+            }
+            let path = if query.is_empty() {
+                format!("/api/v1/teams/{team}/xds/nacks")
+            } else {
+                let query = query
+                    .into_iter()
+                    .map(|(key, value)| format!("{key}={}", query_component(&value)))
+                    .collect::<Vec<_>>()
+                    .join("&");
+                format!("/api/v1/teams/{team}/xds/nacks?{query}")
+            };
+            client.request(reqwest::Method::GET, &path, None).await?;
         }
         OpsCommand::Trace {
             team,
@@ -2609,6 +2879,7 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/orgs/{org}/members/{user_id}",
         "/api/v1/agents",
         "/api/v1/agents/{agent_id}",
+        "/api/v1/agents/{agent_id}/grants",
         "/api/v1/agents/{agent_id}/disable",
         "/api/v1/agents/{agent_id}/rotate-token",
         "/api/v1/teams",
@@ -2630,10 +2901,16 @@ fn cli_endpoint_templates() -> BTreeSet<&'static str> {
         "/api/v1/teams/{team}/api-definitions",
         "/api/v1/teams/{team}/api-definitions/{name}",
         "/api/v1/teams/{team}/api-definitions/{name}/status",
+        "/api/v1/teams/{team}/api-definitions/{name}/route-bindings",
+        "/api/v1/teams/{team}/api-definitions/{name}/tools",
+        "/api/v1/teams/{team}/api-definitions/{name}/specs",
+        "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/content",
+        "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/events",
         "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/reject",
         "/api/v1/teams/{team}/api-definitions/{name}/specs/{version}/publish",
         "/api/v1/teams/{team}/mcp/status",
         "/api/v1/teams/{team}/mcp/connections",
+        "/api/v1/teams/{team}/mcp/tools",
         "/api/v1/teams/{team}/mcp/tools/{name}",
         "/api/v1/teams/{team}/ai/providers",
         "/api/v1/teams/{team}/ai/providers/{name}",

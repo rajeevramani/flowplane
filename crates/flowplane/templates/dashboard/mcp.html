@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Flowplane — {{ team }} — MCP</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/{{ nonce }}/assets/dashboard.css">
+  <script src="/{{ nonce }}/assets/htmx.min.js" defer></script>
+</head>
+<body>
+  {% let active_tab = "mcp" %}
+  {% include "dashboard/_shell.html" %}
+  <main id="resources">
+    <div id="mcp-status"
+         hx-get="/{{ nonce }}/partials/mcp/status"
+         hx-trigger="load once"
+         hx-target="#mcp-status"
+         hx-swap="innerHTML">
+      <p class="placeholder">Loading…</p>
+    </div>
+    <div id="mcp-tools"
+         hx-get="/{{ nonce }}/partials/mcp/tools"
+         hx-trigger="load once"
+         hx-target="#mcp-tools"
+         hx-swap="innerHTML">
+      <p class="placeholder">Loading…</p>
+    </div>
+    <div id="mcp-agents"
+         hx-get="/{{ nonce }}/partials/mcp/agents"
+         hx-trigger="load once"
+         hx-target="#mcp-agents"
+         hx-swap="innerHTML">
+      <p class="placeholder">Loading…</p>
+    </div>
+  </main>
+</body>
+</html>
