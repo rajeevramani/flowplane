@@ -2,15 +2,85 @@
 
 All notable changes to Flowplane are documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-Flowplane v2 is a ground-up Rust/PostgreSQL control plane. It is a new product, not an
-upgrade of an earlier Flowplane line — there is no in-place migration path from any prior
-version. `1.0.0` is its first stable release and the point at which the public REST API,
-CLI surface, and configuration contract become subject to semantic versioning.
+The current Flowplane implementation is a ground-up Rust/PostgreSQL control plane. It is a new
+product, not an upgrade of an earlier Flowplane line — there is no in-place migration path from
+that earlier line. Flowplane currently has no customers and has made no explicit compatibility promise.
+During this pre-customer stage, minor releases may intentionally evolve REST, CLI,
+config/bootstrap, or MCP contracts when the changes are reviewed, tested, and disclosed here.
+Strict prospective [Semantic Versioning](https://semver.org/spec/v2.0.0.html) begins with the
+first supported customer or explicit compatibility promise; that release establishes the
+compatibility baseline.
 
 ## [Unreleased]
+
+## [3.1.0] - 2026-07-29
+
+The headline feature is **`flowplane dashboard`**: a read-only, CLI-hosted web dashboard over
+the authenticated control-plane API. The release also adds the read models, CLI commands, and
+operator diagnostics that make the dashboard useful. This pre-customer minor release includes
+three intentional REST response-envelope changes; read **Changed** before upgrading internal
+clients.
+
+### Added
+
+- **Seven-screen read-only dashboard.** `flowplane dashboard` provides Overview, Resources,
+  APIs, Learning, AI, MCP, and Operations views with a shared responsive visual system,
+  accessible filtering/paging, API master/detail navigation, resource topology and orphan
+  detection, learning/discovery status, AI usage/trace drill-down, MCP tools and agents, and
+  windowed xDS NACK history. The browser receives no bearer token: htmx performs allowlisted
+  GET acquisition through the CLI-hosted presentation server, JavaScript is DOM-only, and a
+  per-launch nonce remains mandatory on every route. (fpv2-03m, fpv2-cxw, fpv2-cuu,
+  fpv2-0t4, fpv2-zl8, fpv2-5kn, fpv2-55x, fpv2-80z, fpv2-41r)
+- **Dashboard container/headless profile.** `flowplane dashboard` gains `--listen`, `--no-open`,
+  and `--url-file`; off-loopback binds emit a prominent warning without weakening nonce
+  protection. The evaluator bundle includes a dashboard service published on host loopback,
+  plus `flowplane-agent` and real xDS mTLS so the seeded dataplane can report live. (fpv2-m4u,
+  fpv2-81c)
+- **API lifecycle read models.** New paginated spec-version metadata, review-history,
+  content-with-ETag, route-binding, and generated-tool reads back the APIs and Learning views;
+  `flowplane api spec show` exposes spec metadata from the CLI. API lists now include measured
+  lifecycle aggregates and scan-level summary facts. (fpv2-cuu, fpv2-41r)
+- **AI observability reads.** Budget reads include current-window state; usage accepts time
+  windows and returns a page; trace reads use stable total-order cursor pagination. The AI
+  dashboard renders provider/route/budget health, usage totals, and paged traces. (fpv2-0t4)
+- **MCP operational catalogue.** A shared static tool registry backs a REST tool-catalog read,
+  CLI output, and the dashboard MCP view, preventing declaration drift across surfaces.
+  (fpv2-zl8)
+- **Agent read surface.** Paginated agent list/detail/grant reads, optional team filtering,
+  `flowplane agent list|show|grants`, and a dashboard agents panel. (fpv2-5kn, fpv2-9n8)
+- **Windowed xDS NACK history.** REST, CLI, MCP, and dashboard callers can filter by time,
+  paginate by an opaque cursor, and inspect the total matching window. `xds/status` also reports
+  resources withdrawn from the latest snapshot. (fpv2-55x, fpv2-xni)
+
+### Changed
+
+- **Three REST list envelopes intentionally evolve in this pre-customer release.**
+  `GET /api/v1/agents` changes from `AgentView[]` to `Page<AgentView>`;
+  `GET /api/v1/teams/{team}/xds/nacks` changes from a newest-first `NackEventView[]` with an
+  implicit maximum of 100 to filtered/cursor-aware `NackPage`; and
+  `GET /api/v1/teams/{team}/ai/usage` changes from `AiUsageSummary[]` to
+  `Page<AiUsageSummary>`. All in-repo callers use the new contracts; no duplicate compatibility
+  routes or negotiation flags are added.
+- **Agent reads use the shared authorization engine with explicit row scoping.** Org admins see
+  the active org; grant-holding non-admins see only agents/grants reachable through their team
+  authority; callers without valid active-org context fail closed. (fpv2-5kn)
+- **Grant referential integrity is enforced by schema.** The polymorphic grants table is split
+  into `user_grants` and `agent_grants` with real composite foreign keys, and the authorization
+  engine's any-team decision is restricted to the resolved active org. Removing an org member
+  now permanently revokes that member's grants in the org; re-adding the member does not restore
+  them. Deleting an agent cascades its grants; suspending one retains them. Migration `0033`
+  carries valid rows forward and drops already-orphaned grants. (fpv2-5nq)
+- **Discovery sessions report real progress.** Observation counters are populated and target
+  sample counts can auto-complete a session instead of leaving it apparently idle. (fpv2-l2l)
+
+### Fixed
+
+- Dashboard panels fetch when opened, long identifiers remain contained within cards, and the
+  shared UI framework removes cross-screen CSS/interaction drift. (fpv2-80z, fpv2-41r)
+- PostgreSQL cursor fixtures use database-supported timestamp precision, eliminating
+  nanosecond-versus-microsecond ordering failures in AI trace tests.
 
 ## [3.0.0] - 2026-07-17
 

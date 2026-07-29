@@ -148,8 +148,9 @@ Flowplane is the **control plane**: it stores gateway configuration (clusters, r
 - **API schema learning + discovery** — capture live traffic and infer JSON schemas with confidence scoring, exported as OpenAPI 3.1. *Learning* enriches an existing API definition; *discovery* spins up a throwaway listener and creates new API definitions from observed traffic.
 - **AI gateway** — register LLM providers (OpenAI / OpenAI-compatible), publish AI routes, and cap token spend with budgets that run in `shadow` (observe-only) then `enforcing`. Provider credentials are encrypted at rest.
 - **REST API + CLI** — a JSON API and a full-surface `flowplane` CLI covering auth/context, org/team management, gateway resources, expose/unexpose, learning, AI, secrets, dataplane registration, and ops diagnostics. Print the exact contract with `flowplane openapi`.
+- **Read-only team dashboard** — run `flowplane dashboard` for Overview, Resources, APIs, Learning, AI, MCP, and Operations views using the CLI's resolved credentials. The bearer token stays in the CLI process and every browser route requires a per-launch nonce.
 
-> An MCP control-plane surface is present in the codebase and evolving; a web dashboard is planned (the REST API already backs one).
+> An MCP control-plane surface is present in the codebase and evolving. The dashboard is a CLI-hosted read-only presentation layer over the existing REST API, not a second control plane.
 
 ## Documentation
 
@@ -165,6 +166,7 @@ The [documentation home](docs/README.md) is organised by [Diátaxis](https://dia
 | Cap a route globally across all Envoys | [Enable global rate limiting](docs/how-to/global-rate-limit.md) |
 | Learn an API spec from live traffic | [Learn & publish an API spec](docs/how-to/learn-and-publish-api-spec.md) |
 | Front an LLM with a token budget | [AI gateway route & budget](docs/how-to/ai-gateway-route-budget.md) |
+| Inspect a team's gateway in the dashboard | [View your team's gateway dashboard](docs/how-to/view-team-dashboard.md) |
 | Secure the data plane with mTLS | [Register a dataplane (mTLS)](docs/how-to/register-dataplane-mtls.md) |
 | Understand tenancy, grants, and xDS | [Tenancy, grants & the xDS pipeline](docs/concepts/tenancy-grants-xds.md) |
 | Understand global rate limiting | [Global rate limiting](docs/concepts/global-rate-limiting.md) |

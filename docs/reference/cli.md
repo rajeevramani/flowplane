@@ -46,6 +46,7 @@ These are read directly (not as flags) by config resolution:
 | `FLOWPLANE_OIDC_CLIENT_ID` | OIDC client ID fallback. |
 | `FLOWPLANE_OIDC_SCOPE` | OIDC scope fallback. |
 | `FLOWPLANE_OIDC_CALLBACK_URL` | OIDC callback URL fallback. |
+| `FLOWPLANE_DASHBOARD_NO_BROWSER` | When set, skip dashboard browser launch. Prefer the explicit `dashboard --no-open` flag in scripts and containers. |
 
 Configuration precedence is uniform for every value — `flag > env > context > file > default`.
 Token resolution follows the same rule: `--token` → `FLOWPLANE_TOKEN` → selected context token →
@@ -136,7 +137,7 @@ separate from the success envelope above (it is **not** wrapped in `{schemaVersi
 
 ## Top-level commands
 
-`serve`, `db`, `openapi`, `auth`, `config`, `org`, `team`, `cluster`, `listener`, `route`, `api`, `mcp`, `ai`, `rate-limit`, `learn`, `secret`, `dataplane`, `expose`, `unexpose`, `stats`, `ops`, `apply`, `completion`, `version`, `schema`.
+`serve`, `db`, `openapi`, `auth`, `config`, `org`, `team`, `cluster`, `listener`, `route`, `api`, `mcp`, `ai`, `rate-limit`, `learn`, `secret`, `agent`, `dataplane`, `expose`, `unexpose`, `dashboard`, `stats`, `ops`, `apply`, `completion`, `version`, `schema`.
 
 ---
 
@@ -264,6 +265,11 @@ API definitions, imported specs, and generated API tool rows.
 | `api status <NAME>` | `--team <TEAM>`, positional `name` |
 | `api create <NAME>` | `--team <TEAM>`, positional `name`, `--display-name <NAME>`, `--description <TEXT>` (default empty), `--from-openapi <PATH>`, `--route-config-id <ID>`, `--listener-id <ID>`, `--virtual-host <HOST>`, `--route <ROUTE>` |
 | `api delete <NAME>` | `--team <TEAM>`, positional `name` |
+| `api bindings <API>` | `--team <TEAM>`, positional `api`, `--limit <N>` (default 50, cap 500), `--offset <N>` (default 0) |
+| `api tools <API>` | `--team <TEAM>`, positional `api`, `--limit <N>` (default 50, cap 500), `--offset <N>` (default 0); includes disabled generated tools |
+| `api spec list <API>` | `--team <TEAM>`, positional `api`, `--limit <N>` (default 50, cap 500), `--offset <N>` (default 0) |
+| `api spec show <API> <VERSION>` | `--team <TEAM>`, positionals `api`, `version`; metadata by default, stored OpenAPI document with `--content` |
+| `api spec events <API> <VERSION>` | `--team <TEAM>`, positionals `api`, `version`, `--limit <N>` (default 50, cap 500), `--offset <N>` (default 0) |
 | `api spec reject <API> <VERSION>` | `--team <TEAM>`, positionals `api`, `version` (i64), `--reason <TEXT>` (default empty) |
 | `api spec publish <API> <VERSION>` | `--team <TEAM>`, positionals `api`, `version` (i64), `--reason <TEXT>` (default empty) |
 
@@ -274,8 +280,18 @@ MCP server and generated API tool operations.
 |------------|--------------|
 | `mcp status` | `--team <TEAM>` |
 | `mcp connections` | `--team <TEAM>` |
+| `mcp tools` | `--team <TEAM>`, `--include-disabled` (requires `mcp-tools:update`) |
 | `mcp enable` | `--api <API>` (alias `--tool`, required), `--team <TEAM>` |
 | `mcp disable` | `--api <API>` (alias `--tool`, required), `--team <TEAM>` |
+
+### `agent`
+Read-only agent identity and grant inspection. Agent UUIDs are positional for `show` and `grants`.
+
+| Subcommand | Args / Flags |
+|------------|--------------|
+| `agent list` | `--team <TEAM>` (optional grant-team filter by name or UUID), `--limit <N>` (default 50, cap 500), `--offset <N>` |
+| `agent show <ID>` | positional agent UUID |
+| `agent grants <ID>` | positional agent UUID, `--limit <N>` (default 50, cap 500), `--offset <N>` |
 
 ### `ai`
 AI gateway resources. `providers`, `routes`, and `budgets` each use the shared resource subcommand set (`list`, `get`, `create`, `update`, `delete`).
@@ -285,8 +301,8 @@ AI gateway resources. `providers`, `routes`, and `budgets` each use the shared r
 | `ai providers <RESOURCE_CMD>` | shared resource subcommands (see `cluster`) |
 | `ai routes <RESOURCE_CMD>` | shared resource subcommands (see `cluster`) |
 | `ai budgets <RESOURCE_CMD>` | shared resource subcommands (see `cluster`) |
-| `ai usage` | `--team <TEAM>`, `--provider-id <ID>`, `--route-config-id <ID>`, `--limit <N>` (i64, default 50), `--offset <N>` (i64, default 0) |
-| `ai trace` | `--team <TEAM>`, `--request-id <ID>` (server-generated `x-request-id` from the AI data-plane response), `--trace-id <ID>` (W3C trace id from an inbound `traceparent`), `--limit <N>` (i64, default 50) |
+| `ai usage` | `--team <TEAM>`, `--provider-id <ID>`, `--route-config-id <ID>`, `--since <RFC3339>` (inclusive), `--until <RFC3339>` (exclusive; span capped at 92 days when `--since` is present), `--limit <N>` (i64, default 50), `--offset <N>` (i64, default 0) |
+| `ai trace` | `--team <TEAM>`, `--request-id <ID>` (server-generated `x-request-id` from the AI data-plane response), `--trace-id <ID>` (W3C trace id from an inbound `traceparent`), `--before <CREATED_AT,UUID>` (strictly older-page cursor), `--limit <N>` (i64, default 50) |
 | `ai retention get` | `--team <TEAM>` — shows the trace TTL in force (team policy or the built-in 30-day default) |
 | `ai retention set` | `--team <TEAM>`, `--days <DAYS>` (i32, 1–365, required) — create-or-replace; affects only newly captured traces |
 
@@ -371,18 +387,25 @@ Remove resources created by `expose`. Flattened args (no subcommands):
 | `--team <TEAM>` | Team scope. |
 
 ### `dashboard`
-Open a read-only local dashboard for the resolved team (loopback only). No subcommands and no flags of its own — context (server, org, team, token) resolves exactly like every other command, and a missing team fails with the standard `team is required` error before anything starts.
+Open a read-only dashboard for the resolved team. It binds loopback on an ephemeral port by default; context (server, org, team, token) resolves exactly like every other command, and a missing team fails with the standard `team is required` error before anything starts.
 
-`flowplane dashboard [--team <TEAM>]`
+`flowplane dashboard [--listen <ADDR:PORT>] [--no-open] [--url-file <PATH>] [--server <URL>] [--org <ORG>] [--team <TEAM>] [--token <TOKEN>]`
+
+| Flag | Meaning |
+|------|---------|
+| `--listen <ADDR:PORT>` | Bind address. Defaults to `127.0.0.1` on an ephemeral port. An off-loopback bind is allowed but prints a prominent warning; the nonce remains mandatory. |
+| `--no-open` | Do not launch a browser; preferred for headless/container use. |
+| `--url-file <PATH>` | Atomically write the URL after bind and the first successful upstream fetch. Any pre-existing file is removed before binding; an unwritable path is fatal. |
+| `--server`, `--org`, `--team`, `--token` | Override the normal resolved context for this launch. |
 
 Behavior:
 
-- Starts a local web server bound to `127.0.0.1` on an ephemeral port and opens your browser at `http://127.0.0.1:<port>/<nonce>/` (the URL is always printed, so you can open it manually on a headless machine; a missing opener is not an error).
-- The Overview page shows live team data from `GET /stats/overview` and `GET /xds/status`, refreshing every 10 seconds. The page is strictly read-only: the local server serves GET routes only and proxies nothing else.
-- The server exits when the command exits (Ctrl-C). Nothing is daemonized and nothing is written to disk.
-- Set `FLOWPLANE_DASHBOARD_NO_BROWSER=1` to skip the browser launch (useful headless or in scripts).
+- Opens at `http://127.0.0.1:<port>/<nonce>/` by default and always prints the URL. The preferred headless interface is `--no-open`; `FLOWPLANE_DASHBOARD_NO_BROWSER=1` remains supported.
+- Seven navigation screens cover Overview, Resources, APIs, Learning, AI, MCP, and Operations. Panels acquire only their allowlisted control-plane GETs and degrade independently on denial or upstream failure.
+- The server exits with the command. `--url-file` is the only intentional disk output and is the readiness contract for containerized launchers.
+- The dashboard remains structurally read-only. The bearer token stays in the CLI process; htmx owns network acquisition and JavaScript is DOM-only. Every route requires the per-launch nonce, including off-loopback launches.
 
-There is deliberately **no flag to bind a non-loopback address** — the dashboard is local-only in this release. See [View your team's gateway dashboard](../how-to/view-team-dashboard.md) for the security model and troubleshooting.
+See [View your team's gateway dashboard](../how-to/view-team-dashboard.md) for launch profiles, screen contents, the security model, and troubleshooting.
 
 ### `stats`
 Team stats.
@@ -397,7 +420,7 @@ Operations diagnostics.
 | Subcommand | Args / Flags |
 |------------|--------------|
 | `ops xds status` | `--team <TEAM>` |
-| `ops xds nacks` | `--team <TEAM>` |
+| `ops xds nacks` | `--team <TEAM>`, `--since <RFC3339>` (inclusive), `--until <RFC3339>` (exclusive), `--limit <N>` (default 50, max 200), `--before <CURSOR>` |
 | `ops trace` | `--team <TEAM>`, `--request-id <ID>`, `--trace-id <ID>`, `--path <PATH>`, `--limit <N>` (i64, default 50) |
 
 ### `apply`

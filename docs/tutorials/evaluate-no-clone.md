@@ -43,13 +43,13 @@ The bundle also serves a read-only dashboard for the seeded team. Its URL contai
 docker compose -f compose.eval.yml exec flowplane-dashboard cat /shared/dashboard-url
 ```
 
-Open the printed URL (`http://127.0.0.1:8081/<nonce>/`) in your browser. The Overview page lists the eval dataplane `dp-eval` and the team totals for the seeded `default` team. If the file does not exist yet, the dashboard is still waiting for the control plane — watch its progress with:
+Open the printed URL (`http://127.0.0.1:8081/<nonce>/`) in your browser. The dashboard opens on Overview and also provides Resources, APIs, Learning, AI, MCP, and Operations screens for the seeded `default` team. Overview lists the eval dataplane `dp-eval` and team totals. If the file does not exist yet, the dashboard is still waiting for the control plane — watch its progress with:
 
 ```bash
 docker compose -f compose.eval.yml logs flowplane-dashboard
 ```
 
-The dashboard is published on host loopback only (`127.0.0.1:8081`), and every route requires the nonce path — a request without it is rejected. Each restart of the dashboard container generates a fresh nonce, so re-read the file after a restart. In this evaluation bundle the dataplane row shows `never` for its heartbeat and static request totals: live heartbeat and request-total telemetry come from the `fp-agent` diagnostics channel, which the plaintext dev bundle does not run (see [Register a dataplane and connect its agent over mTLS](../how-to/register-dataplane-mtls.md) for the production path).
+The dashboard is published on host loopback only (`127.0.0.1:8081`), and every route requires the nonce path — a request without it is rejected. Each restart of the dashboard container generates a fresh nonce, so re-read the file after a restart. In 3.1.0 the bundle runs `flowplane-agent` beside Envoy over xDS mTLS, so `dp-eval` should become live and its telemetry should advance after requests. If it remains stale, inspect `docker compose -f compose.eval.yml logs flowplane-agent`.
 
 ## 3. Confirm CLI authentication
 

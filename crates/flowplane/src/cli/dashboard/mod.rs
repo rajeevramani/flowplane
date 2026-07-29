@@ -1,11 +1,12 @@
-//! `flowplane dashboard` (fpv2-03m.2): a read-only, loopback-only presentation server.
+//! `flowplane dashboard` (fpv2-03m.2): a read-only presentation server that binds loopback by default.
 //!
 //! Trust boundary (design: releases/3.1.0 ui-f1, "Security posture of the local server"):
-//! the server binds 127.0.0.1 on an ephemeral port, every route lives under a per-launch
-//! 128-bit CSPRNG nonce path prefix (no route exists outside it), only GET handlers are
-//! registered, `Host`/`Origin` are validated, and every response carries no-store /
-//! CSP-self / no-referrer / frame-deny headers. The bearer token stays in process memory;
-//! nothing in this module writes it to a response or a log.
+//! the native profile binds 127.0.0.1 on an ephemeral port; an explicit off-loopback bind is a
+//! container/tunnel transport while browser Host/Origin values remain loopback-only. Every route
+//! lives under a per-launch 128-bit CSPRNG nonce path prefix (no route exists outside it), only GET
+//! handlers are registered, and every response carries no-store / CSP-self / no-referrer /
+//! frame-deny headers. The bearer token stays in process memory; nothing in this module writes it
+//! to a response or a log.
 
 mod ai;
 mod apis;
@@ -117,10 +118,10 @@ pub(crate) struct DashState {
     content_cache: learning::ContentCache,
 }
 
-/// The configured team is interpolated into the two allowlisted upstream paths as ONE
+/// The configured team is interpolated into allowlisted upstream paths as ONE
 /// path segment. Constrain it to URL-safe name/UUID characters so a hostile config
 /// value (`/`, `?`, `#`, `%`, dot-segments) cannot change which paths are requested —
-/// the fixed two-GET allowlist is a design invariant. CP team names are lowercase
+/// the fixed GET allowlist is a design invariant. CP team names are lowercase
 /// alphanumerics with single hyphens; team UUIDs are hex + hyphens; both fit.
 fn validate_team_segment(team: &str) -> Result<()> {
     let valid = !team.is_empty()
