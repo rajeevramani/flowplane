@@ -1,0 +1,37 @@
+{
+  "spec": {
+    "virtual_hosts": [
+      {
+        "domains": [
+          "*"
+        ],
+        "name": "default",
+        "routes": [
+          {
+            "action": {
+              "cluster": "demo-upstream",
+              "timeout_secs": 15,
+              "rate_limits": [
+                {
+                  "actions": [
+                    {
+                      "type": "request_headers",
+                      "header_name": "x-api-key",
+                      "descriptor_key": "api_key"
+                    }
+                  ]
+                }
+              ]
+            },
+            "match": {
+              "prefix": {
+                "prefix": "/"
+              }
+            },
+            "name": "all"
+          }
+        ]
+      }
+    ]
+  }
+}

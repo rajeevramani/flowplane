@@ -1,0 +1,48 @@
+# SCRATCH-ONLY verification harness (NOT a documented user command, NOT an AS_WRITTEN result).
+# Adds a standalone flowplane-rls instance to the release-tagged eval bundle and wires the CP
+# and Envoy to it over the documented split-node mTLS path (global-rate-limit.md §Production).
+# The release compose.eval.yml is used unmodified as the base (-f compose.eval.yml -f override.rls.yml).
+services:
+  # 3rd distinct Flowplane instance: standalone RLS (flowplane-rls entrypoint), separate container/PID.
+  rls:
+    image: ${FLOWPLANE_EVAL_IMAGE}
+    entrypoint: ["/usr/local/bin/flowplane-rls"]
+    environment:
+      FLOWPLANE_RLS_GRPC_LISTEN: 0.0.0.0:50051
+      FLOWPLANE_RLS_ADMIN_LISTEN: 0.0.0.0:8091
+      # gRPC mTLS triad (Envoy -> RLS)
+      FLOWPLANE_RLS_GRPC_TLS_CERT: /rlspki/rls-grpc-server.pem
+      FLOWPLANE_RLS_GRPC_TLS_KEY: /rlspki/rls-grpc-server.key
+      FLOWPLANE_RLS_GRPC_TLS_CLIENT_CA: /rlspki/rls-ca.pem
+      # admin HTTPS + bearer (CP -> RLS)
+      FLOWPLANE_RLS_ADMIN_TLS_CERT: /rlspki/rls-admin-server.pem
+      FLOWPLANE_RLS_ADMIN_TLS_KEY: /rlspki/rls-admin-server.key
+      FLOWPLANE_RLS_ADMIN_TOKEN_FILE: /rlspki/rls-admin.token
+    ports:
+      - "127.0.0.1:8091:8091"   # admin HTTPS, loopback only (verification access)
+    volumes:
+      - ./rlspki:/rlspki:ro
+
+  flowplane-eval:
+    environment:
+      # Point CP at the standalone RLS (injects rate_limit_cluster into CDS + starts rls_sync worker)
+      FLOWPLANE_RLS_GRPC_URL: rls:50051
+      FLOWPLANE_RLS_ADMIN_URL: https://rls:8091
+      FLOWPLANE_RLS_ADMIN_TOKEN_FILE: /rlspki/rls-admin.token
+      FLOWPLANE_RLS_ADMIN_TLS_CA: /rlspki/rls-ca.pem
+      # Envoy's client half for the Envoy->RLS hop (paths resolved by Envoy on the dataplane host)
+      FLOWPLANE_DATAPLANE_TLS_CERT: /rls-dp/envoy-client.pem
+      FLOWPLANE_DATAPLANE_TLS_KEY: /rls-dp/envoy-client.key
+      FLOWPLANE_DATAPLANE_TLS_CLIENT_CA: /rls-dp/rls-ca.pem
+    depends_on:
+      rls:
+        condition: service_started
+    volumes:
+      - ./rlspki:/rlspki:ro
+
+  envoy:
+    # expose admin for verification (config_dump / rate-limit stats) + mount Envoy's RLS client cert
+    ports:
+      - "127.0.0.1:9901:9901"
+    volumes:
+      - ./rlspki:/rls-dp:ro

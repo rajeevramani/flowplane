@@ -1,0 +1,106 @@
+{
+  "gate": "NO-GO",
+  "gate_line": "GATE: NO-GO — a confirmed documentation defect exists (F-001, docs/reference/filters.md:241 broken link; also F-002 release-manifest SBOM name), so GO criterion #17 'no FAIL result exists' is not met",
+  "run_id": "run-20260730-063414-4127",
+  "date": "2026-07-30",
+  "scope": "local separate-instance integration (NOT production/cloud certification)",
+  "identity": {
+    "version_selection": "no argument supplied -> latest non-draft/non-prerelease release v3.1.0",
+    "version": "3.1.0",
+    "doc_tag": "v3.1.0",
+    "annotated_tag_object_sha": "85bd8cd192642e17b88888fe10466cb72d46fa8d",
+    "tag_commit_preflight": "a9ea214fae7dda12aa79554942129b800d9a6fe3",
+    "tag_commit_verdict": "a9ea214fae7dda12aa79554942129b800d9a6fe3",
+    "tag_stable": true,
+    "docs_archive_sha256": "85613d7b44119495bfc9d06a558d1e609eb8be22abaac09f354b7e390aeb30c1",
+    "executed_platform": "linux/amd64",
+    "runtime": "Docker Engine 29.3.1, Compose v5.1.1"
+  },
+  "images": {
+    "eval": {
+      "tag": "ghcr.io/rajeevramani/flowplane:3.1.0-eval",
+      "digest": "ghcr.io/rajeevramani/flowplane@sha256:62dbdb0d939fdf7fc4333b073cd06e0c83b99bb97bb54e33c9bead460e4cc768",
+      "reported_version": "3.1.0",
+      "index_platforms": ["linux/amd64", "linux/arm64"]
+    },
+    "hardened": {
+      "tag": "ghcr.io/rajeevramani/flowplane:3.1.0",
+      "digest": "ghcr.io/rajeevramani/flowplane@sha256:0d902ee5ae66c4aeb6ae22413a5107995f37b0a40fc7d60cdc51b77b44d1e11b",
+      "reported_version": "3.1.0",
+      "index_platforms": ["linux/amd64", "linux/arm64"]
+    }
+  },
+  "supporting_images": {
+    "postgres:16": "sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20",
+    "hashicorp/http-echo:1.0.0": "sha256:fcb75f691c8b0414d670ae570240cbf95502cc18a9ba57e982ecac589760a186",
+    "envoyproxy/envoy:v1.37-latest": "sha256:1c2b79776c6e3b38e8b0113b825e6a599f9bfc08d680c199d80bf8964856c529"
+  },
+  "assets": {
+    "sha256sums_verified": true,
+    "amd64_tarball_sha256": "4a12db0e6c0a8beb72b43b82df27e2223767e41c2472f1cb7cf2ed5c5597ff95",
+    "amd64_sbom_sha256": "350bc9d8dd026bedc7e4cf6ce47d9fe83583db5b6de6c74ff6c2f9ed4179c673",
+    "binary_versions": {"flowplane": "3.1.0", "flowplane-agent": "3.1.0", "flowplane-rls": "no version flag (present, executes)"},
+    "compose_identical_across_sources": true
+  },
+  "phases": {
+    "preflight": "PASS",
+    "phase1_no_clone_quickstart": "PASS",
+    "phase2_dashboard": "PASS",
+    "phase3_core_journeys": "PASS",
+    "phase4_separate_instance_integration": "PASS",
+    "phase5_rls_e2e": "PASS",
+    "phase6_failure_recovery": "PASS",
+    "phase7_guards": "PASS"
+  },
+  "key_evidence": {
+    "through_gateway": "HTTP 200 'hello from the flowplane eval demo upstream' via Envoy",
+    "dashboard_security": "no-nonce/wrong-nonce 404; foreign Host/Origin 403; bearer token absent from HTML; Overview polls every 10s",
+    "rls_enforcement_as_written": "100x200 + 1x429 for x-api-key acme",
+    "rls_propagation": "limit 100->5 -> 5x200+7x429, zero component restarts",
+    "rls_three_boundary": "CP rls_sync push; Envoy over_limit=8 + mTLS to rate_limit_cluster (ssl.handshake=4, upstream_rq_total=331); RLS 331 decisions",
+    "fail_open": "RLS down + failure_mode_deny:false -> 200",
+    "fail_closed": "RLS down + failure_mode_deny:true -> 500",
+    "cp_recovery": "Envoy last-good while CP down; Envoy auto-reconnect + new config reached Envoy; agent restarted (supervised model) reconnected clean",
+    "guards_fail_closed": ["hardened rejects dev mode", "rls non-loopback plaintext gRPC", "rls partial gRPC TLS", "rls admin no TLS/token", "CP admin token over plaintext"]
+  },
+  "coverage": {
+    "total_pages": 34,
+    "CORE_EXECUTED": 7,
+    "FOCUSED_EXECUTED": 4,
+    "STATIC_REVIEWED": 22,
+    "NOT_APPLICABLE": 1,
+    "BLOCKED": 0,
+    "unbucketed": 0
+  },
+  "findings": [
+    {
+      "id": "F-001",
+      "severity_rank": 9,
+      "severity": "static documentation defect",
+      "artifact": "docs archive 85613d7b (STATIC)",
+      "doc": "docs/reference/filters.md",
+      "line": 241,
+      "summary": "Dangling Markdown link '[filters reference / reserved names]' (no target/definition) renders as literal text",
+      "issue": "https://github.com/rajeevramani/flowplane/issues/239",
+      "publication": "CREATED"
+    },
+    {
+      "id": "F-002",
+      "severity_rank": 5,
+      "severity": "published artifact/manifest defect (low)",
+      "artifact": "tarball 4a12db0e (release-manifest.md)",
+      "doc": "release-manifest.md",
+      "summary": "SBOM named flowplane-3.1.0.cargo-metadata.sbom.json; published SBOMs are arch-suffixed (no such asset)",
+      "issue": "https://github.com/rajeevramani/flowplane/issues/240",
+      "publication": "CREATED"
+    }
+  ],
+  "observations_not_filed": [
+    "global-rate-limit.md 'per distinct api_key' framing vs exact-value policy match (mitigated by line 190-191; executable verify passes)",
+    "flowplane-agent exits on CP diagnostics stream loss and does not self-reconnect (no doc auto-reconnect promise; supervised-restart model; reconnects clean on restart)",
+    "cli/cli-contract 'any 5xx retryable' vs errors.md per-code note (plausible two-layer distinction)"
+  ],
+  "security_findings": 0,
+  "behavioral_failures": 0,
+  "excluded_scope": ["AWS", "Kubernetes", "other cloud", "cloud IAM", "managed DB/LB/certs", "autoscaling", "multi-region/DR", "real external OIDC", "arm64 runtime"]
+}

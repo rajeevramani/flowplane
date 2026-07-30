@@ -1,0 +1,11 @@
+cluster.demo-upstream.ratelimit.error: 26
+cluster.demo-upstream.ratelimit.failure_mode_allowed: 20
+cluster.demo-upstream.ratelimit.ok: 333
+cluster.demo-upstream.ratelimit.over_limit: 18
+cluster.demo-upstream.upstream_rq_retry_backoff_ratelimited: 0
+cluster.demo2-upstream.upstream_rq_retry_backoff_ratelimited: 0
+cluster.rate_limit_cluster.ssl.handshake: 7
+cluster.rate_limit_cluster.upstream_rq_2xx: 351
+cluster.rate_limit_cluster.upstream_rq_retry_backoff_ratelimited: 0
+cluster.rate_limit_cluster.upstream_rq_total: 351
+cluster.xds_cluster.upstream_rq_retry_backoff_ratelimited: 0
