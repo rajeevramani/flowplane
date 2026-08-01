@@ -200,7 +200,7 @@ AI providers, routes, budgets, and usage are runtime product config through the 
 
 | Symptom | Signals | Action |
 | --- | --- | --- |
-| CP unavailable | `/healthz` fails, API unavailable | Check process logs, TLS material, listener bind, bootstrap token on first boot, OIDC config, and DB reachability. Restart CP. Existing DPs keep last-applied config. |
+| CP unavailable | CP `/healthz` fails, API unavailable, agent `/healthz` returns `503` while diagnostics acknowledgments are stale | Check CP process logs, TLS material, listener bind, bootstrap token on first boot, OIDC config, and DB reachability, then restore the CP; do not restart a surviving agent. The surviving agent reconnects automatically after the control plane is restored. Envoy continues serving its last-good configuration, and agent readiness returns only after the control plane accepts and commits a diagnostics report. |
 | DB degraded/down | `/readyz` fails, `fp_db_pool_*` saturation, DB connection errors | Restore DB connectivity. Expect REST mutations to fail while DB is down. Run `flowplane db migrate` after restore before serving traffic. |
 | xDS NACK/quarantine | `fp_xds_nacks_total`, `fp_xds_quarantined_resources_total`, translation failure counters | Inspect the rejected resource in CP logs/audit. Fix the persisted CP resource and republish; do not patch Envoy admin directly. |
 | Dataplane disconnect churn | `fp_xds_ads_streams_closed_total` rising faster than opens | Check DP network path to CP xDS, mTLS cert validity, and agent/Envoy process health. |
