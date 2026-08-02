@@ -238,8 +238,7 @@ end-to-end recipe.
   time: an unknown / cross-team cluster is rejected `404`.
 
 The reserved name `rate_limit_cluster` (and the `rate_limit_` prefix) cannot be used for a
-user-created cluster — see [filters reference / reserved names] and
-[Global rate limiting](../concepts/global-rate-limiting.md).
+user-created cluster; see [Global rate limiting](../concepts/global-rate-limiting.md).
 
 Validation:
 - `domain` must be 1..=327 characters and contain no NUL. (The ceiling admits the composed
