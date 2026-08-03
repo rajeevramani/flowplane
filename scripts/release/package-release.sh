@@ -60,7 +60,7 @@ cat > "$ARTIFACT_DIR/release-manifest.md" <<EOF
   \`ldd\` or \`file\`.
 - License: Apache-2.0 (Q-006 resolved); see \`LICENSE\`/\`NOTICE\`. Public distribution is not license-gated.
 - OCI image tag: \`$IMAGE_TAG\`
-- SBOM source artifact: \`flowplane-$VERSION.cargo-metadata.sbom.json\`
+- SBOM source artifact: \`$ARTIFACT.cargo-metadata.sbom.json\`
 - Checksums: \`SHA256SUMS\`
 
 Dataplane bootstrap:
