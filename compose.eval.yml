@@ -153,7 +153,7 @@ services:
       FLOWPLANE_CERT_ISSUER_CA_CERT_PATH: /pki-cp/ca.crt
       FLOWPLANE_CERT_ISSUER_CA_KEY_PATH: /pki-cp/ca.key
     ports:
-      - "127.0.0.1:8080:8080"   # REST/MCP API, loopback only. xDS (18000) is NOT host-exposed —
+      - "127.0.0.1:${FLOWPLANE_EVAL_API_PORT:-8080}:8080"   # REST/MCP API, loopback only. xDS (18000) is NOT host-exposed —
                                 # Envoy reaches it over the compose network.
     # The slim eval image ships only the flowplane binary (no curl/wget), so readiness is probed
     # with the binary itself: `auth whoami` succeeds only once the API listener is up AND the dev
@@ -286,7 +286,7 @@ services:
     entrypoint: ["envoy"]
     command: ["-c", "/shared/envoy.yaml", "--log-level", "info"]
     ports:
-      - "127.0.0.1:10000:10000"   # the evaluator's gateway; loopback only.
+      - "127.0.0.1:${FLOWPLANE_EVAL_GATEWAY_PORT:-10000}:10000"   # the evaluator's gateway; loopback only.
     depends_on:
       init:
         condition: service_completed_successfully
@@ -309,6 +309,9 @@ services:
     image: ${FLOWPLANE_EVAL_IMAGE:-flowplane:eval-local}
     entrypoint: ["/bin/sh", "-c"]
     network_mode: "service:envoy"
+    # Defense in depth only: daemon mode reconnects internally after CP/stream loss. Because this
+    # container joins Envoy's network namespace, recreate it when the Envoy container is recreated.
+    restart: unless-stopped
     command:
       - |
         set -e

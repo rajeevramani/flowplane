@@ -10,10 +10,10 @@ The evaluation bundle runs dev mode: an in-process identity issuer, seeded `dev-
 
 ## 1. Start the published evaluator bundle
 
-Use a published release. This example uses `3.1.0`, whose eval compose file and multi-arch eval image are published (the dashboard step below needs `3.1.0` or newer):
+Use a published release. This example targets `3.1.1`; use it after `v3.1.1` appears on the GitHub Releases page. Its eval compose file and multi-arch eval image support the dashboard step below (`3.1.0` or newer):
 
 ```bash
-VER=3.1.0
+VER=3.1.1
 
 curl -fsSLO https://raw.githubusercontent.com/rajeevramani/flowplane/v${VER}/compose.eval.yml
 
@@ -49,7 +49,7 @@ Open the printed URL (`http://127.0.0.1:8081/<nonce>/`) in your browser. The das
 docker compose -f compose.eval.yml logs flowplane-dashboard
 ```
 
-The dashboard is published on host loopback only (`127.0.0.1:8081`), and every route requires the nonce path — a request without it is rejected. Each restart of the dashboard container generates a fresh nonce, so re-read the file after a restart. In 3.1.0 the bundle runs `flowplane-agent` beside Envoy over xDS mTLS, so `dp-eval` should become live and its telemetry should advance after requests. If it remains stale, inspect `docker compose -f compose.eval.yml logs flowplane-agent`.
+The dashboard is published on host loopback only (`127.0.0.1:8081`), and every route requires the nonce path — a request without it is rejected. Each restart of the dashboard container generates a fresh nonce, so re-read the file after a restart. In 3.1.1 the bundle runs `flowplane-agent` beside Envoy over xDS mTLS, so `dp-eval` should become live and its telemetry should advance after requests. If it remains stale, inspect `docker compose -f compose.eval.yml logs flowplane-agent`.
 
 ## 3. Confirm CLI authentication
 

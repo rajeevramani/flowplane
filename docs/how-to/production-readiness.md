@@ -21,7 +21,7 @@ Deploy the control plane and dataplane bundle separately.
 Install the published operator binaries on the control-plane host, operator workstation, and dataplane host. Pick the archive for the host architecture:
 
 ```bash
-VER=3.1.0
+VER=3.1.1
 ARCH=linux-amd64   # or linux-arm64
 BASE="https://github.com/rajeevramani/flowplane/releases/download/v${VER}"
 
@@ -35,9 +35,9 @@ sudo install -m 0755 "flowplane-${VER}-${ARCH}/bin/flowplane-agent" /usr/local/b
 sudo install -m 0755 "flowplane-${VER}-${ARCH}/bin/flowplane-rls" /usr/local/bin/flowplane-rls
 ```
 
-Use `shasum -a 256 -c` instead of `sha256sum -c` on systems that do not provide `sha256sum`. The release archive also includes `bin/fp-agent` as a one-release compatibility alias, but public operator commands use `flowplane-agent`.
+Use `shasum -a 256 -c` instead of `sha256sum -c` on systems that do not provide `sha256sum`. The release archive also includes `bin/fp-agent` as a deprecated compatibility alias, but public operator commands use `flowplane-agent`.
 
-The published `3.1.0` binary archives are Linux `amd64` and Linux `arm64`. Use a Linux host for the installed CLI, or run the published container image with an entrypoint override when your operator workstation is not Linux.
+When `v3.1.1` is published, its binary archives are Linux `amd64` and Linux `arm64`. Use a Linux host for the installed CLI, or run the published container image with an entrypoint override when your operator workstation is not Linux.
 
 Control plane:
 
@@ -118,7 +118,7 @@ model has Flowplane operate the dataplane filesystem or co-locate multiple tenan
 
 ## Upgrade, Rollback, And Version Skew
 
-For the `3.1.0` split-node release path, run the control plane, CLI, `flowplane-agent`, and `flowplane-rls` from the same `3.1.0` artifact set. Short-lived skew during a rolling restart is acceptable for replacing one process at a time, but do not plan a long-lived mixed-version CP/agent/RLS deployment until a later compatibility policy says so.
+For the `3.1.1` split-node release path, run the control plane, CLI, `flowplane-agent`, and `flowplane-rls` from the same `3.1.1` artifact set. Short-lived skew during a rolling restart is acceptable for replacing one process at a time, but do not plan a long-lived mixed-version CP/agent/RLS deployment until a later compatibility policy says so.
 
 Upgrade:
 
@@ -200,7 +200,7 @@ AI providers, routes, budgets, and usage are runtime product config through the 
 
 | Symptom | Signals | Action |
 | --- | --- | --- |
-| CP unavailable | `/healthz` fails, API unavailable | Check process logs, TLS material, listener bind, bootstrap token on first boot, OIDC config, and DB reachability. Restart CP. Existing DPs keep last-applied config. |
+| CP unavailable | CP `/healthz` fails, API unavailable, agent `/healthz` returns `503` while diagnostics acknowledgments are stale | Check CP process logs, TLS material, listener bind, bootstrap token on first boot, OIDC config, and DB reachability, then restore the CP; do not restart a surviving agent. The surviving agent reconnects automatically after the control plane is restored. Envoy continues serving its last-good configuration, and agent readiness returns only after the control plane accepts and commits a diagnostics report. |
 | DB degraded/down | `/readyz` fails, `fp_db_pool_*` saturation, DB connection errors | Restore DB connectivity. Expect REST mutations to fail while DB is down. Run `flowplane db migrate` after restore before serving traffic. |
 | xDS NACK/quarantine | `fp_xds_nacks_total`, `fp_xds_quarantined_resources_total`, translation failure counters | Inspect the rejected resource in CP logs/audit. Fix the persisted CP resource and republish; do not patch Envoy admin directly. |
 | Dataplane disconnect churn | `fp_xds_ads_streams_closed_total` rising faster than opens | Check DP network path to CP xDS, mTLS cert validity, and agent/Envoy process health. |

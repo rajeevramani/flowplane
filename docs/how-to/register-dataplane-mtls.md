@@ -160,6 +160,12 @@ The agent serves `/healthz` once it has scraped Envoy admin and received a diagn
 curl -fsS http://127.0.0.1:19902/healthz   # "ok" when polling + acks are fresh
 ```
 
+`/healthz` is a readiness signal, not a process-liveness signal. During a temporary diagnostics-stream or control-plane outage the long-running agent remains alive, keeps its bounded Envoy-scrape queue, and returns `503`; Envoy continues serving its last-good configuration. Daemon mode reconnects automatically with bounded exponential backoff, while `--once` and explicit invalid or unauthorized acknowledgments remain fail-fast. Each reconnect rebuilds the diagnostics channel and rereads the CA, client certificate, and private key files, so an atomically replaced valid identity is used on the next attempt and an invalid replacement remains rejected.
+
+After the control plane is functional and accepts and commits reports, use this conservative readiness-recovery bound: the remaining current report-attempt deadline, plus the maximum jittered backoff of 6 seconds, plus one complete successful report-attempt deadline, plus at most one poll interval for a newly committed heartbeat after an idempotent replay. A listener that is up while its database cannot commit reports may continue returning transport errors, so this bound does not start until acceptance and commit are possible.
+
+When the agent uses a shared-container namespace such as Compose `network_mode: service:envoy`, its lifecycle is coupled to that Envoy container. If Envoy is recreated, recreate the namespace-sharing agent container as well; an agent restart policy is defense in depth and is not the diagnostics recovery mechanism. See [Production readiness](production-readiness.md) for the outage runbook and the [configuration reference](../reference/configuration.md) for exact defaults and constraints.
+
 On the control-plane side, confirm telemetry is landing and the stream is healthy:
 
 ```bash

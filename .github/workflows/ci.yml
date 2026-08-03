@@ -153,3 +153,7 @@ jobs:
         run: python3 scripts/ci/check-docs-jargon.py --self-test
       - name: Docs jargon (public docs must not expose planning labels)
         run: python3 scripts/ci/check-docs-jargon.py
+      - name: Agent recovery Compose and documentation contract
+        run: python3 scripts/ci/check-agent-recovery-contract.py
+      - name: Release manifest and published SBOM naming contract
+        run: python3 scripts/ci/check-release-manifest-contract.py

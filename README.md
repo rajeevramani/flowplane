@@ -17,14 +17,15 @@ published **evaluation** image and stands up the whole stack — Postgres, the d
 demo upstream, and Envoy — then routes a real request through the gateway. No repo checkout, no
 `cargo build`.
 
-> Set `VER` to a published release. The example below uses `3.1.0`, whose evaluator bundle and
-> `:${VER}-eval` image are published for `linux/amd64` and `linux/arm64` (the dashboard step
+> Set `VER` to a published release. The example below targets `3.1.1`; use it after `v3.1.1`
+> appears on the GitHub Releases page. Its evaluator bundle and `:${VER}-eval` image support
+> `linux/amd64` and `linux/arm64` (the dashboard step
 > needs `3.1.0` or newer). For newer releases, use the version shown on the GitHub Releases
 > page. The image is **multi-arch**: a plain `docker pull` resolves the native variant — no
 > `--platform` flag, no emulation.
 
 ```bash
-VER=3.1.0
+VER=3.1.1
 
 # 1. Fetch the evaluator bundle at the matching release tag (the only file you need)
 curl -fsSLO https://raw.githubusercontent.com/rajeevramani/flowplane/v${VER}/compose.eval.yml

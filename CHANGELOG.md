@@ -15,6 +15,24 @@ compatibility baseline.
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-08-03
+
+Patch release restoring automatic dataplane-agent recovery after temporary control-plane loss and correcting release documentation, validation, and artifact metadata found during the `3.1.0` published-artifact gate.
+
+### Added
+
+- The evaluator Compose bundle accepts `FLOWPLANE_EVAL_API_PORT` and `FLOWPLANE_EVAL_GATEWAY_PORT` overrides so isolated verification runs do not need the default host ports.
+
+### Changed
+
+- Long-running `flowplane-agent` processes now treat diagnostics transport interruption as recoverable. The agent retains at most one in-flight report, reconnects with bounded backoff, rereads TLS identity files, replays the same report ID until acknowledged, and reports readiness `503` while disconnected. Envoy continues serving last-good configuration; `--once`, invalid startup configuration, explicit authorization rejection, and invalid acknowledgments remain fatal. The evaluator adds `restart: unless-stopped` as defense in depth, not as the recovery mechanism. (#241)
+
+### Fixed
+
+- The filters reference now links reserved generated names to the existing global rate-limiting section instead of rendering a dangling pseudo-link. (#239)
+- Binary release manifests now name the architecture-qualified Cargo-metadata SBOM asset published alongside that tarball, with a fail-closed CI contract check across packaging and publication naming. (#240)
+- Release-candidate dashboard smoke validation now matches the current dataplane-total card markup rather than an obsolete text phrase. (#238)
+
 ## [3.1.0] - 2026-07-29
 
 The headline feature is **`flowplane dashboard`**: a read-only, CLI-hosted web dashboard over
