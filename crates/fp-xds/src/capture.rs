@@ -383,6 +383,20 @@ impl ExternalProcessor for LearningCaptureService {
     ) -> Result<Response<Self::ProcessStream>, Status> {
         if is_ai_processor(request.metadata()) {
             let context = ai_context(request.metadata())?;
+            let context = match context {
+                Some(mut ctx) => {
+                    let team_id = authenticated_team(
+                        &request,
+                        &self.resolver,
+                        ctx.team_id,
+                        "AI processor team_id does not match the client certificate",
+                    )
+                    .await?;
+                    ctx.team_id = team_id;
+                    Some(ctx)
+                }
+                None => None,
+            };
             return Ok(Response::new(ReceiverStream::new(ai_process_stream(
                 self.pool.clone(),
                 request.into_inner(),
@@ -609,12 +623,22 @@ fn parse_ai_failover_chain(
     Ok(providers.into_iter().zip(positions).collect())
 }
 
-async fn capture_context<T>(
+/// Resolve the peer's certificate-bound team identity and verify it matches a claimed team.
+///
+/// Extracts the verified peer SPIFFE URI from `Request::peer_certs()` (with the `PeerSpiffe`
+/// test-extension fallback), invokes `resolver.resolve("team=<claimed>", peer_spiffe)`, and
+/// rejects when the resolved team differs from the claimed team. Returns the resolver-derived
+/// team — the authoritative tenant identity for all downstream scoping.
+///
+/// The `mismatch_message` parameter lets each call site use a context-specific denial message
+/// that leaks no team identity (no oracle), matching `CertRegistryResolver`'s indistinct-failure
+/// discipline.
+async fn authenticated_team<T>(
     request: &Request<T>,
     resolver: &Arc<dyn TeamResolver>,
-) -> Result<CaptureContext, Status> {
-    let metadata = request.metadata();
-    let claimed_team_id = TeamId::from(metadata_uuid(metadata, "x-flowplane-team-id")?);
+    claimed_team_id: TeamId,
+    mismatch_message: &'static str,
+) -> Result<TeamId, Status> {
     let peer_spiffe = request
         .peer_certs()
         .and_then(|certs| {
@@ -632,14 +656,28 @@ async fn capture_context<T>(
         .resolve(&format!("team={claimed_team_id}"), peer_spiffe.as_deref())
         .await?;
     if identity.team_id != claimed_team_id {
-        return Err(Status::permission_denied(
-            "capture team_id does not match the client certificate",
-        ));
+        return Err(Status::permission_denied(mismatch_message));
     }
+    Ok(identity.team_id)
+}
+
+async fn capture_context<T>(
+    request: &Request<T>,
+    resolver: &Arc<dyn TeamResolver>,
+) -> Result<CaptureContext, Status> {
+    let metadata = request.metadata();
+    let claimed_team_id = TeamId::from(metadata_uuid(metadata, "x-flowplane-team-id")?);
+    let team_id = authenticated_team(
+        request,
+        resolver,
+        claimed_team_id,
+        "capture team_id does not match the client certificate",
+    )
+    .await?;
     if let Some(session_id) = optional_metadata_uuid(metadata, "x-flowplane-discovery-session-id")?
     {
         return Ok(CaptureContext::Discovery(DiscoveryCaptureContext {
-            team_id: identity.team_id,
+            team_id,
             session_id: DiscoverySessionId::from(session_id),
             listener_id: ListenerId::from(metadata_uuid(
                 metadata,
@@ -655,7 +693,7 @@ async fn capture_context<T>(
         }));
     }
     Ok(CaptureContext::Config(ConfigCaptureContext {
-        team_id: identity.team_id,
+        team_id,
         session_id: CaptureSessionId::from(metadata_uuid(
             metadata,
             "x-flowplane-capture-session-id",
@@ -2224,6 +2262,7 @@ mod tests {
     };
     use envoy_types::pb::google::protobuf::UInt32Value;
     use std::collections::HashMap;
+    use tonic::codec::Codec;
     use tonic::Code;
 
     /// Assert an ext_proc `ImmediateResponse` carries the AI JSON error envelope
@@ -2287,6 +2326,58 @@ mod tests {
         }
     }
 
+    /// Build an AI ExtProc upstream-context streaming request: `x-flowplane-ai-processor: true`
+    /// plus team/route-config/provider/backend-position metadata for `claimed_team_id`, over an
+    /// empty (no-message) request stream. `PeerSpiffe` in the request extensions represents the
+    /// certificate-bound identity the resolver sees.
+    fn ai_process_request(
+        claimed_team_id: TeamId,
+        bound_team_id: TeamId,
+    ) -> Request<Streaming<ProcessingRequest>> {
+        let mut request = Request::new(Streaming::new_request(
+            tonic_prost::ProstCodec::<ProcessingRequest, ProcessingRequest>::default().decoder(),
+            tonic::body::Body::empty(),
+            None,
+            None,
+        ));
+        let metadata = request.metadata_mut();
+        metadata.insert(
+            "x-flowplane-ai-processor",
+            "true".parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-team-id",
+            claimed_team_id.to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-route-config-id",
+            Uuid::now_v7().to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-ai-provider-id",
+            Uuid::now_v7().to_string().parse().expect("metadata value"),
+        );
+        metadata.insert(
+            "x-flowplane-ai-backend-position",
+            "0".parse().expect("metadata value"),
+        );
+        request
+            .extensions_mut()
+            .insert(crate::server::PeerSpiffe(format!(
+                "spiffe://flowplane.test/team/{bound_team_id}/proxy/dp-test"
+            )));
+        request
+    }
+
+    fn ai_capture_service(bound_team_id: TeamId) -> LearningCaptureService {
+        let pool =
+            sqlx::PgPool::connect_lazy("postgres://localhost/flowplane_test").expect("lazy pool");
+        let resolver = Arc::new(FixedTeamResolver {
+            team_id: bound_team_id,
+        }) as Arc<dyn TeamResolver>;
+        LearningCaptureService::new(pool, resolver)
+    }
+
     fn capture_request(team_id: TeamId) -> Request<()> {
         let mut request = Request::new(());
         let metadata = request.metadata_mut();
@@ -2337,6 +2428,33 @@ mod tests {
             err.message(),
             "capture team_id does not match the client certificate"
         );
+    }
+
+    #[tokio::test]
+    async fn ai_process_rejects_cert_bound_team_mismatch_before_stream() {
+        let claimed_team_id = TeamId::from(Uuid::now_v7());
+        let bound_team_id = TeamId::from(Uuid::now_v7());
+        let service = ai_capture_service(bound_team_id);
+        let request = ai_process_request(claimed_team_id, bound_team_id);
+
+        let err = ExternalProcessor::process(&service, request)
+            .await
+            .expect_err("mismatch should be rejected");
+
+        assert_eq!(err.code(), Code::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn ai_process_accepts_cert_bound_team_match() {
+        let team_id = TeamId::from(Uuid::now_v7());
+        let service = ai_capture_service(team_id);
+        let request = ai_process_request(team_id, team_id);
+
+        let response = ExternalProcessor::process(&service, request)
+            .await
+            .expect("match should be accepted");
+
+        drop(response);
     }
 
     #[test]
