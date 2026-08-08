@@ -11,6 +11,9 @@
 # the full suite was clean; 8 is a pragmatic guard that keeps most of the speedup
 # while leaving headroom for larger runners.
 
+[profile.default]
+test-threads = 8
+
 [profile.ci]
 # Run the whole suite for complete diagnostics rather than stopping at the first failure.
 fail-fast = false
