@@ -630,10 +630,10 @@ pub async fn delete_budget(
 pub const MAX_USAGE_WINDOW_DAYS: i64 = 92;
 
 /// Windowed, team-scoped usage summary. Window semantics (design ui-f5): half-open
-/// `[since, until)`; an omitted `until` resolves server-side to `now` BEFORE validation;
-/// `since >= until` (after resolution) and spans over [`MAX_USAGE_WINDOW_DAYS`] fail
-/// validation. Returns the summary rows plus the total grouped-row count for the same
-/// filters (the `Page.total`).
+/// `[since, until)`; an omitted `until` resolves from PostgreSQL's clock BEFORE validation,
+/// matching the authority that stamps usage rows. `since >= until` (after resolution) and
+/// spans over [`MAX_USAGE_WINDOW_DAYS`] fail validation. Returns the summary rows plus the
+/// total grouped-row count for the same filters (the `Page.total`).
 pub async fn usage_summary(
     pool: &PgPool,
     ctx: &PrincipalCtx,
@@ -642,11 +642,14 @@ pub async fn usage_summary(
     request_id: RequestId,
 ) -> DomainResult<(Vec<AiUsageSummary>, i64)> {
     authorize(pool, ctx, Resource::AiUsage, Action::Read, team, request_id).await?;
-    query.until = Some(resolve_usage_window(
-        query.since,
-        query.until,
-        chrono::Utc::now(),
-    )?);
+    let effective_until = match query.until {
+        Some(until) => resolve_usage_window(query.since, Some(until), until)?,
+        None => {
+            let database_now = ai::usage_clock_now(pool).await?;
+            resolve_usage_window(query.since, None, database_now)?
+        }
+    };
+    query.until = Some(effective_until);
     ai::usage_summary(pool, team.id, query).await
 }
 
@@ -1820,6 +1823,17 @@ mod tests {
             let now = ts("2026-07-19T12:00:00Z");
             let until = resolve_usage_window(None, None, now).unwrap();
             assert_eq!(until, now);
+        }
+
+        #[test]
+        fn omitted_until_uses_supplied_authority_when_another_clock_is_behind() {
+            let host_now = ts("2026-07-19T12:00:00Z");
+            let database_now = host_now + Duration::milliseconds(254);
+
+            let until = resolve_usage_window(None, None, database_now).unwrap();
+
+            assert_eq!(until, database_now);
+            assert!(until > host_now);
         }
 
         #[test]

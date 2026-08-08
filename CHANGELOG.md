@@ -15,6 +15,10 @@ compatibility baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- AI usage reads now resolve omitted time-window upper bounds from PostgreSQL, matching the clock that stamps usage events so freshly recorded usage is immediately visible even when control-plane and database host clocks differ. (fpv2-ejw)
+
 ## [3.1.1] - 2026-08-03
 
 Patch release restoring automatic dataplane-agent recovery after temporary control-plane loss and correcting release documentation, validation, and artifact metadata found during the `3.1.0` published-artifact gate.
