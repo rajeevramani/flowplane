@@ -18,6 +18,7 @@ compatibility baseline.
 ### Fixed
 
 - AI usage reads now resolve omitted time-window upper bounds from PostgreSQL, matching the clock that stamps usage events so freshly recorded usage is immediately visible even when control-plane and database host clocks differ. (fpv2-ejw)
+- `flowplane-rls` now reports `--help` and `--version` before evaluating server startup configuration, and rejects unknown arguments instead of silently ignoring them. (#243, fpv2-lrd.1)
 
 ## [3.1.1] - 2026-08-03
 

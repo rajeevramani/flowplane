@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use clap::Parser;
 use envoy_types::pb::envoy::service::ratelimit::v3::rate_limit_service_server::RateLimitServiceServer;
 use flowplane_rls::admin::{self, AdminState};
 use flowplane_rls::config::RlsConfig;
@@ -11,8 +12,18 @@ use flowplane_rls::grpc::RlsService;
 use flowplane_rls::policy::PolicyCache;
 use tracing_subscriber::EnvFilter;
 
+#[derive(Debug, Parser)]
+#[command(
+    name = "flowplane-rls",
+    version,
+    about = "Flowplane global rate-limit service"
+)]
+struct Args {}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _args = Args::parse();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -69,4 +80,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     admin_handle.abort();
     result?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{error::ErrorKind, Parser};
+
+    use super::Args;
+
+    #[test]
+    fn empty_arguments_parse_for_normal_startup() {
+        Args::try_parse_from(["flowplane-rls"]).expect("empty arguments must parse");
+    }
+
+    #[test]
+    fn unknown_arguments_are_rejected() {
+        let error = Args::try_parse_from(["flowplane-rls", "--definitely-unknown"])
+            .expect_err("unknown arguments must fail parsing");
+
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+    }
 }
