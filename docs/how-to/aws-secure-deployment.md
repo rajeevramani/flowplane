@@ -18,12 +18,15 @@ Use `deploy/aws/local.auto.tfvars` for local operator values. This file is ignor
 
 Required high-level values:
 
+- An AWS CLI authenticated to the target account and configured for the same region as `aws_region`.
 - `aws_region` and matching `availability_zones`.
 - `control_plane_image`: Flowplane release image in ECR.
 - `api_certificate_arn`: ACM certificate for the public API hostname.
 - `oidc_issuer` and `oidc_audience`.
 - `xds_ingress_cidrs`: your local dataplane/operator public IP CIDR, for example `["1.2.3.4/32"]`.
 - Secrets Manager ARNs for Flowplane KEK and PEM material.
+- `XDS_SERVER_CA_SECRET_ID`: the Secrets Manager name or ARN containing, as its raw
+  `SecretString`, the CA certificate that issued the xDS server certificate.
 
 Set the OIDC values from your identity provider:
 
@@ -48,6 +51,28 @@ Create Secrets Manager secrets for:
 - dataplane client CA certificate PEM
 - dataplane certificate issuer CA certificate PEM
 - dataplane certificate issuer CA private key PEM
+- xDS server-trust CA certificate PEM for the local workstation smoke test
+
+Create the workstation-only xDS server-trust CA secret once, or export the name/ARN of an existing
+secret with the same raw-PEM content:
+
+```bash
+export XDS_SERVER_CA_SECRET_ID="/flowplane/prod/xds-server-ca"
+(
+  set -eu
+  openssl x509 -noout -in path/to/xds-server-ca.crt
+  aws secretsmanager create-secret \
+    --name "$XDS_SERVER_CA_SECRET_ID" \
+    --secret-string file://path/to/xds-server-ca.crt
+)
+```
+
+`XDS_SERVER_CA_SECRET_ID` is a local-operator input, not an OpenTofu module variable or output. The
+module consumes the xDS leaf certificate through `xds_tls_cert_secret_arn`; it does not return that
+certificate's issuing CA to the workstation.
+
+If this workstation secret uses a customer-managed KMS key, the AWS CLI operator identity also
+needs `kms:Decrypt` for that key. This is separate from module-side `secret_kms_key_arns` access.
 
 The OpenTofu module passes secret ARNs into ECS. The container writes PEM values to files under `/tmp/flowplane/tls` before running `flowplane serve`.
 
@@ -131,6 +156,7 @@ org+team below.
 Create the dataplane and issue a one-time cert response:
 
 ```bash
+install -d -m 0700 .local
 flowplane dataplane create edge-local --team <team>
 flowplane --out .local/aws-dp-cert.json dataplane cert issue edge-local --team <team>
 ```
@@ -144,12 +170,23 @@ jq -r '.data.ca_certificate_pem' .local/aws-dp-cert.json > .local/aws-dp-client-
 chmod 600 .local/aws-dp.key
 ```
 
-`ca_certificate_pem` is the dataplane **client-chain CA** from the issue response. It is the CA the control plane trusts for the dataplane client certificate; it is not the CA Envoy uses to verify the control plane's xDS server certificate.
+`data.ca_certificate_pem` is the dataplane **client-chain CA** from the issue response. It is the CA the control plane trusts for the dataplane client certificate; it is not the CA Envoy uses to verify the control plane's xDS server certificate.
 
-Write the xDS **server-trust CA** to a separate file. This is the CA bundle that validates the certificate served by `xds.getflowplane.io`, from the same PKI material that produced your xDS server certificate secret:
+`XDS_SERVER_CA_SECRET_ID` names a workstation-only xDS **server-trust CA** secret that is separate from `data.ca_certificate_pem`; its `SecretString` contains the issuing CA that validates the certificate served by `xds.getflowplane.io`.
 
 ```bash
-printf '%s' "$CP_XDS_SERVER_CA_PEM" > .local/aws-xds-server-ca.crt
+(
+  set -eu
+  : "${XDS_SERVER_CA_SECRET_ID:?set this to the xDS server-trust CA secret name or ARN}"
+  install -m 0600 /dev/null .local/aws-xds-server-ca.crt
+  aws secretsmanager get-secret-value \
+    --secret-id "$XDS_SERVER_CA_SECRET_ID" \
+    --query SecretString \
+    --output text \
+    > .local/aws-xds-server-ca.crt
+  test -s .local/aws-xds-server-ca.crt
+  openssl x509 -noout -in .local/aws-xds-server-ca.crt
+)
 ```
 
 Generate the local Envoy bootstrap:
