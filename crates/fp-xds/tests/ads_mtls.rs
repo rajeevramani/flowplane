@@ -7,6 +7,8 @@
 use envoy_types::pb::envoy::config::core::v3::Node;
 use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service_client::AggregatedDiscoveryServiceClient;
 use envoy_types::pb::envoy::service::discovery::v3::DiscoveryRequest;
+use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_client::ExternalProcessorClient;
+use envoy_types::pb::envoy::service::ext_proc::v3::ProcessingRequest;
 use fp_core::{GrantSet, PrincipalCtx};
 use fp_domain::authz::TeamRef;
 use fp_domain::gateway::cluster::{ClusterSpec, Endpoint, LbPolicy};
@@ -324,6 +326,89 @@ fn cds_subscribe(node_id: &str) -> DiscoveryRequest {
         type_url: CLUSTER_TYPE_URL.to_string(),
         ..Default::default()
     }
+}
+
+fn ai_ext_proc_request(
+    claimed_team: impl std::fmt::Display,
+) -> (
+    tonic::Request<tokio_stream::wrappers::ReceiverStream<ProcessingRequest>>,
+    tokio::sync::mpsc::Sender<ProcessingRequest>,
+) {
+    let (request_tx, request_rx) = tokio::sync::mpsc::channel(1);
+    let mut request = tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(request_rx));
+    let metadata = request.metadata_mut();
+    metadata.insert("x-flowplane-ai-processor", "true".parse().unwrap());
+    metadata.insert(
+        "x-flowplane-team-id",
+        claimed_team.to_string().parse().unwrap(),
+    );
+    metadata.insert(
+        "x-flowplane-route-config-id",
+        uuid::Uuid::now_v7().to_string().parse().unwrap(),
+    );
+    metadata.insert(
+        "x-flowplane-ai-provider-id",
+        uuid::Uuid::now_v7().to_string().parse().unwrap(),
+    );
+    metadata.insert("x-flowplane-ai-backend-position", "0".parse().unwrap());
+    (request, request_tx)
+}
+
+#[tokio::test]
+async fn ai_ext_proc_mtls_binds_team_before_opening_stream() {
+    let Some(w) = world().await else { return };
+    let pki = TestPki::new();
+
+    let dataplane = unique("ai-dp");
+    fp_core::services::dataplanes::create_dataplane(
+        &w.pool,
+        &w.ctx,
+        w.team,
+        &dataplane,
+        "",
+        RequestId::generate(),
+    )
+    .await
+    .expect("dataplane");
+    let spiffe = format!("spiffe://flowplane.test/team/ai/proxy/{dataplane}");
+    fp_core::services::dataplanes::register_certificate(
+        &w.pool,
+        &w.ctx,
+        w.team,
+        fp_core::services::dataplanes::CertificateRegistration {
+            dataplane: &dataplane,
+            spiffe_uri: &spiffe,
+            serial_number: &unique("ai-serial"),
+            expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+        },
+        RequestId::generate(),
+    )
+    .await
+    .expect("register");
+
+    let cache = SnapshotCache::new();
+    let (addr, _revocations) = start_server(&pki, cache, w.pool.clone()).await;
+    let identity = pki.client_identity("ai-ext-proc", &spiffe);
+    let channel = tls_channel(&pki, addr, Some(identity))
+        .await
+        .expect("mTLS connect");
+
+    let mut client = ExternalProcessorClient::new(channel.clone());
+    let other_team = uuid::Uuid::now_v7();
+    assert_ne!(other_team.to_string(), w.team.id.to_string());
+    let (mismatched_request, _mismatched_request_tx) = ai_ext_proc_request(other_team);
+    let mismatch = tokio::time::timeout(Duration::from_secs(5), client.process(mismatched_request))
+        .await
+        .expect("mismatched team must be rejected before reading a request message")
+        .expect_err("mismatched team must not yield a response stream");
+    assert_eq!(mismatch.code(), tonic::Code::PermissionDenied);
+
+    let mut client = ExternalProcessorClient::new(channel);
+    let (matching_request, _matching_request_tx) = ai_ext_proc_request(w.team.id);
+    tokio::time::timeout(Duration::from_secs(5), client.process(matching_request))
+        .await
+        .expect("matching team must open a response stream before any request message is sent")
+        .expect("certificate-bound team claim must be accepted");
 }
 
 #[tokio::test]
