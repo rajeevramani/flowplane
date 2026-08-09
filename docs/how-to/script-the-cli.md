@@ -93,8 +93,10 @@ The full map (see [`../reference/cli.md#exit-codes`](../reference/cli.md#exit-co
 | `6` | Rate limited | HTTP `429` |
 | `7` | Server / transport | HTTP `5xx`, connection refused, timeout |
 
-The error envelope carries a `retryable` boolean — `true` for `429`/`5xx`/transport, `false` for
-terminal `4xx`. A retry loop can key off it:
+For a single-request command, the CLI error envelope carries a `retryable` boolean derived from the
+HTTP response status: `true` for `429`, any `5xx`, and transport or timeout failures; `false` for
+terminal `4xx`. The CLI process exit class is also status-derived, so its exit class and emitted
+`retryable` field agree. A retry loop can key off that field:
 
 ```bash
 for attempt in 1 2 3; do
@@ -105,6 +107,15 @@ for attempt in 1 2 3; do
   sleep $((attempt * 2))
 done
 ```
+
+An aggregate `flowplane apply` failure is the conservative exception: it emits `retryable: false`
+because some resources may already have applied.
+
+This is a CLI transport contract, not the API error-envelope contract. The API envelope does not
+carry a `retryable` field; direct API clients derive retryability from `ErrorCode` using the
+[error-code table](../reference/errors.md#codes), where only `rate_limited` and `unavailable` are
+retryable. Not every API `5xx` is retryable. CLI scripts should use the CLI-emitted field above;
+direct API clients should use the code-derived table.
 
 ## 3. Project only the fields you need
 

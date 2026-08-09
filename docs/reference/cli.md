@@ -114,13 +114,22 @@ separate from the success envelope above (it is **not** wrapped in `{schemaVersi
 }
 ```
 
-- `retryable` — `true` for transient failures (HTTP `429`, any `5xx`, and transport/timeout
-  failures), `false` for terminal `4xx`.
+- `retryable` — the CLI's status-derived classification: `true` for HTTP `429`, any `5xx`, and
+  transport/timeout failures; `false` for terminal `4xx`.
 - `hint` — on a `401` with no server-supplied hint the client synthesizes
   `run \`flowplane auth login\` to authenticate`; a `403` carries the server's hint naming
   the `(resource, action)`.
 - `status` — the HTTP status (absent for transport failures, whose `code` is
   `connection_failed`/`timeout`/`transport_error`).
+
+For a single-request failure, the CLI derives both the process exit class and its emitted
+`retryable` field from HTTP status, so those two CLI outputs agree. Aggregate `apply` failures are the
+conservative exception: they emit `retryable: false` because some resources may already have
+applied. The API error envelope uses a separate contract and does not carry a `retryable` field:
+direct API clients derive retryability from `ErrorCode` using the
+[error-code table](./errors.md#codes), where only `rate_limited` and `unavailable` are retryable. Not
+every API `5xx` is therefore retryable. CLI scripts must follow the CLI-emitted field; direct API
+clients must follow the code-derived table.
 
 ### Exit codes
 
