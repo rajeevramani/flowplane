@@ -458,7 +458,7 @@ Print the binary version (from `CARGO_PKG_VERSION`). No subcommands or args.
 ### `schema`
 Print the machine-readable CLI catalog — the whole command tree (commands, subcommands,
 flags, types, enums, required/defaults, help) as JSON. Makes no network call. This is the
-**canonical CLI contract source and the MCP-derivation seam** (ADR FP-DEC-0003): generated
+**canonical CLI contract source and the MCP-derivation seam**: generated
 consumers (shell completion, the future MCP tool catalog, docs) derive from `flowplane schema`
 rather than scraping `--help`. Under `-o json` the payload is the standard envelope with
 `kind: "cliSchema"`; `data` carries its own integer `catalogVersion` (distinct from the

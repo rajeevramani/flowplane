@@ -84,7 +84,7 @@ keeps two operators (or two agents) from clobbering each other.
 default — with no network call. This exists so agents do not have to scrape `--help` text. It is
 also the **derivation seam** between the human CLI and the agent/MCP layer: the machine-readable
 catalog is the single source the MCP tool definitions are derived from, so the two surfaces cannot
-drift apart. (See decision FP-DEC-0003.)
+drift apart.
 
 ## Safety is explicit, never a hang
 

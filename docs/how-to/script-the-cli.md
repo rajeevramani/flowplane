@@ -152,6 +152,7 @@ and default. `schema` makes **no network call**, so an agent can introspect offl
 flowplane schema -o json | jq -r '.data.command.subcommands[].name'
 # serve
 # db
+# openapi
 # auth
 # ...
 ```

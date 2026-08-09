@@ -49,7 +49,9 @@ Every page starts with one metadata line:
 > Audience: operators · Status: stable
 ```
 
-Use `Audience:` (operators / platform-engineers / api-teams / newcomers) and `Status:` (stable / draft).
+`Audience` and `Status` values are open-ended conventions, not closed vocabularies. Common examples
+are `Audience: operators` / `platform-engineers` / `api-teams` / `newcomers` and
+`Status: stable` / `draft`; use other clear values when they describe the page better.
 
 ## Source-of-truth policy
 

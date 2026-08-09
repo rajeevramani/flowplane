@@ -58,7 +58,7 @@ curl -fsS http://127.0.0.1:8081/healthz && echo OK
 ```
 
 The counter store is in-memory — no Redis, no database. (Counters reset on restart, and the
-committed 1.1.0 topology is a **single** RLS instance; see
+current topology uses a **single** RLS instance; see
 [Global rate limiting](../concepts/global-rate-limiting.md) for why.)
 
 ## 2. Point the control plane at it

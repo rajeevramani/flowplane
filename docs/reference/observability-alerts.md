@@ -4,7 +4,7 @@
 
 This reference is the operator baseline for production alerting. It uses the metrics that exist in the current control-plane and data-plane-adjacent services. Dashboards and alerts should keep labels bounded: do not add team, org, dataplane, route, budget, tool, or agent labels unless a later issue explicitly accepts the cardinality cost.
 
-Native OpenTelemetry `gen_ai.*` semantic-convention meters are deferred for v1.0. Flowplane emits pragmatic counters for shipped AI budget behavior instead.
+Flowplane currently emits pragmatic counters for shipped AI budget behavior rather than native OpenTelemetry `gen_ai.*` semantic-convention meters.
 
 ## Metric Inventory
 
