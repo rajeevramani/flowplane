@@ -120,7 +120,7 @@ Validation:
 |---|---|---|---|
 | `providers` | `BTreeMap<String, JwtProvider>` | required | Provider name → provider (deterministic encoding). |
 | `requirement_map` | `BTreeMap<String, JwtRequirement>` | optional (default empty) | Named requirements referenced by rules and per-route overrides. |
-| `rules` | `Vec<JwtRule>` | optional (default empty) | Path rules, first match wins. Empty → every path requires any provider. |
+| `rules` | `Vec<JwtRule>` | optional (default empty) | Path rules, first match wins. Empty rules configure providers but synthesize no per-route JWT requirement; enforcement requires explicit rules or a per-route `jwt_auth` requirement override. |
 | `bypass_cors_preflight` | `bool` | optional (default `false`) | Bypass JWT for CORS preflight requests. |
 
 `JwtProvider`:
