@@ -48,6 +48,15 @@ One row per code. **Retryable** = the identical request may succeed if retried w
 | `unavailable` | 503 Service Unavailable | **yes** | A dependency (database, IdP, provider) is unavailable. |
 | `internal` | 500 Internal Server Error | no | Unexpected internal failure. Message and details are redacted (see below). |
 
+Retryability is surface-specific. The API error envelope does not carry a `retryable` field; direct
+API clients derive retryability from its `ErrorCode` using this table. Only `rate_limited` and
+`unavailable` are retryable, so not every API `5xx` response is retryable. For a single-request
+failure, the CLI instead derives its emitted `retryable` field and process exit class from the HTTP
+status: `429`, any `5xx`, and transport or timeout failures are retryable. Because both CLI outputs
+are status-derived, the CLI exit class and emitted `retryable` field agree. Aggregate `apply` failures
+conservatively emit `retryable: false` because some resources may already have applied. CLI scripts
+should follow the CLI-emitted value.
+
 ## Redaction of internal errors
 
 For `internal` and `invalid_config`, the server does **not** return the underlying message or `details`. The response body is:

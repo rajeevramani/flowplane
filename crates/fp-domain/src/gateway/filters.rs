@@ -725,7 +725,8 @@ pub struct JwtAuthConfig {
     /// Named requirements, referenced by rules and per-route overrides.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub requirement_map: std::collections::BTreeMap<String, JwtRequirement>,
-    /// Path rules, first match wins. Empty → every path requires any provider (v1 rule).
+    /// Path rules, first match wins. Empty rules configure providers but synthesize no per-route JWT
+    /// requirement; enforcement requires explicit rules or a per-route `jwt_auth` requirement override.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<JwtRule>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

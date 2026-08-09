@@ -17,6 +17,7 @@ path = "src/lib.rs"
 
 [dependencies]
 fp-domain = { workspace = true }
+clap = { workspace = true }
 envoy-types = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true }

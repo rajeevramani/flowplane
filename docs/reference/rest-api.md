@@ -400,8 +400,6 @@ The spec-content endpoint supports conditional reads: it returns `ETag`, accepts
 | PATCH | `/api/v1/teams/{team}/mcp/tools/{name}` |
 | POST  | `/api/v1/mcp` |
 
-> `POST /api/v1/mcp` is the MCP JSON-RPC endpoint. It is mounted on the secured router but registered outside the `routes!` set, so it does not appear in the generated OpenAPI document.
-
 ### Learning sessions
 
 | Method | Path |
@@ -515,9 +513,7 @@ The spec-content endpoint supports conditional reads: it returns `ETag`, accepts
 
 The **generated OpenAPI document is the source of truth** for per-field request and response schemas. Registered OpenAPI routes and their schemas are built from the same `routes!` declarations; the prose endpoint catalogue above is maintained separately and must be updated when routes are added. Per-field detail is intentionally **not** hand-copied into this reference (it would drift).
 
-Known exception: the public bootstrap endpoints are documented in the endpoint catalogue above and
-in [Bootstrap the first platform admin](../how-to/bootstrap-platform.md), but they are not included
-in the generated OpenAPI document.
+Three intentional live-route exceptions are absent from the generated OpenAPI document because all three are outside the `secured_api()` route registrations: `GET /api/v1/bootstrap/status`, `POST /api/v1/bootstrap/initialize`, and `POST /api/v1/mcp`. The two bootstrap routes are public, outer-router, pre-auth routes (although initialize validates the one-shot bootstrap token); `POST /api/v1/mcp` is mounted directly on the secured router, where normal authentication and write throttling apply.
 
 Obtain the document:
 

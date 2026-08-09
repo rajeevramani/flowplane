@@ -46,9 +46,19 @@ reads stdout therefore never confuses an error for a result. The error object is
 wrapped in the success envelope — it is a distinct shape with `code`, `message`, `retryable`, and
 (when present) `status`, `request_id`, and `hint`.
 
-`retryable` is the key affordance: it is `true` for transient failures (`429`, any `5xx`, transport
-and timeout errors) and `false` for terminal `4xx`. A client can implement backoff by reading one
-boolean instead of hard-coding a status list.
+`retryable` is the key CLI affordance. For a single-request failure, the CLI derives both its emitted
+`retryable` field and process exit class from the HTTP response status: `429`, any `5xx`, and
+transport or timeout failures are retryable; terminal `4xx` responses are not. Because both outputs
+are status-derived, the CLI exit class and its emitted `retryable` field agree, so a script can
+implement backoff by reading one boolean instead of hard-coding a status list. An aggregate `apply`
+failure is the conservative exception: it emits `retryable: false` because some resources may
+already have applied.
+
+The API error envelope has a distinct contract and does not carry a `retryable` field. Direct API
+clients derive retryability from its `ErrorCode` using the error-code table; only `rate_limited` and
+`unavailable` are retryable. Not every API `5xx` response is therefore retryable. Direct API clients
+must follow that code-derived classification, while CLI scripts must follow the CLI-emitted
+status-derived value. See [Error codes](../reference/errors.md#codes).
 
 ## Exit codes carry the failure class
 
@@ -56,8 +66,9 @@ The process exits `0` on success and a **specific code by failure class** otherw
 auth `3`, not-found/conflict `4`, validation `5`, rate-limited `6`, server/transport `7` — rather
 than a generic non-zero. Usage `2` covers invalid flags/arguments and local preflight usage checks.
 A script can branch on `$?` alone, before parsing any JSON, and a CI job can distinguish "your input
-was wrong" (`2`/`5`) from "the server is down" (`7`). The codes mirror the error classes, so the
-exit code and the `code`/`retryable` fields always agree.
+was wrong" (`2`/`5`) from "the server is down" (`7`). Within the CLI, the status-derived exit class
+and `retryable` field agree; direct API clients separately classify the server-supplied `code` as
+described above.
 
 ## Optimistic concurrency instead of last-write-wins
 
@@ -73,7 +84,7 @@ keeps two operators (or two agents) from clobbering each other.
 default — with no network call. This exists so agents do not have to scrape `--help` text. It is
 also the **derivation seam** between the human CLI and the agent/MCP layer: the machine-readable
 catalog is the single source the MCP tool definitions are derived from, so the two surfaces cannot
-drift apart. (See decision FP-DEC-0003.)
+drift apart.
 
 ## Safety is explicit, never a hang
 

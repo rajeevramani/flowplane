@@ -855,6 +855,7 @@ version = "3.1.1"
 dependencies = [
  "axum",
  "axum-server",
+ "clap",
  "envoy-types",
  "fp-domain",
  "prost",

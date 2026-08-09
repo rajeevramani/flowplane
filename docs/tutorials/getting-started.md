@@ -190,7 +190,7 @@ Envoy connects to the control plane as a registered dataplane. The bootstrap gen
 
 ## 6. Generate the Envoy bootstrap and start Envoy
 
-Generate the dev (plaintext) Envoy bootstrap config. Note that `--out` is a **global** flag and must come *before* the `dataplane bootstrap` subcommand:
+Generate the dev (plaintext) Envoy bootstrap config. `--out` is a **global** flag and is accepted anywhere in the command:
 
 ```bash
 ./target/debug/flowplane --out /tmp/flowplane-envoy.yaml \
