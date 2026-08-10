@@ -15,10 +15,33 @@ compatibility baseline.
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-08-10
+
+Patch release restoring certificate-bound tenant authorization on the AI gateway credential path,
+aligning AI usage windows with PostgreSQL's clock, and correcting operator-facing release
+artifacts. REST, MCP, configuration, storage-schema, and response shapes are unchanged.
+
+### Security
+
+- AI gateway credential selection now uses the authenticated dataplane certificate identity,
+  restoring the tenant boundary already enforced by sibling xDS paths. (fpv2-26v)
+- Bootstrap and AWS deployment runbooks now create local token and trust files privately, fail
+  before partial mutation when required inputs are absent, and distinguish the xDS server-trust
+  CA from the dataplane client-chain CA. (#247, #248, fpv2-lrd.5, fpv2-lrd.6)
+
 ### Fixed
 
 - AI usage reads now resolve omitted time-window upper bounds from PostgreSQL, matching the clock that stamps usage events so freshly recorded usage is immediately visible even when control-plane and database host clocks differ. (fpv2-ejw)
 - `flowplane-rls` now reports `--help` and `--version` before evaluating server startup configuration, and rejects unknown arguments instead of silently ignoring them. (#243, fpv2-lrd.1)
+- The REST reference now records bootstrap and MCP endpoints as intentional live-route exceptions
+  to generated OpenAPI coverage. (#244, fpv2-lrd.2)
+- CLI and API documentation now distinguishes status-derived CLI retryability from
+  `ErrorCode`-derived API retryability, including the conservative aggregate `apply` exception.
+  (#245, fpv2-lrd.3)
+- JWT filter documentation and generated schema descriptions now match the translator's existing
+  empty-rule behavior without changing runtime enforcement. (#246, fpv2-lrd.4)
+- CLI examples, global-rate-limit topology wording, observability status, documentation vocabulary,
+  decision references, and published-release tense now match shipped behavior. (#249, fpv2-lrd.7)
 
 ## [3.1.1] - 2026-08-03
 
