@@ -22,8 +22,25 @@ Provide it by **either** of these, before `flowplane serve` starts. The control 
 
 - A file (preferred — safer than env, which is visible via process inspection):
 
+  On Linux, `/run` is normally volatile, but it is not necessarily mounted as `tmpfs`. Set
+  `FLOWPLANE_OS_USER` and `FLOWPLANE_OS_GROUP` for the configured control-plane service account
+  before running this block. Creating the directory and assigning its ownership normally requires
+  root; use `sudo` as shown, or have `systemd-tmpfiles` or equivalent deployment setup pre-create
+  the same paths with these owners and modes. The Flowplane service reads the token file as its
+  configured OS user.
+
   ```bash
-  printf '%s' "$BOOTSTRAP_TOKEN" > /run/flowplane/bootstrap-token   # tmpfs, mode 0600
+  (
+    set -eu
+    : "${FLOWPLANE_OS_USER:?set this to the service OS user}"
+    : "${FLOWPLANE_OS_GROUP:?set this to the service OS group}"
+    : "${BOOTSTRAP_TOKEN:?set this to the chosen bootstrap token}"
+    sudo install -d -m 0700 -o "$FLOWPLANE_OS_USER" -g "$FLOWPLANE_OS_GROUP" /run/flowplane
+    sudo install -m 0600 -o "$FLOWPLANE_OS_USER" -g "$FLOWPLANE_OS_GROUP" \
+      /dev/null /run/flowplane/bootstrap-token
+    printf '%s' "$BOOTSTRAP_TOKEN" \
+      | sudo -u "$FLOWPLANE_OS_USER" tee /run/flowplane/bootstrap-token >/dev/null
+  )
   export FLOWPLANE_BOOTSTRAP_TOKEN_FILE=/run/flowplane/bootstrap-token
   ```
 

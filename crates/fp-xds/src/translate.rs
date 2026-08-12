@@ -1731,9 +1731,9 @@ fn global_rate_limit_to_proto(
     }
 }
 
-/// JwtAuthentication proto (spec/04 §4.1). One filter per chain (v2 invariant), so v1's
-/// provider-merge machinery is unnecessary. With no rules, every path requires any
-/// provider (v1 default rule).
+/// JwtAuthentication proto. One filter per chain, so provider-merge machinery is unnecessary.
+/// Empty rules configure providers but synthesize no per-route JWT requirement; enforcement
+/// requires explicit rules or a per-route `jwt_auth` requirement override.
 fn jwt_auth_to_proto(
     c: &fp_domain::gateway::filters::JwtAuthConfig,
 ) -> envoy_types::pb::envoy::extensions::filters::http::jwt_authn::v3::JwtAuthentication {

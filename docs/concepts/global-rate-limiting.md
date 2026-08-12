@@ -100,7 +100,7 @@ is slow or unreachable, each filter's `failure_mode_deny` decides: `false` fails
 request proceeds), `true` fails **closed** (the request is rejected, default `500`). Pick per
 listener based on whether availability or the limit matters more for that traffic.
 
-## Deliberate limits (1.1.0 topology)
+## Deliberate limits (current topology)
 
 The counter store is in-memory fixed-window. That keeps the deployment dependency-free — **no Redis
 required** — but has stated semantics:
@@ -109,9 +109,9 @@ required** — but has stated semantics:
 - **Horizontal scaling over-admits.** Each RLS instance keeps its own counters, so N instances admit
   up to ~N× the limit.
 
-The committed 1.1.0 topology is therefore a **single** RLS instance per control plane. A
-Redis-backed counter store for multi-instance correctness and durable counters is a named follow-on,
-not part of 1.1.0. The algorithm is fixed-window (not sliding).
+The supported topology is therefore a **single** RLS instance per control plane. A Redis-backed
+counter store for multi-instance correctness and durable counters is a named follow-on, not part of
+the current implementation. The algorithm is fixed-window (not sliding).
 
 ## Further reading
 

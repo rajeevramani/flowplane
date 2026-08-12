@@ -16,7 +16,7 @@ The module intentionally does not manage Cloudflare DNS. Use the outputs to crea
 ## Prerequisites
 
 - OpenTofu.
-- AWS credentials for the target account.
+- AWS CLI credentials and a configured default region for the target account.
 - A Flowplane release image pushed to ECR in the selected region.
 - An ACM certificate for the API hostname.
 - Secrets Manager secrets containing:
@@ -28,6 +28,28 @@ The module intentionally does not manage Cloudflare DNS. Use the outputs to crea
   - dataplane client CA certificate PEM
   - dataplane certificate issuer CA certificate PEM
   - dataplane certificate issuer CA private key PEM
+  - xDS server-trust CA certificate PEM for the local workstation smoke test
+
+Create the workstation-only xDS server-trust CA secret once, or export the name/ARN of an existing
+secret with the same raw-PEM content:
+
+```bash
+export XDS_SERVER_CA_SECRET_ID="/flowplane/prod/xds-server-ca"
+(
+  set -eu
+  openssl x509 -noout -in path/to/xds-server-ca.crt
+  aws secretsmanager create-secret \
+    --name "$XDS_SERVER_CA_SECRET_ID" \
+    --secret-string file://path/to/xds-server-ca.crt
+)
+```
+
+`XDS_SERVER_CA_SECRET_ID` is a local-operator input, not an OpenTofu module variable or output. The
+module consumes the xDS leaf certificate through `xds_tls_cert_secret_arn`; it does not return that
+certificate's issuing CA to the workstation.
+
+If this workstation secret uses a customer-managed KMS key, the AWS CLI operator identity also
+needs `kms:Decrypt` for that key. This is separate from module-side `secret_kms_key_arns` access.
 
 The control-plane container receives PEM values as ECS secrets, writes them to `/tmp/flowplane/tls`,
 and starts `flowplane serve` with file-path environment variables.
@@ -130,6 +152,7 @@ flowplane auth login --device-code \
   --client-id "$FLOWPLANE_OIDC_CLIENT_ID" \
   --scope "openid email profile"
 
+install -d -m 0700 .local
 flowplane dataplane create edge-local --team <team>
 flowplane --out .local/aws-dp-cert.json dataplane cert issue edge-local --team <team>
 
@@ -138,9 +161,20 @@ jq -r '.data.private_key_pem' .local/aws-dp-cert.json > .local/aws-dp.key
 jq -r '.data.ca_certificate_pem' .local/aws-dp-cert.json > .local/aws-dp-client-chain-ca.crt
 chmod 600 .local/aws-dp.key
 
-# `data.ca_certificate_pem` is the dataplane client-chain CA. Use a separate xDS
-# server-trust CA bundle for `--ca-path`: the CA that validates xds.getflowplane.io.
-printf '%s' "$CP_XDS_SERVER_CA_PEM" > .local/aws-xds-server-ca.crt
+# XDS_SERVER_CA_SECRET_ID names a workstation-only xDS server-trust CA secret.
+# It is separate from data.ca_certificate_pem, the dataplane client-chain CA.
+(
+  set -eu
+  : "${XDS_SERVER_CA_SECRET_ID:?set this to the xDS server-trust CA secret name or ARN}"
+  install -m 0600 /dev/null .local/aws-xds-server-ca.crt
+  aws secretsmanager get-secret-value \
+    --secret-id "$XDS_SERVER_CA_SECRET_ID" \
+    --query SecretString \
+    --output text \
+    > .local/aws-xds-server-ca.crt
+  test -s .local/aws-xds-server-ca.crt
+  openssl x509 -noout -in .local/aws-xds-server-ca.crt
+)
 
 flowplane --out .local/aws-envoy.yaml dataplane bootstrap edge-local \
   --team <team> \

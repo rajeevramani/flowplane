@@ -813,7 +813,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "flowplane"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "anyhow",
  "askama",
@@ -851,10 +851,11 @@ dependencies = [
 
 [[package]]
 name = "flowplane-rls"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "axum",
  "axum-server",
+ "clap",
  "envoy-types",
  "fp-domain",
  "prost",
@@ -926,7 +927,7 @@ dependencies = [
 
 [[package]]
 name = "fp-agent"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -946,7 +947,7 @@ dependencies = [
 
 [[package]]
 name = "fp-api"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "axum",
  "chrono",
@@ -976,7 +977,7 @@ dependencies = [
 
 [[package]]
 name = "fp-core"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "aes-gcm",
  "axum",
@@ -1009,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "fp-domain"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "base64",
  "chrono",
@@ -1023,7 +1024,7 @@ dependencies = [
 
 [[package]]
 name = "fp-storage"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "chrono",
  "fp-domain",
@@ -1039,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "fp-xds"
-version = "3.1.1"
+version = "3.1.2"
 dependencies = [
  "aes-gcm",
  "base64",

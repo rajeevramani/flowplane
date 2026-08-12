@@ -49,6 +49,15 @@ pub struct AiUsageQuery {
     pub offset: i64,
 }
 
+/// PostgreSQL's current clock value for resolving usage-window boundaries against
+/// `ai_usage_events.created_at`, which PostgreSQL also stamps.
+pub async fn usage_clock_now(pool: &PgPool) -> DomainResult<chrono::DateTime<chrono::Utc>> {
+    sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("read AI usage clock: {e}")))
+}
+
 fn provider_from_row(row: &PgRow) -> DomainResult<AiProvider> {
     Ok(AiProvider {
         id: AiProviderId::from(row.get::<Uuid, _>("id")),
