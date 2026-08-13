@@ -63,6 +63,9 @@ const EXEMPT: &[&str] = &[
     "auth token",              // prints the raw bearer token to stdout
     "auth whoami",             // live-auth identity probe
     "openapi",                 // emits an OpenAPI document, not the envelope
+    "qualification assemble",  // local artifact/evidence utility with its own JSON files
+    "qualification inventory", // local artifact/evidence utility with its own JSON files
+    "qualification validate",  // local artifact/evidence utility with its own JSON files
     "dataplane bootstrap",     // emits Envoy bootstrap YAML
     "dataplane cert list",     // PKI/cert material surface
     "dataplane cert register", // PKI/cert material surface

@@ -2,6 +2,7 @@
 
 mod cli;
 mod paths;
+mod qualification;
 mod serve;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
@@ -40,6 +41,11 @@ enum Command {
     },
     /// Print the OpenAPI document this binary serves (the exact API contract).
     Openapi,
+    /// Build, validate, and redact production-qualification evidence contracts.
+    Qualification {
+        #[command(subcommand)]
+        command: qualification::QualificationCommand,
+    },
     /// Client auth helpers.
     Auth {
         #[command(subcommand)]
@@ -219,6 +225,7 @@ fn run() -> anyhow::Result<()> {
             );
             Ok(())
         }
+        Command::Qualification { command } => qualification::run(command),
         Command::Auth { command } => runtime.block_on(cli::run_auth(
             cli.client,
             command,
@@ -656,7 +663,7 @@ mod tests {
             "apply",
         ];
 
-        // 82 EXEMPT leaves (space-joined paths) — no example required.
+        // 85 EXEMPT leaves (space-joined paths) — no example required.
         const EXEMPT: &[&str] = &[
             "agent grants",
             "agent list",
@@ -708,6 +715,9 @@ mod tests {
             "mcp status",
             "mcp tools",
             "openapi",
+            "qualification assemble",
+            "qualification inventory",
+            "qualification validate",
             "ops trace",
             "ops xds nacks",
             "ops xds status",

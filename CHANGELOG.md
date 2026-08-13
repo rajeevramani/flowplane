@@ -15,12 +15,17 @@ compatibility baseline.
 
 ## [Unreleased]
 
+### Added
+
+- `flowplane qualification inventory|validate|assemble` now provides a deterministic exact-artifact capability inventory, strict scenario/evidence and GitHub/Beads contract validation, and publication-bound evidence redaction. A repository capture adapter reconciles generated OpenAPI, CLI schema/help, stable docs, dashboard routes, documented configuration, and exact binary digests without treating code presence alone as supported behavior. Generated files use `--output-path` to remain distinct from the global output-format flag. (`fpv2-d23.2`)
+
 ### Fixed
 
 - OIDC PKCE and device-code login now store the API access token as the bearer credential and
   fail explicitly when the provider returns no access token, instead of treating an ID token as
   an API credential. Existing CLI sessions must log in again to acquire the corrected credential.
   (#251, fpv2-d23.13)
+- The split Envoy E2E harness now records the actual Python upstream process IDs, so subset and restart runs terminate their HTTP servers instead of orphaning listeners after cleanup. (`fpv2-d23.2`)
 
 ## [3.1.2] - 2026-08-10
 
