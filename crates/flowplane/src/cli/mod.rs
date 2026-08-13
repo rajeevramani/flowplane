@@ -197,8 +197,14 @@ struct DeviceCodeResponse {
 struct TokenSuccess {
     #[serde(default)]
     access_token: Option<String>,
-    #[serde(default)]
-    id_token: Option<String>,
+}
+
+impl TokenSuccess {
+    fn into_access_token(self) -> Result<String> {
+        self.access_token
+            .filter(|token| !token.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("token response did not include access_token"))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,9 +300,7 @@ async fn device_login(
         if status.is_success() {
             let token: TokenSuccess =
                 serde_json::from_str(&text).context("parse token response")?;
-            return token.id_token.or(token.access_token).ok_or_else(|| {
-                anyhow::anyhow!("token response did not include id_token or access_token")
-            });
+            return token.into_access_token();
         }
         let error: TokenError = serde_json::from_str(&text).unwrap_or(TokenError {
             error: status.to_string(),
@@ -409,10 +413,7 @@ async fn pkce_login(
         );
     }
     let token: TokenSuccess = serde_json::from_str(&text).context("parse token response")?;
-    token
-        .id_token
-        .or(token.access_token)
-        .ok_or_else(|| anyhow::anyhow!("token response did not include id_token or access_token"))
+    token.into_access_token()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2960,6 +2961,45 @@ mod tests {
     use super::*;
     use crate::cli::config::CliConfig;
     use crate::cli::output::table;
+
+    #[test]
+    fn oidc_token_response_selects_access_token_when_both_tokens_exist() -> Result<()> {
+        let token: TokenSuccess = serde_json::from_value(json!({
+            "access_token": "access-canary",
+            "id_token": "id-canary"
+        }))?;
+
+        assert_eq!(token.into_access_token()?, "access-canary");
+        Ok(())
+    }
+
+    #[test]
+    fn oidc_token_response_accepts_access_token_without_id_token() -> Result<()> {
+        let token = TokenSuccess {
+            access_token: Some("access-canary".into()),
+        };
+
+        assert_eq!(token.into_access_token()?, "access-canary");
+        Ok(())
+    }
+
+    #[test]
+    fn oidc_token_response_rejects_missing_or_blank_access_token_without_leaking_tokens() {
+        for access_token in [Value::Null, json!(""), json!("   ")] {
+            let token: TokenSuccess = serde_json::from_value(json!({
+                "access_token": access_token,
+                "id_token": "id-token-secret-canary"
+            }))
+            .expect("token response parses");
+            let message = token
+                .into_access_token()
+                .expect_err("missing access token must fail")
+                .to_string();
+
+            assert_eq!(message, "token response did not include access_token");
+            assert!(!message.contains("id-token-secret-canary"));
+        }
+    }
 
     #[test]
     fn shipped_s2_to_s6_openapi_paths_have_cli_templates() {

@@ -15,6 +15,13 @@ compatibility baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- OIDC PKCE and device-code login now store the API access token as the bearer credential and
+  fail explicitly when the provider returns no access token, instead of treating an ID token as
+  an API credential. Existing CLI sessions must log in again to acquire the corrected credential.
+  (#251, fpv2-d23.13)
+
 ## [3.1.2] - 2026-08-10
 
 Patch release restoring certificate-bound tenant authorization on the AI gateway credential path,
