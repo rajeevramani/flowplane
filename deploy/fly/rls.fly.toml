@@ -1,0 +1,47 @@
+app = "fpq-flowplane-rls"
+primary_region = "syd"
+kill_signal = "SIGTERM"
+kill_timeout = 30
+
+[build]
+  dockerfile = "Containerfile"
+
+[env]
+  FLOWPLANE_FLY_ROLE = "rls"
+  FLOWPLANE_RLS_GRPC_LISTEN = "127.0.0.1:50051"
+  FLOWPLANE_RLS_ADMIN_LISTEN = "[::]:8081"
+  FLOWPLANE_RLS_GRPC_TLS_CERT = "/run/secrets/rls-grpc.crt"
+  FLOWPLANE_RLS_GRPC_TLS_KEY = "/run/secrets/rls-grpc.key"
+  FLOWPLANE_RLS_GRPC_TLS_CLIENT_CA = "/run/secrets/dataplane-ca.crt"
+  FLOWPLANE_RLS_ADMIN_TLS_CERT = "/run/secrets/rls-admin.crt"
+  FLOWPLANE_RLS_ADMIN_TLS_KEY = "/run/secrets/rls-admin.key"
+  FLOWPLANE_RLS_ADMIN_TOKEN_FILE = "/run/secrets/rls-admin-token"
+  TAILSCALE_AUTHKEY_FILE = "/run/secrets/tailscale-authkey"
+  TAILSCALE_HOSTNAME = "fpq-flowplane-rls"
+  RUST_LOG = "info"
+
+[[files]]
+  guest_path = "/run/secrets/rls-grpc.crt"
+  secret_name = "FLOWPLANE_RLS_GRPC_TLS_CERT_B64"
+[[files]]
+  guest_path = "/run/secrets/rls-grpc.key"
+  secret_name = "FLOWPLANE_RLS_GRPC_TLS_KEY_B64"
+[[files]]
+  guest_path = "/run/secrets/dataplane-ca.crt"
+  secret_name = "FLOWPLANE_RLS_GRPC_TLS_CLIENT_CA_B64"
+[[files]]
+  guest_path = "/run/secrets/rls-admin.crt"
+  secret_name = "FLOWPLANE_RLS_ADMIN_TLS_CERT_B64"
+[[files]]
+  guest_path = "/run/secrets/rls-admin.key"
+  secret_name = "FLOWPLANE_RLS_ADMIN_TLS_KEY_B64"
+[[files]]
+  guest_path = "/run/secrets/rls-admin-token"
+  secret_name = "FLOWPLANE_RLS_ADMIN_TOKEN_B64"
+[[files]]
+  guest_path = "/run/secrets/tailscale-authkey"
+  secret_name = "TAILSCALE_AUTHKEY_B64"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

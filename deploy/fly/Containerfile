@@ -1,0 +1,28 @@
+FROM --platform=linux/amd64 docker.io/library/rust@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55 AS builder
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN cargo build --release --locked -p flowplane --no-default-features \
+ && cargo build --release --locked -p fp-agent -p flowplane-rls
+
+FROM --platform=linux/amd64 docker.io/tailscale/tailscale@sha256:4107a12b1a0466bb3f2c968d5fa35acf509cd7865a958ce1af36724e9f016342 AS tailscale
+FROM --platform=linux/amd64 docker.io/library/debian@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --system --gid 65532 flowplane \
+ && useradd --system --uid 65532 --gid 65532 --home-dir /nonexistent --shell /usr/sbin/nologin flowplane \
+ && install -d -o 65532 -g 65532 /var/lib/tailscale /var/run/tailscale
+
+COPY --from=builder /build/target/release/flowplane /usr/local/bin/flowplane
+COPY --from=builder /build/target/release/flowplane-agent /usr/local/bin/flowplane-agent
+COPY --from=builder /build/target/release/flowplane-rls /usr/local/bin/flowplane-rls
+COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscale
+COPY --from=tailscale /usr/local/bin/tailscaled /usr/local/bin/tailscaled
+COPY deploy/fly/entrypoint.sh /usr/local/bin/entrypoint.sh
+
+RUN chmod 0755 /usr/local/bin/entrypoint.sh
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

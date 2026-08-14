@@ -613,12 +613,20 @@ fn render_envoy_bootstrap(
             cert_path,
             key_path,
             ca_path,
-        } => format!(
-            r#"      transport_socket:
+        } => {
+            let is_ip = query.xds_host.parse::<std::net::IpAddr>().is_ok();
+            let san_type = if is_ip { "IP_ADDRESS" } else { "DNS" };
+            let sni = if is_ip {
+                String::new()
+            } else {
+                format!("          sni: {}\n", yaml_quote(&query.xds_host))
+            };
+            format!(
+                r#"      transport_socket:
         name: envoy.transport_sockets.tls
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
-          common_tls_context:
+{sni}          common_tls_context:
             tls_certificates:
               - certificate_chain:
                   filename: {cert_path}
@@ -627,11 +635,17 @@ fn render_envoy_bootstrap(
             validation_context:
               trusted_ca:
                 filename: {ca_path}
+              match_typed_subject_alt_names:
+                - san_type: {san_type}
+                  matcher:
+                    exact: {xds_host}
 "#,
-            cert_path = yaml_quote(cert_path),
-            key_path = yaml_quote(key_path),
-            ca_path = yaml_quote(ca_path),
-        ),
+                xds_host = yaml_quote(&query.xds_host),
+                cert_path = yaml_quote(cert_path),
+                key_path = yaml_quote(key_path),
+                ca_path = yaml_quote(ca_path),
+            )
+        }
     };
     format!(
         r#"node:
@@ -701,6 +715,44 @@ fn yaml_quote(value: &str) -> String {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use fp_domain::{DataplaneId, OrgId, TeamId};
+
+    fn rendered_mtls_bootstrap(xds_host: &str) -> serde_yaml::Value {
+        let team_id = TeamId::generate();
+        let now = Utc::now();
+        let dataplane = Dataplane {
+            id: DataplaneId::generate(),
+            team_id,
+            name: "dp-test".into(),
+            description: String::new(),
+            version: 1,
+            last_heartbeat_at: None,
+            last_config_verify_at: None,
+            total_requests: 0,
+            total_errors: 0,
+            warming_failures: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        let query = validate_bootstrap_query(EnvoyConfigQuery {
+            mode: BootstrapMode::Mtls,
+            xds_host: xds_host.into(),
+            xds_port: 18000,
+            admin_port: 9901,
+            cert_path: Some("/cert.pem".into()),
+            key_path: Some("/key.pem".into()),
+            ca_path: Some("/ca.pem".into()),
+        })
+        .unwrap_or_else(|error| panic!("valid mTLS bootstrap query: {error}"));
+        let team = TeamRef {
+            id: team_id,
+            org_id: OrgId::generate(),
+        };
+
+        serde_yaml::from_str(&render_envoy_bootstrap(team, &dataplane, &query))
+            .unwrap_or_else(|error| panic!("rendered bootstrap must be valid YAML: {error}"))
+    }
 
     #[test]
     fn yaml_quote_escapes_double_quotes_and_backslashes() {
@@ -748,5 +800,29 @@ mod tests {
                 ca_path: "/ca.pem".into(),
             }
         );
+    }
+
+    #[test]
+    fn mtls_bootstrap_verifies_xds_dns_name() {
+        let bootstrap = rendered_mtls_bootstrap("cp.example.com");
+        let tls = &bootstrap["static_resources"]["clusters"][0]["transport_socket"]["typed_config"];
+
+        assert_eq!(tls["sni"].as_str(), Some("cp.example.com"));
+        let san =
+            &tls["common_tls_context"]["validation_context"]["match_typed_subject_alt_names"][0];
+        assert_eq!(san["san_type"].as_str(), Some("DNS"));
+        assert_eq!(san["matcher"]["exact"].as_str(), Some("cp.example.com"));
+    }
+
+    #[test]
+    fn mtls_bootstrap_verifies_xds_ip_address() {
+        let bootstrap = rendered_mtls_bootstrap("100.64.0.10");
+        let tls = &bootstrap["static_resources"]["clusters"][0]["transport_socket"]["typed_config"];
+
+        assert!(tls["sni"].is_null(), "IP literals must not be sent as SNI");
+        let san =
+            &tls["common_tls_context"]["validation_context"]["match_typed_subject_alt_names"][0];
+        assert_eq!(san["san_type"].as_str(), Some("IP_ADDRESS"));
+        assert_eq!(san["matcher"]["exact"].as_str(), Some("100.64.0.10"));
     }
 }

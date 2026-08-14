@@ -1,5 +1,10 @@
-target
-.git
-.agents
-.codex
-.DS_Store
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+!crates/**
+!deploy/
+deploy/**
+!deploy/fly/
+deploy/fly/**
+!deploy/fly/entrypoint.sh
