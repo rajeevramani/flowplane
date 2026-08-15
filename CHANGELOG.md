@@ -15,12 +15,29 @@ compatibility baseline.
 
 ## [Unreleased]
 
+### Security
+
+- Dataplane certificate issuance now rejects malformed, expired, not-yet-valid, key-mismatched, or
+  unsuitable issuer material before persistence, and issued client leaves include Subject Key
+  Identifier and issuer-linked Authority Key Identifier extensions with strict client-purpose
+  verification. Configured roots and explicit intermediate trust anchors remain supported. (#253)
+
 ### Added
 
 - `flowplane qualification inventory|validate|assemble` now provides a deterministic exact-artifact capability inventory, strict scenario/evidence and GitHub/Beads contract validation, and publication-bound evidence redaction. A repository capture adapter reconciles generated OpenAPI, CLI schema/help, stable docs, dashboard routes, documented configuration, and exact binary digests without treating code presence alone as supported behavior. Generated files use `--output-path` to remain distinct from the global output-format flag. (`fpv2-d23.2`)
 
+### Changed
+
+- Existing issuer CAs must contain `CA:TRUE`, `keyCertSign`, and a Subject Key Identifier and must
+  allow `clientAuth`. This intentional fail-closed compatibility change may require a CA-certificate
+  reissue and public trust-anchor redistribution before new leaves are issued. A same-key
+  certificate reissue is not a CA-key rotation; upgrading Flowplane does not automatically rotate
+  keys, rewrite trust stores, replace leaves, or terminate running mTLS sessions. (#253)
+
 ### Fixed
 
+- The RLS and evaluator PKI recipes now use explicit standards-complete CA/server/client profiles,
+  require OpenSSL 3.0 or newer, and strict-verify generated and reused material. (#253)
 - OIDC PKCE and device-code login now store the API access token as the bearer credential and
   fail explicitly when the provider returns no access token, instead of treating an ID token as
   an API credential. Existing CLI sessions must log in again to acquire the corrected credential.

@@ -13,10 +13,15 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use openssl::asn1::Asn1Time;
 use openssl::bn::BigNum;
 use openssl::hash::MessageDigest;
-use openssl::pkey::PKey;
+use openssl::pkey::{PKey, Private};
 use openssl::rsa::Rsa;
-use openssl::x509::extension::{BasicConstraints, KeyUsage};
-use openssl::x509::X509NameBuilder;
+use openssl::stack::Stack;
+use openssl::x509::extension::{
+    AuthorityKeyIdentifier, BasicConstraints, KeyUsage, SubjectKeyIdentifier,
+};
+use openssl::x509::store::X509StoreBuilder;
+use openssl::x509::verify::X509VerifyFlags;
+use openssl::x509::{X509NameBuilder, X509PurposeId, X509StoreContext, X509};
 use std::path::PathBuf;
 use tower::ServiceExt;
 
@@ -37,11 +42,8 @@ async fn json_of(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
 }
 
-fn write_test_ca(prefix: &str) -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("flowplane-test-ca-{}", unique(prefix)));
-    std::fs::create_dir_all(&dir).expect("ca dir");
-    let ca_key = PKey::from_rsa(Rsa::generate(2048).expect("rsa")).expect("pkey");
-    let mut builder = openssl::x509::X509::builder().expect("x509");
+fn build_test_ca(ca_key: &PKey<Private>, issuer_for_key_id: Option<&X509>) -> X509 {
+    let mut builder = X509::builder().expect("x509");
     builder.set_version(2).expect("version");
     let serial = BigNum::from_u32(1)
         .and_then(|n| n.to_asn1_integer())
@@ -53,7 +55,7 @@ fn write_test_ca(prefix: &str) -> (PathBuf, PathBuf) {
     let name = name.build();
     builder.set_subject_name(&name).expect("subject");
     builder.set_issuer_name(&name).expect("issuer");
-    builder.set_pubkey(&ca_key).expect("pubkey");
+    builder.set_pubkey(ca_key).expect("pubkey");
     let not_before = Asn1Time::days_from_now(0).expect("not before");
     let not_after = Asn1Time::days_from_now(1).expect("not after");
     builder.set_not_before(&not_before).expect("not before");
@@ -70,24 +72,96 @@ fn write_test_ca(prefix: &str) -> (PathBuf, PathBuf) {
     builder
         .append_extension(
             KeyUsage::new()
+                .critical()
                 .key_cert_sign()
                 .crl_sign()
                 .build()
                 .expect("key usage"),
         )
         .expect("key usage");
+    let subject_key_identifier = {
+        let context = builder.x509v3_context(None, None);
+        SubjectKeyIdentifier::new()
+            .build(&context)
+            .expect("subject key identifier")
+    };
     builder
-        .sign(&ca_key, MessageDigest::sha256())
-        .expect("sign");
+        .append_extension(subject_key_identifier)
+        .expect("subject key identifier");
+    if let Some(issuer) = issuer_for_key_id {
+        let authority_key_identifier = {
+            let context = builder.x509v3_context(Some(issuer), None);
+            AuthorityKeyIdentifier::new()
+                .keyid(true)
+                .build(&context)
+                .expect("authority key identifier")
+        };
+        builder
+            .append_extension(authority_key_identifier)
+            .expect("authority key identifier");
+    }
+    builder.sign(ca_key, MessageDigest::sha256()).expect("sign");
+    builder.build()
+}
+
+fn write_test_ca(prefix: &str) -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("flowplane-test-ca-{}", unique(prefix)));
+    std::fs::create_dir_all(&dir).expect("ca dir");
+    let ca_key = PKey::from_rsa(Rsa::generate(2048).expect("rsa")).expect("pkey");
+    let issuer_template = build_test_ca(&ca_key, None);
+    let ca_cert = build_test_ca(&ca_key, Some(&issuer_template));
     let ca_cert_path = dir.join("ca.crt");
     let ca_key_path = dir.join("ca.key");
-    std::fs::write(&ca_cert_path, builder.build().to_pem().expect("ca pem")).expect("write cert");
+    std::fs::write(&ca_cert_path, ca_cert.to_pem().expect("ca pem")).expect("write cert");
     std::fs::write(
         &ca_key_path,
         ca_key.private_key_to_pem_pkcs8().expect("key pem"),
     )
     .expect("write key");
     (ca_cert_path, ca_key_path)
+}
+
+fn assert_strict_client_leaf(certificate_pem: &str, ca_certificate_pem: &str) {
+    let leaf = X509::from_pem(certificate_pem.as_bytes()).expect("issued certificate PEM");
+    let ca = X509::from_pem(ca_certificate_pem.as_bytes()).expect("issuer certificate PEM");
+
+    let subject_key_id = leaf
+        .subject_key_id()
+        .expect("issued leaf must contain Subject Key Identifier");
+    assert!(
+        !subject_key_id.as_slice().is_empty(),
+        "issued leaf Subject Key Identifier must not be empty"
+    );
+    let authority_key_id = leaf
+        .authority_key_id()
+        .expect("issued leaf must contain key-identifier Authority Key Identifier");
+    let issuer_subject_key_id = ca
+        .subject_key_id()
+        .expect("configured issuer must contain Subject Key Identifier");
+    assert_eq!(
+        authority_key_id.as_slice(),
+        issuer_subject_key_id.as_slice(),
+        "issued leaf Authority Key Identifier must identify the configured issuer key"
+    );
+
+    let mut store = X509StoreBuilder::new().expect("certificate store");
+    store
+        .set_flags(X509VerifyFlags::X509_STRICT | X509VerifyFlags::PARTIAL_CHAIN)
+        .expect("strict partial-chain verification flags");
+    store
+        .set_purpose(X509PurposeId::SSL_CLIENT)
+        .expect("SSL client verification purpose");
+    store.add_cert(ca).expect("configured issuer trust anchor");
+    let store = store.build();
+    let chain = Stack::new().expect("empty untrusted chain");
+    let mut context = X509StoreContext::new().expect("verification context");
+    let verified = context
+        .init(&store, &leaf, &chain, |context| context.verify_cert())
+        .expect("strict SSL-client verification must execute");
+    assert!(
+        verified,
+        "issued leaf must pass OpenSSL X509_STRICT + PARTIAL_CHAIN verification for SSL_CLIENT"
+    );
 }
 
 #[test]
@@ -1166,8 +1240,9 @@ async fn proxy_certificate_registry_flow_over_http() {
         ))
         .await
         .expect("issue cert");
-    assert_eq!(response.status(), StatusCode::CREATED);
+    let status = response.status();
     let body = json_of(response).await;
+    assert_eq!(status, StatusCode::CREATED, "issue response: {body}");
     let issued_serial = body["certificate"]["serial_number"]
         .as_str()
         .expect("issued serial")
@@ -1181,18 +1256,15 @@ async fn proxy_certificate_registry_flow_over_http() {
             body["certificate"]["dataplane_id"].as_str().expect("dp id")
         )
     );
-    assert!(body["certificate_pem"]
-        .as_str()
-        .expect("cert pem")
-        .contains("BEGIN CERTIFICATE"));
+    let certificate_pem = body["certificate_pem"].as_str().expect("cert pem");
+    assert!(certificate_pem.contains("BEGIN CERTIFICATE"));
     assert!(body["private_key_pem"]
         .as_str()
         .expect("key pem")
         .contains("BEGIN PRIVATE KEY"));
-    assert!(body["ca_certificate_pem"]
-        .as_str()
-        .expect("ca pem")
-        .contains("BEGIN CERTIFICATE"));
+    let ca_certificate_pem = body["ca_certificate_pem"].as_str().expect("ca pem");
+    assert!(ca_certificate_pem.contains("BEGIN CERTIFICATE"));
+    assert_strict_client_leaf(certificate_pem, ca_certificate_pem);
 
     let serial = unique("serial");
     let spiffe = format!(

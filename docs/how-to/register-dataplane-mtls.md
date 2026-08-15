@@ -10,6 +10,12 @@ It assumes the control plane is already running with xDS mTLS configured. The xD
 
 The control plane is up with the xDS mTLS triad set (`FLOWPLANE_XDS_TLS_CERT` / `_KEY` / `_CLIENT_CA`), and — for the `issue` step below — the cert-issuer triad `FLOWPLANE_CERT_ISSUER_CA_CERT_PATH` and `FLOWPLANE_CERT_ISSUER_CA_KEY_PATH` (optionally `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN`, default `flowplane.local`) is set **on the control-plane process**. See the [configuration reference](../reference/configuration.md).
 
+The configured issuer certificate must be currently valid, match its private key, contain
+`CA:TRUE`, `keyCertSign`, and a Subject Key Identifier, and must not restrict extended key usage
+away from `clientAuth`. A standards-complete intermediate certificate is supported when it is
+the explicit trust anchor. Before upgrading an existing issuer, run the detection and ordered
+redistribution procedure in [Production Readiness](production-readiness.md#issuer-ca-compatibility-and-upgrade).
+
 A **tenant org and a team must already exist** — a dataplane is registered under a team (`--team payments` below), and the platform org cannot host one. If you have only just bootstrapped the platform admin, first [create a tenant org and a team](create-tenant-org-and-team.md). Note that selecting the platform org for a tenant operation (`--org platform`) is rejected with `org_selector_required` (D-014): use your tenant org.
 
 The dataplane host must have Envoy and `flowplane-agent` installed. Install `flowplane-agent` from the published Flowplane release archive as shown in [Production Readiness](production-readiness.md).

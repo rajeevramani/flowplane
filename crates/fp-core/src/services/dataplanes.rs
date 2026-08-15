@@ -12,10 +12,15 @@ use fp_storage::repos::{audit, dataplanes};
 use openssl::asn1::Asn1Time;
 use openssl::bn::BigNum;
 use openssl::hash::MessageDigest;
-use openssl::pkey::PKey;
+use openssl::pkey::{PKey, Private};
 use openssl::rsa::Rsa;
-use openssl::x509::extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage};
-use openssl::x509::{X509NameBuilder, X509};
+use openssl::stack::Stack;
+use openssl::x509::extension::{
+    AuthorityKeyIdentifier, BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectKeyIdentifier,
+};
+use openssl::x509::store::X509StoreBuilder;
+use openssl::x509::verify::X509VerifyFlags;
+use openssl::x509::{X509NameBuilder, X509PurposeId, X509StoreContext, X509};
 use sqlx::PgPool;
 use std::path::PathBuf;
 
@@ -486,7 +491,8 @@ fn mutation_audit(
 
 struct CertificateIssuer {
     ca_certificate_pem: String,
-    ca_key_pem: String,
+    ca_certificate: X509,
+    ca_key: PKey<Private>,
     trust_domain: String,
 }
 
@@ -501,10 +507,32 @@ impl CertificateIssuer {
         let ca_key_path = required_env_path("FLOWPLANE_CERT_ISSUER_CA_KEY_PATH")?;
         let trust_domain = std::env::var("FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN")
             .unwrap_or_else(|_| "flowplane.local".into());
+        Self::from_pem(
+            read_pem_file(&ca_cert_path, "certificate issuer CA certificate")?,
+            read_pem_file(&ca_key_path, "certificate issuer CA key")?,
+            trust_domain,
+        )
+    }
+
+    fn from_pem(
+        ca_certificate_pem: String,
+        ca_key_pem: String,
+        trust_domain: String,
+    ) -> DomainResult<Self> {
         validate_trust_domain(&trust_domain)?;
+        let ca_certificate = X509::from_pem(ca_certificate_pem.as_bytes()).map_err(|e| {
+            DomainError::invalid_config(format!(
+                "certificate issuer CA certificate is invalid: {e}"
+            ))
+        })?;
+        let ca_key = PKey::private_key_from_pem(ca_key_pem.as_bytes()).map_err(|e| {
+            DomainError::invalid_config(format!("certificate issuer CA key is invalid: {e}"))
+        })?;
+        validate_issuer_material(&ca_certificate, &ca_key)?;
         Ok(Self {
-            ca_certificate_pem: read_pem_file(&ca_cert_path, "certificate issuer CA certificate")?,
-            ca_key_pem: read_pem_file(&ca_key_path, "certificate issuer CA key")?,
+            ca_certificate_pem,
+            ca_certificate,
+            ca_key,
             trust_domain,
         })
     }
@@ -516,15 +544,6 @@ impl CertificateIssuer {
         serial_number: &str,
         expires_at: chrono::DateTime<chrono::Utc>,
     ) -> DomainResult<IssuedPem> {
-        let ca_cert = X509::from_pem(self.ca_certificate_pem.as_bytes()).map_err(|e| {
-            DomainError::invalid_config(format!(
-                "certificate issuer CA certificate is invalid: {e}"
-            ))
-        })?;
-        let ca_key = PKey::private_key_from_pem(self.ca_key_pem.as_bytes()).map_err(|e| {
-            DomainError::invalid_config(format!("certificate issuer CA key is invalid: {e}"))
-        })?;
-
         let leaf_key = PKey::from_rsa(
             Rsa::generate(2048)
                 .map_err(|e| DomainError::internal(format!("generate certificate key: {e}")))?,
@@ -552,7 +571,7 @@ impl CertificateIssuer {
             .set_subject_name(&name)
             .map_err(|e| DomainError::internal(format!("set certificate subject: {e}")))?;
         builder
-            .set_issuer_name(ca_cert.subject_name())
+            .set_issuer_name(self.ca_certificate.subject_name())
             .map_err(|e| DomainError::internal(format!("set certificate issuer: {e}")))?;
         builder
             .set_pubkey(&leaf_key)
@@ -594,8 +613,33 @@ impl CertificateIssuer {
             .map_err(|e| {
                 DomainError::internal(format!("append certificate extended key usage: {e}"))
             })?;
+        let subject_key_identifier = {
+            let context = builder.x509v3_context(None, None);
+            SubjectKeyIdentifier::new().build(&context).map_err(|e| {
+                DomainError::internal(format!("set certificate subject key identifier: {e}"))
+            })?
+        };
+        builder
+            .append_extension(subject_key_identifier)
+            .map_err(|e| {
+                DomainError::internal(format!("append certificate subject key identifier: {e}"))
+            })?;
+        let authority_key_identifier = {
+            let context = builder.x509v3_context(Some(&self.ca_certificate), None);
+            AuthorityKeyIdentifier::new()
+                .keyid(true)
+                .build(&context)
+                .map_err(|e| {
+                    DomainError::internal(format!("set certificate authority key identifier: {e}"))
+                })?
+        };
+        builder
+            .append_extension(authority_key_identifier)
+            .map_err(|e| {
+                DomainError::internal(format!("append certificate authority key identifier: {e}"))
+            })?;
         let san = {
-            let context = builder.x509v3_context(Some(&ca_cert), None);
+            let context = builder.x509v3_context(Some(&self.ca_certificate), None);
             openssl::x509::extension::SubjectAlternativeName::new()
                 .uri(spiffe_uri)
                 .build(&context)
@@ -605,9 +649,16 @@ impl CertificateIssuer {
             .append_extension(san)
             .map_err(|e| DomainError::internal(format!("append certificate SAN: {e}")))?;
         builder
-            .sign(&ca_key, MessageDigest::sha256())
+            .sign(&self.ca_key, MessageDigest::sha256())
             .map_err(|e| DomainError::internal(format!("sign certificate: {e}")))?;
         let cert = builder.build();
+        verify_certificate(
+            &self.ca_certificate,
+            &cert,
+            "issued dataplane certificate failed strict SSL-client verification",
+            true,
+            DomainError::internal,
+        )?;
         let certificate_pem = String::from_utf8(
             cert.to_pem()
                 .map_err(|e| DomainError::internal(format!("encode certificate PEM: {e}")))?,
@@ -624,6 +675,146 @@ impl CertificateIssuer {
             private_key_pem,
         })
     }
+}
+
+fn validate_issuer_material(certificate: &X509, private_key: &PKey<Private>) -> DomainResult<()> {
+    let public_key = certificate.public_key().map_err(|e| {
+        DomainError::invalid_config(format!(
+            "certificate issuer CA certificate public key is invalid: {e}"
+        ))
+    })?;
+    if !public_key.public_eq(private_key) {
+        return Err(DomainError::invalid_config(
+            "certificate issuer CA key does not match the CA certificate public key",
+        ));
+    }
+
+    let subject_key_id = certificate.subject_key_id().ok_or_else(|| {
+        DomainError::invalid_config(
+            "certificate issuer CA certificate must contain a Subject Key Identifier",
+        )
+    })?;
+    if subject_key_id.as_slice().is_empty() {
+        return Err(DomainError::invalid_config(
+            "certificate issuer CA certificate has an empty Subject Key Identifier",
+        ));
+    }
+
+    let certificate_der = certificate.to_der().map_err(|e| {
+        DomainError::invalid_config(format!(
+            "certificate issuer CA certificate cannot be decoded: {e}"
+        ))
+    })?;
+    let (_, parsed_certificate) =
+        x509_parser::parse_x509_certificate(&certificate_der).map_err(|e| {
+            DomainError::invalid_config(format!(
+                "certificate issuer CA certificate cannot be decoded: {e}"
+            ))
+        })?;
+    let mut is_ca = false;
+    let mut can_sign_certificates = false;
+    let mut allows_client_auth = true;
+    for extension in parsed_certificate.extensions() {
+        match extension.parsed_extension() {
+            x509_parser::extensions::ParsedExtension::BasicConstraints(constraints) => {
+                is_ca = constraints.ca;
+            }
+            x509_parser::extensions::ParsedExtension::KeyUsage(usage) => {
+                can_sign_certificates = usage.key_cert_sign();
+            }
+            x509_parser::extensions::ParsedExtension::ExtendedKeyUsage(usage) => {
+                allows_client_auth = usage.any || usage.client_auth;
+            }
+            _ => {}
+        }
+    }
+    if !is_ca {
+        return Err(DomainError::invalid_config(
+            "certificate issuer CA certificate must contain Basic Constraints with CA:TRUE",
+        ));
+    }
+    if !can_sign_certificates {
+        return Err(DomainError::invalid_config(
+            "certificate issuer CA certificate Key Usage must include keyCertSign",
+        ));
+    }
+    if !allows_client_auth {
+        return Err(DomainError::invalid_config(
+            "certificate issuer CA certificate Extended Key Usage must allow clientAuth",
+        ));
+    }
+
+    let now = Asn1Time::from_unix(chrono::Utc::now().timestamp()).map_err(|e| {
+        DomainError::internal(format!("prepare certificate issuer validation time: {e}"))
+    })?;
+    if certificate
+        .not_before()
+        .compare(&now)
+        .map_err(|e| DomainError::invalid_config(format!("read CA notBefore: {e}")))?
+        .is_gt()
+    {
+        return Err(DomainError::invalid_config(
+            "certificate issuer CA certificate is not yet valid",
+        ));
+    }
+    if certificate
+        .not_after()
+        .compare(&now)
+        .map_err(|e| DomainError::invalid_config(format!("read CA notAfter: {e}")))?
+        .is_lt()
+    {
+        return Err(DomainError::invalid_config(
+            "certificate issuer CA certificate has expired",
+        ));
+    }
+
+    verify_certificate(
+        certificate,
+        certificate,
+        "certificate issuer CA certificate is unsuitable",
+        false,
+        DomainError::invalid_config,
+    )
+}
+
+fn verify_certificate(
+    trust_anchor: &X509,
+    certificate: &X509,
+    context: &str,
+    require_ssl_client_purpose: bool,
+    error: fn(String) -> DomainError,
+) -> DomainResult<()> {
+    let mut store = X509StoreBuilder::new()
+        .map_err(|e| error(format!("{context}: create trust store: {e}")))?;
+    store
+        .set_flags(X509VerifyFlags::X509_STRICT | X509VerifyFlags::PARTIAL_CHAIN)
+        .map_err(|e| {
+            error(format!(
+                "{context}: configure strict partial-chain policy: {e}"
+            ))
+        })?;
+    if require_ssl_client_purpose {
+        store
+            .set_purpose(X509PurposeId::SSL_CLIENT)
+            .map_err(|e| error(format!("{context}: configure SSL-client purpose: {e}")))?;
+    }
+    store
+        .add_cert(trust_anchor.to_owned())
+        .map_err(|e| error(format!("{context}: add trust anchor: {e}")))?;
+    let store = store.build();
+    let chain = Stack::new().map_err(|e| error(format!("{context}: create chain: {e}")))?;
+    let mut store_context = X509StoreContext::new()
+        .map_err(|e| error(format!("{context}: create verification context: {e}")))?;
+    let (verified, verify_error) = store_context
+        .init(&store, certificate, &chain, |ctx| {
+            let verified = ctx.verify_cert()?;
+            Ok((verified, ctx.error()))
+        })
+        .map_err(|e| error(format!("{context}: verification failed to execute: {e}")))?;
+    if !verified {
+        return Err(error(format!("{context}: {}", verify_error.error_string())));
+    }
+    Ok(())
 }
 
 fn required_env_path(name: &str) -> DomainResult<PathBuf> {
@@ -658,8 +849,363 @@ fn validate_trust_domain(value: &str) -> DomainResult<()> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::required_env_path;
+    use super::{required_env_path, CertificateIssuer};
     use fp_domain::error::ErrorCode;
+    use openssl::asn1::Asn1Time;
+    use openssl::bn::BigNum;
+    use openssl::hash::MessageDigest;
+    use openssl::pkey::{PKey, Private};
+    use openssl::rsa::Rsa;
+    use openssl::x509::extension::{
+        AuthorityKeyIdentifier, BasicConstraints, KeyUsage, SubjectKeyIdentifier,
+    };
+    use openssl::x509::{X509NameBuilder, X509};
+
+    #[derive(Clone, Copy)]
+    struct CaProfile {
+        basic_constraints: bool,
+        key_cert_sign: bool,
+        subject_key_id: bool,
+        server_auth_only: bool,
+        not_before: i64,
+        not_after: i64,
+    }
+
+    impl CaProfile {
+        fn valid() -> Self {
+            let now = chrono::Utc::now().timestamp();
+            Self {
+                basic_constraints: true,
+                key_cert_sign: true,
+                subject_key_id: true,
+                server_auth_only: false,
+                not_before: now - 60,
+                not_after: now + 86_400,
+            }
+        }
+    }
+
+    fn key() -> PKey<Private> {
+        PKey::from_rsa(Rsa::generate(2048).expect("RSA key")).expect("private key")
+    }
+
+    fn build_ca(
+        common_name: &str,
+        public_key: &PKey<Private>,
+        signing_key: &PKey<Private>,
+        issuer: Option<&X509>,
+        profile: CaProfile,
+    ) -> X509 {
+        let mut builder = X509::builder().expect("X509 builder");
+        builder.set_version(2).expect("version");
+        let serial = BigNum::from_u32(1)
+            .and_then(|number| number.to_asn1_integer())
+            .expect("serial");
+        builder.set_serial_number(&serial).expect("serial");
+        let mut name = X509NameBuilder::new().expect("name");
+        name.append_entry_by_text("CN", common_name).expect("CN");
+        let name = name.build();
+        builder.set_subject_name(&name).expect("subject");
+        match issuer {
+            Some(issuer) => builder
+                .set_issuer_name(issuer.subject_name())
+                .expect("issuer"),
+            None => builder.set_issuer_name(&name).expect("issuer"),
+        }
+        builder.set_pubkey(public_key).expect("public key");
+        let not_before = Asn1Time::from_unix(profile.not_before).expect("notBefore");
+        let not_after = Asn1Time::from_unix(profile.not_after).expect("notAfter");
+        builder.set_not_before(&not_before).expect("notBefore");
+        builder.set_not_after(&not_after).expect("notAfter");
+        if profile.basic_constraints {
+            builder
+                .append_extension(
+                    BasicConstraints::new()
+                        .critical()
+                        .ca()
+                        .build()
+                        .expect("basic constraints"),
+                )
+                .expect("basic constraints");
+        }
+        let key_usage = if profile.key_cert_sign {
+            KeyUsage::new()
+                .critical()
+                .key_cert_sign()
+                .crl_sign()
+                .build()
+                .expect("CA key usage")
+        } else {
+            KeyUsage::new()
+                .critical()
+                .digital_signature()
+                .build()
+                .expect("non-CA key usage")
+        };
+        builder
+            .append_extension(key_usage)
+            .expect("key usage extension");
+        if profile.subject_key_id {
+            let subject_key_id = {
+                let context = builder.x509v3_context(None, None);
+                SubjectKeyIdentifier::new().build(&context).expect("SKI")
+            };
+            builder.append_extension(subject_key_id).expect("SKI");
+        }
+        if profile.server_auth_only {
+            builder
+                .append_extension(
+                    openssl::x509::extension::ExtendedKeyUsage::new()
+                        .server_auth()
+                        .build()
+                        .expect("server-only EKU"),
+                )
+                .expect("server-only EKU");
+        }
+        if let Some(issuer) = issuer {
+            let authority_key_id = {
+                let context = builder.x509v3_context(Some(issuer), None);
+                AuthorityKeyIdentifier::new()
+                    .keyid(true)
+                    .build(&context)
+                    .expect("AKI")
+            };
+            builder.append_extension(authority_key_id).expect("AKI");
+        }
+        builder
+            .sign(signing_key, MessageDigest::sha256())
+            .expect("sign CA");
+        builder.build()
+    }
+
+    fn root_material(profile: CaProfile) -> (String, String) {
+        let root_key = key();
+        let template = build_ca(
+            "Flowplane Root",
+            &root_key,
+            &root_key,
+            None,
+            CaProfile::valid(),
+        );
+        let root = build_ca(
+            "Flowplane Root",
+            &root_key,
+            &root_key,
+            Some(&template),
+            profile,
+        );
+        (
+            String::from_utf8(root.to_pem().expect("certificate PEM")).expect("certificate UTF-8"),
+            String::from_utf8(
+                root_key
+                    .private_key_to_pem_pkcs8()
+                    .expect("private-key PEM"),
+            )
+            .expect("private-key UTF-8"),
+        )
+    }
+
+    fn issuer_from(profile: CaProfile) -> Result<CertificateIssuer, fp_domain::DomainError> {
+        let (certificate, private_key) = root_material(profile);
+        CertificateIssuer::from_pem(certificate, private_key, "flowplane.test".into())
+    }
+
+    fn issuer_error(
+        result: Result<CertificateIssuer, fp_domain::DomainError>,
+        expectation: &str,
+    ) -> fp_domain::DomainError {
+        match result {
+            Ok(_) => panic!("{expectation}"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn standards_complete_root_issuer_is_accepted() {
+        issuer_from(CaProfile::valid()).expect("valid root issuer");
+    }
+
+    #[test]
+    fn standards_complete_intermediate_issuer_is_accepted_as_partial_chain_anchor() {
+        let root_key = key();
+        let root_template = build_ca(
+            "Flowplane Root",
+            &root_key,
+            &root_key,
+            None,
+            CaProfile::valid(),
+        );
+        let root = build_ca(
+            "Flowplane Root",
+            &root_key,
+            &root_key,
+            Some(&root_template),
+            CaProfile::valid(),
+        );
+        let intermediate_key = key();
+        let intermediate = build_ca(
+            "Flowplane Intermediate",
+            &intermediate_key,
+            &root_key,
+            Some(&root),
+            CaProfile::valid(),
+        );
+        CertificateIssuer::from_pem(
+            String::from_utf8(intermediate.to_pem().expect("certificate PEM"))
+                .expect("certificate UTF-8"),
+            String::from_utf8(
+                intermediate_key
+                    .private_key_to_pem_pkcs8()
+                    .expect("private-key PEM"),
+            )
+            .expect("private-key UTF-8"),
+            "flowplane.test".into(),
+        )
+        .expect("valid intermediate issuer");
+    }
+
+    #[test]
+    fn mismatched_issuer_private_key_is_rejected_actionably() {
+        let (certificate, _) = root_material(CaProfile::valid());
+        let wrong_key = String::from_utf8(
+            key()
+                .private_key_to_pem_pkcs8()
+                .expect("wrong private-key PEM"),
+        )
+        .expect("private-key UTF-8");
+        let error = issuer_error(
+            CertificateIssuer::from_pem(certificate, wrong_key, "flowplane.test".into()),
+            "mismatched key must fail",
+        );
+        assert_eq!(error.code, ErrorCode::InvalidConfig);
+        assert!(
+            error.message.contains("does not match"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn malformed_issuer_certificate_and_private_key_are_rejected_actionably() {
+        let (_, valid_key) = root_material(CaProfile::valid());
+        let bad_certificate = issuer_error(
+            CertificateIssuer::from_pem(
+                "not a certificate".into(),
+                valid_key,
+                "flowplane.test".into(),
+            ),
+            "malformed certificate must fail",
+        );
+        assert!(
+            bad_certificate
+                .message
+                .contains("CA certificate is invalid"),
+            "{}",
+            bad_certificate.message
+        );
+
+        let (valid_certificate, _) = root_material(CaProfile::valid());
+        let bad_key = issuer_error(
+            CertificateIssuer::from_pem(
+                valid_certificate,
+                "not a private key".into(),
+                "flowplane.test".into(),
+            ),
+            "malformed private key must fail",
+        );
+        assert!(
+            bad_key.message.contains("CA key is invalid"),
+            "{}",
+            bad_key.message
+        );
+    }
+
+    #[test]
+    fn issuer_without_subject_key_identifier_is_rejected_actionably() {
+        let error = issuer_error(
+            issuer_from(CaProfile {
+                subject_key_id: false,
+                ..CaProfile::valid()
+            }),
+            "missing SKI must fail",
+        );
+        assert_eq!(error.code, ErrorCode::InvalidConfig);
+        assert!(
+            error.message.contains("Subject Key Identifier"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn expired_and_not_yet_valid_issuers_are_rejected_actionably() {
+        let now = chrono::Utc::now().timestamp();
+        let expired = issuer_error(
+            issuer_from(CaProfile {
+                not_before: now - 172_800,
+                not_after: now - 86_400,
+                ..CaProfile::valid()
+            }),
+            "expired issuer must fail",
+        );
+        assert!(expired.message.contains("expired"), "{}", expired.message);
+
+        let future = issuer_error(
+            issuer_from(CaProfile {
+                not_before: now + 86_400,
+                not_after: now + 172_800,
+                ..CaProfile::valid()
+            }),
+            "future issuer must fail",
+        );
+        assert!(
+            future.message.contains("not yet valid"),
+            "{}",
+            future.message
+        );
+    }
+
+    #[test]
+    fn issuer_without_ca_constraints_or_cert_sign_usage_is_rejected_actionably() {
+        let no_constraints = issuer_error(
+            issuer_from(CaProfile {
+                basic_constraints: false,
+                ..CaProfile::valid()
+            }),
+            "missing CA constraints must fail",
+        );
+        assert!(
+            no_constraints.message.contains("Basic Constraints"),
+            "{}",
+            no_constraints.message
+        );
+
+        let no_cert_sign = issuer_error(
+            issuer_from(CaProfile {
+                key_cert_sign: false,
+                ..CaProfile::valid()
+            }),
+            "missing keyCertSign must fail",
+        );
+        assert!(
+            no_cert_sign.message.contains("keyCertSign"),
+            "{}",
+            no_cert_sign.message
+        );
+    }
+
+    #[test]
+    fn issuer_with_restrictive_extended_key_usage_is_rejected_actionably() {
+        let error = issuer_error(
+            issuer_from(CaProfile {
+                server_auth_only: true,
+                ..CaProfile::valid()
+            }),
+            "server-only issuer EKU must fail",
+        );
+        assert_eq!(error.code, ErrorCode::InvalidConfig);
+        assert!(error.message.contains("clientAuth"), "{}", error.message);
+    }
 
     // Obs-1 (fpv2-86m.4): an unconfigured cert-issuer prerequisite must fail closed with a
     // *reason* — the error names the missing env var and carries an actionable hint, so the

@@ -137,6 +137,32 @@ Rollback:
 4. Existing dataplanes keep serving their last-applied Envoy config during a CP restart; new dataplanes cannot join until the CP is back.
 5. If xDS host, port, mode, or cert paths changed during the failed upgrade, regenerate bootstrap before reconnecting the dataplane.
 
+## Issuer CA compatibility and upgrade
+
+Dataplane certificate issuance requires the configured issuer certificate to be currently valid,
+match its private key, contain `CA:TRUE`, `keyCertSign`, and a Subject Key Identifier, and not
+restrict extended key usage away from `clientAuth`. A standards-complete intermediate certificate
+is supported when it is deliberately configured as the explicit trust anchor.
+
+Inspect existing material without printing private key bytes:
+
+```bash
+openssl x509 -in issuer-ca.pem -noout -dates -ext basicConstraints -ext keyUsage -ext subjectKeyIdentifier
+openssl x509 -in issuer-ca.pem -noout -pubkey | sha256sum
+openssl pkey -in issuer-ca.key -pubout | sha256sum
+```
+
+The two public-key hashes must match. If the certificate profile is incomplete, reissue a
+standards-complete CA certificate. Reusing the same CA private key may be possible under your CA
+policy; that is a **CA-certificate reissue**, not a CA-key rotation. If the key changes, treat it as
+a full CA rotation.
+
+Roll out in this order: first redistribute the corrected **public CA certificate** to every issuer
+and verifier location, including `FLOWPLANE_CERT_ISSUER_CA_CERT_PATH`,
+`FLOWPLANE_XDS_TLS_CLIENT_CA`, dataplane/RLS trust bundles, and provider secret stores; then restart
+the processes that load those files; only then issue replacement leaves. The product upgrade does
+not rewrite trust stores, reissue leaves, terminate existing mTLS sessions, or rotate CA keys.
+
 ## Configuration Reference
 
 Server process:
@@ -166,7 +192,7 @@ acknowledgements — dev only):
 | gRPC mTLS (server half) | `FLOWPLANE_RLS_GRPC_TLS_CERT`, `FLOWPLANE_RLS_GRPC_TLS_KEY`, `FLOWPLANE_RLS_GRPC_TLS_CLIENT_CA` (all-or-none; Envoy client certs required at the TLS layer) |
 | Admin HTTPS + auth | `FLOWPLANE_RLS_ADMIN_TLS_CERT`, `FLOWPLANE_RLS_ADMIN_TLS_KEY`, `FLOWPLANE_RLS_ADMIN_TOKEN` or `FLOWPLANE_RLS_ADMIN_TOKEN_FILE` (TLS pair + token are all-or-none; same token value as the CP side) |
 | Dev-only escape hatches | `FLOWPLANE_RLS_ALLOW_INSECURE_GRPC`, `FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN` (RLS, loopback binds only), `FLOWPLANE_RLS_ALLOW_INSECURE_ADMIN_PUSH` (CP, loopback URL only) |
-| Dataplane cert issuer | `FLOWPLANE_CERT_ISSUER_CA_CERT_PATH`, `FLOWPLANE_CERT_ISSUER_CA_KEY_PATH`, `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN` |
+| Dataplane cert issuer | `FLOWPLANE_CERT_ISSUER_CA_CERT_PATH`, `FLOWPLANE_CERT_ISSUER_CA_KEY_PATH`, `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN` (issuer must match its key and contain current `CA:TRUE`, `keyCertSign`, and Subject Key Identifier metadata; explicit intermediate trust anchors are supported) |
 | Upstream TLS trust | `FLOWPLANE_UPSTREAM_CA_BUNDLE` (CA bundle path **in the Envoy/dataplane container** used to verify materialized TLS upstreams; default `/etc/ssl/certs/ca-certificates.crt`) |
 
 > **Upstream certificate verification (verify-by-default).** TLS upstreams that Flowplane materializes (AI providers, `flowplane expose https://…`, route-generation) verify the upstream server certificate against `FLOWPLANE_UPSTREAM_CA_BUNDLE`. A cluster may instead name an SDS validation secret (`validation_context_sds_secret_name`) or a per-cluster CA file (`ca_cert_file`). Verification can only be disabled per cluster by explicitly setting `insecure_skip_verify: true` — never the silent default (issue #125). The bundle path is resolved by **Envoy**, so the dataplane image must ship a CA bundle at that path (the default exists on Debian/Ubuntu via the `ca-certificates` package); otherwise Envoy rejects the cluster. The control plane cannot check the dataplane filesystem, so verify this when building/operating the dataplane image.

@@ -53,6 +53,16 @@ Create Secrets Manager secrets for:
 - dataplane certificate issuer CA private key PEM
 - xDS server-trust CA certificate PEM for the local workstation smoke test
 
+The dataplane issuer CA certificate must be currently valid, match its private key, contain
+`CA:TRUE`, `keyCertSign`, and a Subject Key Identifier, and allow `clientAuth`. A standards-complete
+intermediate is supported as the explicit trust anchor. Detect and migrate existing issuer
+material with the provider-neutral
+[issuer CA compatibility procedure](production-readiness.md#issuer-ca-compatibility-and-upgrade).
+Update the corrected public CA certificate in every Secrets Manager/verifier location and restart
+those consumers **before** reissuing leaves. A same-key CA-certificate reissue is not a CA-key
+rotation; the Flowplane upgrade itself does not rotate keys, rewrite trust stores, replace leaves,
+or terminate running mTLS sessions.
+
 Create the workstation-only xDS server-trust CA secret once, or export the name/ARN of an existing
 secret with the same raw-PEM content:
 
