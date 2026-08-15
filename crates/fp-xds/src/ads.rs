@@ -62,6 +62,20 @@ pub trait TeamResolver: Send + Sync + 'static {
     ) -> Result<PeerIdentity, Status>;
 }
 
+/// Async boundary for the service-owned legacy credential pin transaction. The trait lives in
+/// fp-xds; its fp-core-backed implementation belongs at the binary composition root, preventing
+/// an fp-xds → fp-core production dependency.
+#[tonic::async_trait]
+pub trait LegacyCertificateFingerprintPinner: Send + Sync + 'static {
+    async fn pin(
+        &self,
+        spiffe_uri: &str,
+        serial_number: &str,
+        fingerprint_sha256: &str,
+        request_id: fp_domain::RequestId,
+    ) -> fp_domain::DomainResult<fp_domain::ProxyCertificate>;
+}
+
 /// Dev/test resolver: trusts `team=<uuid>` in the node id. NEVER for production.
 pub struct NodeIdTeamResolver;
 

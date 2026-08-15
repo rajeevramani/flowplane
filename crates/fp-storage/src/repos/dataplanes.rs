@@ -341,6 +341,53 @@ pub async fn find_active_certificate(
     Ok(row.as_ref().map(cert_from_row))
 }
 
+/// Atomically pin an exact leaf fingerprint onto one active legacy registry row. The scalar
+/// candidate subquery deliberately errors when more than one row matches; ambiguity must never
+/// be resolved by ordering. The final null predicate makes concurrent conflicting pins one-winner.
+pub async fn pin_legacy_certificate_fingerprint(
+    tx: &mut Transaction<'_, Postgres>,
+    spiffe_uri: &str,
+    serial_number: &str,
+    fingerprint_sha256: &str,
+) -> DomainResult<ProxyCertificate> {
+    let row = sqlx::query(&format!(
+        "UPDATE proxy_certificates SET fingerprint_sha256 = $3 \
+         WHERE id = ( \
+           SELECT id FROM proxy_certificates \
+           WHERE spiffe_uri = $1 AND serial_number = $2 \
+             AND fingerprint_sha256 IS NULL \
+             AND revoked_at IS NULL AND expires_at > now() \
+           FOR UPDATE \
+         ) \
+         AND fingerprint_sha256 IS NULL \
+         RETURNING {CERT_COLUMNS}"
+    ))
+    .bind(spiffe_uri)
+    .bind(serial_number)
+    .bind(fingerprint_sha256)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|error| {
+        if error
+            .as_database_error()
+            .and_then(|database_error| database_error.code())
+            .as_deref()
+            == Some("21000")
+        {
+            DomainError::conflict(
+                "multiple active legacy certificates match the presented URI and serial",
+            )
+        } else {
+            DomainError::internal(format!("pin legacy certificate fingerprint: {error}"))
+        }
+    })?;
+    row.as_ref().map(cert_from_row).ok_or_else(|| {
+        DomainError::conflict(
+            "no unique active legacy certificate matches the presented URI and serial",
+        )
+    })
+}
+
 pub async fn list_certificates(
     pool: &PgPool,
     team_id: TeamId,

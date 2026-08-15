@@ -36,6 +36,29 @@ impl fp_api::state::XdsDegradedSource for SnapshotDegradedSource {
     }
 }
 
+/// Composition-root adapter from fp-xds's injected pin boundary to the fp-core transaction.
+struct CoreLegacyCertificateFingerprintPinner(sqlx::PgPool);
+
+#[fp_xds::async_trait]
+impl fp_xds::ads::LegacyCertificateFingerprintPinner for CoreLegacyCertificateFingerprintPinner {
+    async fn pin(
+        &self,
+        spiffe_uri: &str,
+        serial_number: &str,
+        fingerprint_sha256: &str,
+        request_id: fp_domain::RequestId,
+    ) -> fp_domain::DomainResult<fp_domain::ProxyCertificate> {
+        fp_core::services::dataplanes::pin_legacy_certificate_fingerprint(
+            &self.0,
+            spiffe_uri,
+            serial_number,
+            fingerprint_sha256,
+            request_id,
+        )
+        .await
+    }
+}
+
 pub async fn run() -> anyhow::Result<()> {
     let config = load_config()?;
     let otel_provider = init_tracing(&config)?;
@@ -51,6 +74,10 @@ pub async fn run() -> anyhow::Result<()> {
     let pool = fp_storage::connect(&config.database_url, config.db_max_connections).await?;
     fp_storage::migrate(&pool).await?;
     tracing::info!("database connected and migrations applied");
+    // Slice fpv2-7f3.3 defines and composes the injection boundary; exact resolver use lands in
+    // fpv2-7f3.4 so runtime resolution remains unchanged in this safe intermediate.
+    let _legacy_certificate_pinner: Arc<dyn fp_xds::ads::LegacyCertificateFingerprintPinner> =
+        Arc::new(CoreLegacyCertificateFingerprintPinner(pool.clone()));
 
     let validator: Option<std::sync::Arc<fp_core::OidcValidator>> = if config.dev_mode {
         Some(setup_dev_mode(&pool, config.dev_token_path.as_deref()).await?)

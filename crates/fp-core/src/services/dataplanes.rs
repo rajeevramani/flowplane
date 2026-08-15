@@ -158,6 +158,87 @@ pub async fn list_certificates(
     dataplanes::list_certificates(pool, team.id).await
 }
 
+/// Pin the exact presented leaf fingerprint onto one active legacy credential. This internal
+/// xDS-authenticator operation has no public endpoint and records its system mutation atomically.
+pub async fn pin_legacy_certificate_fingerprint(
+    pool: &PgPool,
+    spiffe_uri: &str,
+    serial_number: &str,
+    fingerprint_sha256: &str,
+    request_id: RequestId,
+) -> DomainResult<ProxyCertificate> {
+    validate_spiffe_uri(spiffe_uri)?;
+    let serial_number = canonical_certificate_serial(serial_number)?;
+    if fingerprint_sha256.len() != 64
+        || !fingerprint_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(DomainError::validation(
+            "certificate fingerprint must be 64 lowercase hexadecimal characters",
+        ));
+    }
+
+    let mut tx = pool.begin().await.map_err(crate::services::db_err(
+        "pin legacy certificate fingerprint: begin",
+    ))?;
+    let certificate = dataplanes::pin_legacy_certificate_fingerprint(
+        &mut tx,
+        spiffe_uri,
+        &serial_number,
+        fingerprint_sha256,
+    )
+    .await?;
+    let org_id: uuid::Uuid = sqlx::query_scalar("SELECT org_id FROM teams WHERE id = $1")
+        .bind(certificate.team_id.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(crate::services::db_err(
+            "pin legacy certificate fingerprint: resolve organization",
+        ))?;
+    let org_id = fp_domain::OrgId::from(org_id);
+
+    audit::record_in_tx(
+        &mut tx,
+        &audit::AuditEntry {
+            request_id: Some(request_id),
+            actor_type: audit::ActorType::System,
+            actor_id: None,
+            actor_label: "xds-authenticator".into(),
+            surface: audit::Surface::Xds,
+            action: "proxy_certificate.fingerprint_pin".into(),
+            resource: format!("proxy-certificates/{}", certificate.id),
+            org_id: Some(org_id),
+            team_id: Some(certificate.team_id),
+            outcome: audit::Outcome::Success,
+            detail: serde_json::json!({
+                "certificate_id": certificate.id.as_uuid(),
+                "dataplane_id": certificate.dataplane_id.as_uuid(),
+                "fingerprint_sha256": fingerprint_sha256,
+            }),
+        },
+    )
+    .await?;
+    fp_storage::outbox::append(
+        &mut tx,
+        &DomainEvent::ProxyCertificateFingerprintPinned {
+            certificate_id: certificate.id.as_uuid(),
+            spiffe_uri: certificate.spiffe_uri.clone(),
+            fingerprint_sha256: fingerprint_sha256.into(),
+        },
+        EventScope {
+            org_id: Some(org_id),
+            team_id: Some(certificate.team_id),
+        },
+        trace_context_json(),
+    )
+    .await?;
+    tx.commit().await.map_err(crate::services::db_err(
+        "pin legacy certificate fingerprint: commit",
+    ))?;
+    Ok(certificate)
+}
+
 /// Externally issued certificate material. Identity fields are derived only after chain
 /// verification; callers cannot assert SPIFFE URI, serial, or validity metadata.
 #[derive(Debug, Clone)]

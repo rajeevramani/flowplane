@@ -41,6 +41,15 @@ pub enum DomainEvent {
         spiffe_uri: String,
     },
     #[serde(
+        rename = "proxy_certificate.fingerprint_pinned",
+        alias = "proxy_certificate_fingerprint_pinned"
+    )]
+    ProxyCertificateFingerprintPinned {
+        certificate_id: Uuid,
+        spiffe_uri: String,
+        fingerprint_sha256: String,
+    },
+    #[serde(
         rename = "proxy_certificate.revoked",
         alias = "proxy_certificate_revoked"
     )]
@@ -120,6 +129,9 @@ impl DomainEvent {
             Self::TeamDeleted { .. } => "team.deleted",
             Self::DataplaneCreated { .. } => "dataplane.created",
             Self::ProxyCertificateRegistered { .. } => "proxy_certificate.registered",
+            Self::ProxyCertificateFingerprintPinned { .. } => {
+                "proxy_certificate.fingerprint_pinned"
+            }
             Self::ProxyCertificateRevoked { .. } => "proxy_certificate.revoked",
             Self::SecretUpserted { .. } => "secret.upserted",
             Self::ApiDefinitionCreated { .. } => "api_definition.created",
