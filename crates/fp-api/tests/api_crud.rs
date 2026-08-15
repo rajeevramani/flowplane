@@ -1279,31 +1279,6 @@ async fn proxy_certificate_registry_flow_over_http() {
     assert!(ca_certificate_pem.contains("BEGIN CERTIFICATE"));
     assert_strict_client_leaf(certificate_pem, ca_certificate_pem);
 
-    let serial_input = "000A";
-    let serial = "a";
-    let spiffe = format!(
-        "spiffe://flowplane.test/org/{}/team/{}/proxy/{}",
-        org.name, team.name, dataplane
-    );
-    let response = app
-        .clone()
-        .oneshot(request(
-            "POST",
-            &certs,
-            Some(serde_json::json!({
-                "dataplane": dataplane,
-                "spiffe_uri": spiffe,
-                "serial_number": serial_input,
-                "expires_at": "2099-01-01T00:00:00Z"
-            })),
-        ))
-        .await
-        .expect("register cert");
-    assert_eq!(response.status(), StatusCode::CREATED);
-    let body = json_of(response).await;
-    assert_eq!(body["serial_number"], serial);
-    assert!(body["revoked_at"].is_null());
-
     let response = app
         .clone()
         .oneshot(request("GET", &certs, None))
@@ -1315,14 +1290,9 @@ async fn proxy_certificate_registry_flow_over_http() {
         .as_array()
         .expect("cert list")
         .iter()
-        .any(|cert| cert["serial_number"] == serial));
-    assert!(body
-        .as_array()
-        .expect("cert list")
-        .iter()
         .any(|cert| cert["serial_number"] == issued_serial));
 
-    let revoke = format!("{certs}/{serial_input}/revoke");
+    let revoke = format!("{certs}/{issued_serial}/revoke");
     let response = app
         .clone()
         .oneshot(request(

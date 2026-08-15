@@ -364,7 +364,7 @@ async fn ai_ext_proc_mtls_binds_team_before_opening_stream() {
     let pki = TestPki::new();
 
     let dataplane = unique("ai-dp");
-    fp_core::services::dataplanes::create_dataplane(
+    let dataplane_record = fp_core::services::dataplanes::create_dataplane(
         &w.pool,
         &w.ctx,
         w.team,
@@ -375,20 +375,24 @@ async fn ai_ext_proc_mtls_binds_team_before_opening_stream() {
     .await
     .expect("dataplane");
     let spiffe = format!("spiffe://flowplane.test/team/ai/proxy/{dataplane}");
-    fp_core::services::dataplanes::register_certificate(
-        &w.pool,
-        &w.ctx,
-        w.team,
-        fp_core::services::dataplanes::CertificateRegistration {
-            dataplane: &dataplane,
+    let serial = certificate_serial();
+    let mut tx = w.pool.begin().await.expect("certificate fixture tx");
+    fp_storage::repos::dataplanes::register_certificate(
+        &mut tx,
+        fp_storage::repos::dataplanes::NewProxyCertificate {
+            team_id: w.team.id,
+            dataplane_id: dataplane_record.id,
             spiffe_uri: &spiffe,
-            serial_number: &certificate_serial(),
+            serial_number: &serial,
+            fingerprint_sha256: None,
+            issued_at: chrono::Utc::now(),
             expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+            issued_by: None,
         },
-        RequestId::generate(),
     )
     .await
-    .expect("register");
+    .expect("register fixture");
+    tx.commit().await.expect("commit certificate fixture");
 
     let cache = SnapshotCache::new();
     let (addr, _revocations) = start_server(&pki, cache, w.pool.clone()).await;
@@ -438,7 +442,7 @@ async fn registry_binds_team_and_revocation_kills_live_stream() {
     // Dataplane + registered certificate. The SPIFFE URI deliberately claims a DIFFERENT
     // team name in its path — the registry row, not the SAN text, decides the tenant.
     let dp = unique("dp");
-    fp_core::services::dataplanes::create_dataplane(
+    let dataplane_record = fp_core::services::dataplanes::create_dataplane(
         &w.pool,
         &w.ctx,
         w.team,
@@ -450,20 +454,23 @@ async fn registry_binds_team_and_revocation_kills_live_stream() {
     .expect("dataplane");
     let spiffe = format!("spiffe://flowplane.test/team/some-other-team/proxy/{dp}");
     let serial = certificate_serial();
-    fp_core::services::dataplanes::register_certificate(
-        &w.pool,
-        &w.ctx,
-        w.team,
-        fp_core::services::dataplanes::CertificateRegistration {
-            dataplane: &dp,
+    let mut tx = w.pool.begin().await.expect("certificate fixture tx");
+    fp_storage::repos::dataplanes::register_certificate(
+        &mut tx,
+        fp_storage::repos::dataplanes::NewProxyCertificate {
+            team_id: w.team.id,
+            dataplane_id: dataplane_record.id,
             spiffe_uri: &spiffe,
             serial_number: &serial,
+            fingerprint_sha256: None,
+            issued_at: chrono::Utc::now(),
             expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+            issued_by: None,
         },
-        RequestId::generate(),
     )
     .await
-    .expect("register");
+    .expect("register fixture");
+    tx.commit().await.expect("commit certificate fixture");
 
     let (addr, revocations) = start_server(&pki, cache.clone(), w.pool.clone()).await;
     let identity = pki.client_identity("dp-good", &spiffe);
@@ -613,6 +620,7 @@ async fn unregistered_and_expired_certificates_are_rejected() {
             spiffe_uri: &spiffe,
             serial_number: &certificate_serial(),
             fingerprint_sha256: None,
+            issued_at: chrono::Utc::now() - chrono::Duration::hours(2),
             expires_at: chrono::Utc::now() - chrono::Duration::hours(1),
             issued_by: None,
         },

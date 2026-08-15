@@ -25,7 +25,8 @@ use openssl::x509::verify::X509VerifyFlags;
 use openssl::x509::{X509NameBuilder, X509PurposeId, X509StoreContext, X509};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 async fn authorize(
     pool: &PgPool,
@@ -157,14 +158,27 @@ pub async fn list_certificates(
     dataplanes::list_certificates(pool, team.id).await
 }
 
-/// What gets registered for a dataplane's certificate (the issued material's metadata;
-/// private keys never reach the control plane).
+/// Externally issued certificate material. Identity fields are derived only after chain
+/// verification; callers cannot assert SPIFFE URI, serial, or validity metadata.
 #[derive(Debug, Clone)]
 pub struct CertificateRegistration<'a> {
     pub dataplane: &'a str,
-    pub spiffe_uri: &'a str,
-    pub serial_number: &'a str,
-    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub certificate_chain_pem: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct CertificateChainVerifier {
+    trust_roots: Option<Arc<Vec<X509>>>,
+    unavailable_reason: Option<Arc<str>>,
+}
+
+#[derive(Debug)]
+struct VerifiedExternalCertificate {
+    spiffe_uri: String,
+    serial_number: String,
+    fingerprint_sha256: String,
+    not_before: chrono::DateTime<chrono::Utc>,
+    not_after: chrono::DateTime<chrono::Utc>,
 }
 
 /// Request to issue a new dataplane client certificate from the configured Flowplane CA.
@@ -184,13 +198,13 @@ pub struct IssuedProxyCertificate {
     pub ca_certificate_pem: String,
 }
 
-/// Register an issued certificate against a dataplane. The full SPIFFE URI becomes the
-/// mTLS binding key; the cert's own team/proxy segments are never trusted at runtime.
-pub async fn register_certificate(
+/// Register externally issued certificate material after verifying it against xDS client trust.
+pub async fn register_external_certificate(
     pool: &PgPool,
     ctx: &PrincipalCtx,
     team: TeamRef,
     registration: CertificateRegistration<'_>,
+    verifier: &CertificateChainVerifier,
     request_id: RequestId,
 ) -> DomainResult<ProxyCertificate> {
     authorize(
@@ -202,16 +216,10 @@ pub async fn register_certificate(
         request_id,
     )
     .await?;
-    validate_spiffe_uri(registration.spiffe_uri)?;
-    let serial_number = canonical_certificate_serial(registration.serial_number)?;
-    if registration.expires_at <= chrono::Utc::now() {
-        return Err(fp_domain::DomainError::validation(
-            "certificate expiry must be in the future",
-        ));
-    }
     let dataplane = dataplanes::get_dataplane(pool, team.id, registration.dataplane)
         .await?
         .ok_or_else(|| fp_domain::DomainError::not_found("dataplane", registration.dataplane))?;
+    let verified = verifier.verify(registration.certificate_chain_pem, dataplane.id.as_uuid())?;
     let issued_by: Option<UserId> = match ctx {
         PrincipalCtx::User { user_id, .. } => Some(*user_id),
         PrincipalCtx::Agent { .. } => None,
@@ -226,10 +234,11 @@ pub async fn register_certificate(
         dataplanes::NewProxyCertificate {
             team_id: team.id,
             dataplane_id: dataplane.id,
-            spiffe_uri: registration.spiffe_uri,
-            serial_number: &serial_number,
-            fingerprint_sha256: None,
-            expires_at: registration.expires_at,
+            spiffe_uri: &verified.spiffe_uri,
+            serial_number: &verified.serial_number,
+            fingerprint_sha256: Some(&verified.fingerprint_sha256),
+            issued_at: verified.not_before,
+            expires_at: verified.not_after,
             issued_by,
         },
     )
@@ -238,7 +247,7 @@ pub async fn register_certificate(
         &mut tx,
         &DomainEvent::ProxyCertificateRegistered {
             certificate_id: cert.id.as_uuid(),
-            spiffe_uri: registration.spiffe_uri.into(),
+            spiffe_uri: verified.spiffe_uri,
         },
         EventScope {
             org_id: Some(team.org_id),
@@ -254,7 +263,7 @@ pub async fn register_certificate(
             request_id,
             team,
             "proxy-certificate.register",
-            &format!("proxy-certificates/{serial_number}"),
+            &format!("proxy-certificates/{}", verified.serial_number),
         ),
     )
     .await?;
@@ -320,6 +329,7 @@ pub async fn issue_certificate(
             spiffe_uri: &spiffe_uri,
             serial_number: &serial_number,
             fingerprint_sha256: Some(&issued.fingerprint_sha256),
+            issued_at: chrono::Utc::now(),
             expires_at,
             issued_by,
         },
@@ -493,6 +503,222 @@ fn mutation_audit(
         outcome: audit::Outcome::Success,
         detail: serde_json::json!({}),
     }
+}
+
+impl CertificateChainVerifier {
+    pub fn from_trust_root_path(path: Option<&Path>) -> Self {
+        let Some(path) = path else {
+            return Self {
+                trust_roots: None,
+                unavailable_reason: Some("xDS client trust roots are not configured".into()),
+            };
+        };
+        let result = std::fs::read(path)
+            .map_err(|error| {
+                format!(
+                    "cannot read xDS client trust roots {}: {error}",
+                    path.display()
+                )
+            })
+            .and_then(|pem| {
+                X509::stack_from_pem(&pem)
+                    .map_err(|error| format!("xDS client trust roots are invalid: {error}"))
+            })
+            .and_then(|roots| {
+                if roots.is_empty() {
+                    Err("xDS client trust roots contain no certificates".to_owned())
+                } else {
+                    Ok(roots)
+                }
+            });
+        match result {
+            Ok(roots) => Self {
+                trust_roots: Some(Arc::new(roots)),
+                unavailable_reason: None,
+            },
+            Err(reason) => Self {
+                trust_roots: None,
+                unavailable_reason: Some(reason.into()),
+            },
+        }
+    }
+
+    fn verify(
+        &self,
+        certificate_chain_pem: &str,
+        expected_dataplane_id: uuid::Uuid,
+    ) -> DomainResult<VerifiedExternalCertificate> {
+        let roots = self.trust_roots.as_ref().ok_or_else(|| {
+            DomainError::invalid_config(
+                self.unavailable_reason
+                    .as_deref()
+                    .unwrap_or("xDS client trust roots are unavailable"),
+            )
+        })?;
+        if certificate_chain_pem.contains("PRIVATE KEY") {
+            return Err(DomainError::validation(
+                "certificate_chain_pem must not contain private key material",
+            ));
+        }
+        let certificates =
+            X509::stack_from_pem(certificate_chain_pem.as_bytes()).map_err(|_| {
+                DomainError::validation("certificate_chain_pem must contain valid PEM certificates")
+            })?;
+        let leaf = certificates.first().ok_or_else(|| {
+            DomainError::validation("certificate_chain_pem must contain one leaf certificate")
+        })?;
+
+        let mut untrusted = Stack::new().map_err(|error| {
+            DomainError::internal(format!("prepare certificate chain verification: {error}"))
+        })?;
+        for intermediate in certificates.iter().skip(1) {
+            if !certificate_is_ca(intermediate)? {
+                return Err(DomainError::validation(
+                    "certificate_chain_pem contains more than one leaf certificate",
+                ));
+            }
+            untrusted.push(intermediate.to_owned()).map_err(|error| {
+                DomainError::internal(format!("prepare intermediate certificate: {error}"))
+            })?;
+        }
+
+        let mut store = X509StoreBuilder::new().map_err(|error| {
+            DomainError::internal(format!("create xDS client trust store: {error}"))
+        })?;
+        store
+            .set_flags(X509VerifyFlags::X509_STRICT | X509VerifyFlags::PARTIAL_CHAIN)
+            .map_err(|error| {
+                DomainError::internal(format!("configure xDS client trust store: {error}"))
+            })?;
+        store
+            .set_purpose(X509PurposeId::SSL_CLIENT)
+            .map_err(|error| {
+                DomainError::internal(format!("configure xDS client certificate purpose: {error}"))
+            })?;
+        for root in roots.iter() {
+            store.add_cert(root.to_owned()).map_err(|error| {
+                DomainError::invalid_config(format!("add xDS client trust root: {error}"))
+            })?;
+        }
+        let store = store.build();
+        let mut context = X509StoreContext::new().map_err(|error| {
+            DomainError::internal(format!("create certificate verification context: {error}"))
+        })?;
+        let (verified, verify_error) = context
+            .init(&store, leaf, &untrusted, |context| {
+                let verified = context.verify_cert()?;
+                Ok((verified, context.error()))
+            })
+            .map_err(|error| {
+                DomainError::validation(format!("certificate chain verification failed: {error}"))
+            })?;
+        if !verified {
+            return Err(DomainError::validation(format!(
+                "certificate chain is not trusted: {}",
+                verify_error.error_string()
+            )));
+        }
+
+        derive_external_certificate(leaf, expected_dataplane_id)
+    }
+}
+
+fn certificate_is_ca(certificate: &X509) -> DomainResult<bool> {
+    let der = certificate.to_der().map_err(|error| {
+        DomainError::validation(format!("encode certificate for validation: {error}"))
+    })?;
+    let (_, parsed) = x509_parser::parse_x509_certificate(&der)
+        .map_err(|_| DomainError::validation("certificate DER is malformed"))?;
+    Ok(parsed
+        .basic_constraints()
+        .map_err(|_| DomainError::validation("certificate Basic Constraints are malformed"))?
+        .is_some_and(|constraints| constraints.value.ca))
+}
+
+fn derive_external_certificate(
+    leaf: &X509,
+    expected_dataplane_id: uuid::Uuid,
+) -> DomainResult<VerifiedExternalCertificate> {
+    let der = leaf
+        .to_der()
+        .map_err(|error| DomainError::validation(format!("encode leaf certificate: {error}")))?;
+    let (_, parsed) = x509_parser::parse_x509_certificate(&der)
+        .map_err(|_| DomainError::validation("leaf certificate DER is malformed"))?;
+    if parsed
+        .basic_constraints()
+        .map_err(|_| DomainError::validation("leaf Basic Constraints are malformed"))?
+        .is_some_and(|constraints| constraints.value.ca)
+    {
+        return Err(DomainError::validation(
+            "registered certificate must be a leaf",
+        ));
+    }
+    let key_usage = parsed
+        .key_usage()
+        .map_err(|_| DomainError::validation("leaf Key Usage is malformed"))?
+        .ok_or_else(|| DomainError::validation("leaf must declare Key Usage"))?;
+    if !key_usage.value.digital_signature() {
+        return Err(DomainError::validation(
+            "leaf Key Usage must allow digitalSignature",
+        ));
+    }
+    let eku = parsed
+        .extended_key_usage()
+        .map_err(|_| DomainError::validation("leaf Extended Key Usage is malformed"))?
+        .ok_or_else(|| DomainError::validation("leaf must declare Extended Key Usage"))?;
+    if !(eku.value.any || eku.value.client_auth) {
+        return Err(DomainError::validation(
+            "leaf Extended Key Usage must allow clientAuth",
+        ));
+    }
+    let san = parsed
+        .subject_alternative_name()
+        .map_err(|_| DomainError::validation("leaf Subject Alternative Name is malformed"))?
+        .ok_or_else(|| DomainError::validation("leaf must contain a SPIFFE URI SAN"))?;
+    let uris = san
+        .value
+        .general_names
+        .iter()
+        .filter_map(|name| match name {
+            x509_parser::extensions::GeneralName::URI(uri) => Some(*uri),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if uris.len() != 1 {
+        return Err(DomainError::validation(
+            "leaf must contain exactly one SPIFFE URI SAN",
+        ));
+    }
+    let spiffe_uri = uris[0];
+    validate_spiffe_uri(spiffe_uri)?;
+    let (_, dataplane_segment) = spiffe_uri.rsplit_once("/proxy/").ok_or_else(|| {
+        DomainError::validation("leaf SPIFFE URI must end in /proxy/{dataplane_uuid}")
+    })?;
+    let dataplane_id = uuid::Uuid::parse_str(dataplane_segment).map_err(|_| {
+        DomainError::validation("leaf SPIFFE URI proxy segment must be a dataplane UUID")
+    })?;
+    if dataplane_id != expected_dataplane_id {
+        return Err(DomainError::validation(
+            "leaf SPIFFE URI does not identify the route dataplane",
+        ));
+    }
+    let serial = leaf
+        .serial_number()
+        .to_bn()
+        .and_then(|value| value.to_hex_str())
+        .map_err(|error| DomainError::validation(format!("read leaf serial number: {error}")))?;
+    let serial_number = canonical_certificate_serial(serial.as_ref())?;
+    let not_before = chrono::DateTime::from_timestamp(parsed.validity().not_before.timestamp(), 0)
+        .ok_or_else(|| DomainError::validation("leaf notBefore is outside supported range"))?;
+    let not_after = chrono::DateTime::from_timestamp(parsed.validity().not_after.timestamp(), 0)
+        .ok_or_else(|| DomainError::validation("leaf notAfter is outside supported range"))?;
+    Ok(VerifiedExternalCertificate {
+        spiffe_uri: spiffe_uri.to_owned(),
+        serial_number,
+        fingerprint_sha256: format!("{:x}", Sha256::digest(&der)),
+        not_before,
+        not_after,
+    })
 }
 
 struct CertificateIssuer {

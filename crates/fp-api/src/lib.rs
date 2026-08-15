@@ -27,5 +27,5 @@ pub mod throttle;
 pub mod xds_api;
 
 pub use error::ApiError;
-pub use routes::build_router;
+pub use routes::{build_router, build_router_with_xds_client_ca};
 pub use state::AppState;

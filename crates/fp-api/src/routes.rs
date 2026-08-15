@@ -229,7 +229,22 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
 }
 
 pub fn build_router(state: AppState) -> Router {
+    // Compatibility seam for API-only embedders and tests. Production passes the path parsed by
+    // `ServerConfig` to `build_router_with_xds_client_ca`, keeping configuration authority there.
+    let trust_root = std::env::var_os("FLOWPLANE_XDS_TLS_CLIENT_CA").map(std::path::PathBuf::from);
+    build_router_with_xds_client_ca(state, trust_root.as_deref())
+}
+
+pub fn build_router_with_xds_client_ca(
+    state: AppState,
+    trust_root_path: Option<&std::path::Path>,
+) -> Router {
     let (api_router, openapi) = secured_api();
+    let certificate_verifier = std::sync::Arc::new(
+        fp_core::services::dataplanes::CertificateChainVerifier::from_trust_root_path(
+            trust_root_path,
+        ),
+    );
     let secured = api_router
         .route("/api/v1/mcp", post(crate::mcp_api::post))
         // Throttle inside auth so the PrincipalCtx is available for tenant keying.
@@ -261,6 +276,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .merge(secured)
         .fallback(not_found)
+        .layer(axum::Extension(certificate_verifier))
         .layer(axum::middleware::from_fn(request_id))
         .with_state(state)
 }

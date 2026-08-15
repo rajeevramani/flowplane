@@ -291,7 +291,13 @@ pub async fn run() -> anyhow::Result<()> {
         rls_repush,
         rls_grpc_configured: config.rls_grpc_url.is_some(),
     };
-    let router = fp_api::build_router(state);
+    let router = fp_api::build_router_with_xds_client_ca(
+        state,
+        config
+            .xds_tls
+            .as_ref()
+            .map(|tls| tls.client_ca_path.as_path()),
+    );
 
     tracing::info!(addr = %config.api_addr, tls = config.api_tls.is_some(), "API listener starting");
 

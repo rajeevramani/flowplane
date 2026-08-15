@@ -36,6 +36,7 @@ pub struct NewProxyCertificate<'a> {
     pub spiffe_uri: &'a str,
     pub serial_number: &'a str,
     pub fingerprint_sha256: Option<&'a str>,
+    pub issued_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: chrono::DateTime<chrono::Utc>,
     pub issued_by: Option<UserId>,
 }
@@ -298,8 +299,8 @@ pub async fn register_certificate(
 ) -> DomainResult<ProxyCertificate> {
     let row = sqlx::query(&format!(
         "INSERT INTO proxy_certificates \
-           (id, team_id, dataplane_id, spiffe_uri, serial_number, fingerprint_sha256, expires_at, issued_by_user_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING {CERT_COLUMNS}"
+           (id, team_id, dataplane_id, spiffe_uri, serial_number, fingerprint_sha256, issued_at, expires_at, issued_by_user_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING {CERT_COLUMNS}"
     ))
     .bind(ProxyCertificateId::generate().as_uuid())
     .bind(certificate.team_id.as_uuid())
@@ -307,6 +308,7 @@ pub async fn register_certificate(
     .bind(certificate.spiffe_uri)
     .bind(certificate.serial_number)
     .bind(certificate.fingerprint_sha256)
+    .bind(certificate.issued_at)
     .bind(certificate.expires_at)
     .bind(certificate.issued_by.map(|user| user.as_uuid()))
     .fetch_one(&mut **tx)

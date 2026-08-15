@@ -97,9 +97,7 @@ impl From<ProxyCertificate> for ProxyCertificateView {
 #[serde(deny_unknown_fields)]
 pub struct RegisterProxyCertificateBody {
     pub dataplane: String,
-    pub spiffe_uri: String,
-    pub serial_number: String,
-    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub certificate_chain_pem: String,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -463,20 +461,20 @@ pub async fn register_proxy_certificate(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
+    Extension(verifier): Extension<std::sync::Arc<svc::CertificateChainVerifier>>,
     ApiJson(body): ApiJson<RegisterProxyCertificateBody>,
 ) -> Result<(StatusCode, Json<ProxyCertificateView>), ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
-        svc::register_certificate(
+        svc::register_external_certificate(
             &state.pool,
             &ctx,
             team,
             svc::CertificateRegistration {
                 dataplane: &body.dataplane,
-                spiffe_uri: &body.spiffe_uri,
-                serial_number: &body.serial_number,
-                expires_at: body.expires_at,
+                certificate_chain_pem: &body.certificate_chain_pem,
             },
+            &verifier,
             rid,
         )
         .await

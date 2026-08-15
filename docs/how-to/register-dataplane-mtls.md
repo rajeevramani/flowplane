@@ -94,7 +94,16 @@ echo "$CP_XDS_SERVER_CA_PEM" > /etc/flowplane/dp/server-ca.crt
 
 > These are two different CAs. `ca_certificate_pem` from the issue response is the *client* chain CA (used by the CP to verify the agent). The agent's `--tls-ca-path` is the *server* CA (used by the agent to verify the CP). They are the **same file only if** the CP's xDS server certificate happens to be signed by that same issuer CA — the code does not require it.
 
-> If your dataplane already has externally-issued certs, use `dataplane cert register` / `POST /api/v1/teams/{team}/proxy-certificates` instead to register the SPIFFE binding without minting a key. (Optional background — not needed to finish this task: the certificate lifecycle design, SPIFFE format, and revocation internals are in the design records linked under Further reading.)
+> If your dataplane already has externally-issued certs, use `dataplane cert register` / `POST /api/v1/teams/{team}/proxy-certificates` instead to register the SPIFFE binding without minting a key. Registration accepts only the dataplane name and a PEM chain with the leaf first, followed by intermediates:
+>
+> ```json
+> {
+>   "dataplane": "edge-1",
+>   "certificate_chain_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
+> }
+> ```
+>
+> The control plane verifies the chain against `FLOWPLANE_XDS_TLS_CLIENT_CA`, requires a client-auth leaf whose SPIFFE URI identifies that dataplane UUID, and derives serial, fingerprint, and validity from the leaf. It rejects caller-asserted identity metadata, untrusted or ambiguous chains, and registration when xDS client trust is not configured.
 
 ## 3. Generate and run the Envoy bootstrap
 

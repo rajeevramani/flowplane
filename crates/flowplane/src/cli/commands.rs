@@ -1224,7 +1224,7 @@ pub enum CertCommand {
     },
     /// Register a proxy certificate from a JSON file.
     #[command(
-        after_help = "Example:\n  flowplane dataplane cert register --team payments -f cert.json"
+        after_help = "cert.json must contain only the dataplane name and PEM certificate chain:\n  {\"dataplane\":\"edge-1\",\"certificate_chain_pem\":\"-----BEGIN CERTIFICATE-----\\n...\"}\n\nExample:\n  flowplane dataplane cert register --team payments -f cert.json"
     )]
     Register {
         /// Team scope; defaults to the active context's team.
