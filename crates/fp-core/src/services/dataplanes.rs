@@ -5,7 +5,9 @@
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
 use crate::services::{actor_of, deny_to_error, record_authz_denial, trace_context_json};
 use fp_domain::authz::{Action, Resource, TeamRef};
-use fp_domain::dataplane::{validate_spiffe_uri, Dataplane, ProxyCertificate};
+use fp_domain::dataplane::{
+    canonical_certificate_serial, validate_spiffe_uri, Dataplane, ProxyCertificate,
+};
 use fp_domain::event::{DomainEvent, EventScope};
 use fp_domain::{validate_name, DomainError, DomainResult, RequestId, TeamStatsOverview, UserId};
 use fp_storage::repos::{audit, dataplanes};
@@ -21,6 +23,7 @@ use openssl::x509::extension::{
 use openssl::x509::store::X509StoreBuilder;
 use openssl::x509::verify::X509VerifyFlags;
 use openssl::x509::{X509NameBuilder, X509PurposeId, X509StoreContext, X509};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::path::PathBuf;
 
@@ -200,11 +203,7 @@ pub async fn register_certificate(
     )
     .await?;
     validate_spiffe_uri(registration.spiffe_uri)?;
-    if registration.serial_number.is_empty() || registration.serial_number.len() > 128 {
-        return Err(fp_domain::DomainError::validation(
-            "certificate serial number must be 1..=128 characters",
-        ));
-    }
+    let serial_number = canonical_certificate_serial(registration.serial_number)?;
     if registration.expires_at <= chrono::Utc::now() {
         return Err(fp_domain::DomainError::validation(
             "certificate expiry must be in the future",
@@ -224,12 +223,15 @@ pub async fn register_certificate(
         .map_err(crate::services::db_err("register certificate: begin"))?;
     let cert = dataplanes::register_certificate(
         &mut tx,
-        team.id,
-        dataplane.id,
-        registration.spiffe_uri,
-        registration.serial_number,
-        registration.expires_at,
-        issued_by,
+        dataplanes::NewProxyCertificate {
+            team_id: team.id,
+            dataplane_id: dataplane.id,
+            spiffe_uri: registration.spiffe_uri,
+            serial_number: &serial_number,
+            fingerprint_sha256: None,
+            expires_at: registration.expires_at,
+            issued_by,
+        },
     )
     .await?;
     fp_storage::outbox::append(
@@ -252,7 +254,7 @@ pub async fn register_certificate(
             request_id,
             team,
             "proxy-certificate.register",
-            &format!("proxy-certificates/{}", registration.serial_number),
+            &format!("proxy-certificates/{serial_number}"),
         ),
     )
     .await?;
@@ -298,7 +300,7 @@ pub async fn issue_certificate(
         team.id.as_uuid(),
         dataplane.id.as_uuid()
     );
-    let serial_number = uuid::Uuid::now_v7().simple().to_string();
+    let serial_number = canonical_certificate_serial(&uuid::Uuid::now_v7().simple().to_string())?;
     let expires_at = chrono::Utc::now() + chrono::Duration::hours(request.ttl_hours);
     let issued = issuer.issue(&dataplane.name, &spiffe_uri, &serial_number, expires_at)?;
 
@@ -312,12 +314,15 @@ pub async fn issue_certificate(
         .map_err(crate::services::db_err("issue certificate: begin"))?;
     let cert = dataplanes::register_certificate(
         &mut tx,
-        team.id,
-        dataplane.id,
-        &spiffe_uri,
-        &serial_number,
-        expires_at,
-        issued_by,
+        dataplanes::NewProxyCertificate {
+            team_id: team.id,
+            dataplane_id: dataplane.id,
+            spiffe_uri: &spiffe_uri,
+            serial_number: &serial_number,
+            fingerprint_sha256: Some(&issued.fingerprint_sha256),
+            expires_at,
+            issued_by,
+        },
     )
     .await?;
     fp_storage::outbox::append(
@@ -375,11 +380,12 @@ pub async fn revoke_certificate(
         request_id,
     )
     .await?;
+    let serial_number = canonical_certificate_serial(serial_number)?;
     let mut tx = pool
         .begin()
         .await
         .map_err(crate::services::db_err("revoke certificate: begin"))?;
-    let cert = dataplanes::revoke_certificate(&mut tx, team.id, serial_number, reason).await?;
+    let cert = dataplanes::revoke_certificate(&mut tx, team.id, &serial_number, reason).await?;
     fp_storage::outbox::append(
         &mut tx,
         &DomainEvent::ProxyCertificateRevoked {
@@ -499,6 +505,7 @@ struct CertificateIssuer {
 struct IssuedPem {
     certificate_pem: String,
     private_key_pem: String,
+    fingerprint_sha256: String,
 }
 
 impl CertificateIssuer {
@@ -664,6 +671,13 @@ impl CertificateIssuer {
                 .map_err(|e| DomainError::internal(format!("encode certificate PEM: {e}")))?,
         )
         .map_err(|e| DomainError::internal(format!("encode certificate PEM: {e}")))?;
+        let fingerprint_sha256 = format!(
+            "{:x}",
+            Sha256::digest(
+                cert.to_der()
+                    .map_err(|e| DomainError::internal(format!("encode certificate DER: {e}")))?,
+            )
+        );
         let private_key_pem = String::from_utf8(
             leaf_key
                 .private_key_to_pem_pkcs8()
@@ -673,6 +687,7 @@ impl CertificateIssuer {
         Ok(IssuedPem {
             certificate_pem,
             private_key_pem,
+            fingerprint_sha256,
         })
     }
 }
@@ -1023,6 +1038,27 @@ mod tests {
     #[test]
     fn standards_complete_root_issuer_is_accepted() {
         issuer_from(CaProfile::valid()).expect("valid root issuer");
+    }
+
+    #[test]
+    fn issued_leaf_exposes_sha256_der_fingerprint() {
+        use sha2::{Digest, Sha256};
+
+        let issuer = issuer_from(CaProfile::valid()).expect("valid root issuer");
+        let issued = issuer
+            .issue(
+                "dp-test",
+                "spiffe://flowplane.test/org/o/team/t/proxy/p",
+                "a",
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .expect("issue leaf");
+        let certificate = X509::from_pem(issued.certificate_pem.as_bytes()).expect("leaf PEM");
+        let expected = format!(
+            "{:x}",
+            Sha256::digest(certificate.to_der().expect("leaf DER"))
+        );
+        assert_eq!(issued.fingerprint_sha256, expected);
     }
 
     #[test]

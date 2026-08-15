@@ -30,6 +30,10 @@ fn unique(prefix: &str) -> String {
     )
 }
 
+fn certificate_serial() -> String {
+    uuid::Uuid::now_v7().simple().to_string()
+}
+
 /// Run openssl, panicking with its stderr on failure (test fixture only).
 fn openssl(dir: &Path, args: &[&str]) {
     let out = Command::new("openssl")
@@ -378,7 +382,7 @@ async fn ai_ext_proc_mtls_binds_team_before_opening_stream() {
         fp_core::services::dataplanes::CertificateRegistration {
             dataplane: &dataplane,
             spiffe_uri: &spiffe,
-            serial_number: &unique("ai-serial"),
+            serial_number: &certificate_serial(),
             expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
         },
         RequestId::generate(),
@@ -445,7 +449,7 @@ async fn registry_binds_team_and_revocation_kills_live_stream() {
     .await
     .expect("dataplane");
     let spiffe = format!("spiffe://flowplane.test/team/some-other-team/proxy/{dp}");
-    let serial = unique("serial");
+    let serial = certificate_serial();
     fp_core::services::dataplanes::register_certificate(
         &w.pool,
         &w.ctx,
@@ -603,12 +607,15 @@ async fn unregistered_and_expired_certificates_are_rejected() {
     let mut tx = w.pool.begin().await.expect("tx");
     fp_storage::repos::dataplanes::register_certificate(
         &mut tx,
-        w.team.id,
-        dataplane.id,
-        &spiffe,
-        &unique("serial"),
-        chrono::Utc::now() - chrono::Duration::hours(1),
-        None,
+        fp_storage::repos::dataplanes::NewProxyCertificate {
+            team_id: w.team.id,
+            dataplane_id: dataplane.id,
+            spiffe_uri: &spiffe,
+            serial_number: &certificate_serial(),
+            fingerprint_sha256: None,
+            expires_at: chrono::Utc::now() - chrono::Duration::hours(1),
+            issued_by: None,
+        },
     )
     .await
     .expect("insert expired");

@@ -1258,6 +1258,19 @@ async fn proxy_certificate_registry_flow_over_http() {
     );
     let certificate_pem = body["certificate_pem"].as_str().expect("cert pem");
     assert!(certificate_pem.contains("BEGIN CERTIFICATE"));
+    let leaf = X509::from_pem(certificate_pem.as_bytes()).expect("issued leaf PEM");
+    let expected_fingerprint = openssl::hash::hash(
+        MessageDigest::sha256(),
+        &leaf.to_der().expect("issued leaf DER"),
+    )
+    .expect("issued leaf SHA-256")
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect::<String>();
+    assert_eq!(
+        body["certificate"]["fingerprint_sha256"], expected_fingerprint,
+        "REST metadata must bind the exact issued leaf"
+    );
     assert!(body["private_key_pem"]
         .as_str()
         .expect("key pem")
@@ -1266,7 +1279,8 @@ async fn proxy_certificate_registry_flow_over_http() {
     assert!(ca_certificate_pem.contains("BEGIN CERTIFICATE"));
     assert_strict_client_leaf(certificate_pem, ca_certificate_pem);
 
-    let serial = unique("serial");
+    let serial_input = "000A";
+    let serial = "a";
     let spiffe = format!(
         "spiffe://flowplane.test/org/{}/team/{}/proxy/{}",
         org.name, team.name, dataplane
@@ -1279,7 +1293,7 @@ async fn proxy_certificate_registry_flow_over_http() {
             Some(serde_json::json!({
                 "dataplane": dataplane,
                 "spiffe_uri": spiffe,
-                "serial_number": serial,
+                "serial_number": serial_input,
                 "expires_at": "2099-01-01T00:00:00Z"
             })),
         ))
@@ -1308,7 +1322,7 @@ async fn proxy_certificate_registry_flow_over_http() {
         .iter()
         .any(|cert| cert["serial_number"] == issued_serial));
 
-    let revoke = format!("{certs}/{serial}/revoke");
+    let revoke = format!("{certs}/{serial_input}/revoke");
     let response = app
         .clone()
         .oneshot(request(
@@ -1333,6 +1347,131 @@ async fn proxy_certificate_registry_flow_over_http() {
         .expect("double revoke");
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(json_of(response).await["code"], "conflict");
+}
+
+#[tokio::test]
+// RED for fpv2-7f3.6: exclude this exact test from earlier slice workspace gates.
+async fn proxy_certificate_rotation_allows_overlap_before_revoking_old() {
+    let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+        eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let pool = fp_storage::connect(&url, 4).await.expect("connect");
+    fp_storage::migrate(&pool).await.expect("migrate");
+
+    let issuer = DevIssuer::generate().expect("issuer");
+    let validator = fp_core::OidcValidator::new(issuer.oidc_config());
+    validator
+        .load_jwks_json(issuer.jwks_json())
+        .await
+        .expect("jwks");
+    let subject = unique("sub");
+    let token = issuer
+        .mint(&subject, "rotation-http@test", "Rotation HTTP", 600)
+        .expect("mint");
+    let org = identity::create_org(&pool, &unique("org"), "")
+        .await
+        .expect("org");
+    let team = identity::create_team(&pool, org.id, &unique("team"), "")
+        .await
+        .expect("team");
+    let user =
+        identity::upsert_user_by_subject(&pool, &subject, "rotation-http@test", "Rotation HTTP")
+            .await
+            .expect("user");
+    identity::add_org_membership(&pool, user, org.id, OrgRole::Admin)
+        .await
+        .expect("member");
+
+    let app = fp_api::build_router(fp_api::AppState {
+        pool,
+        prometheus: PrometheusBuilder::new().build_recorder().handle(),
+        version: "test",
+        validator: Some(std::sync::Arc::new(validator)),
+        write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+        xds_readiness: None,
+        xds_degraded: None,
+        discovery_forwarding_policy: Default::default(),
+        egress_advisory: Default::default(),
+        rls_repush: None,
+        rls_grpc_configured: false,
+    });
+    let request = |method: &str, path: &str, body: Option<serde_json::Value>| {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("authorization", format!("Bearer {token}"));
+        if body.is_some() {
+            builder = builder.header("content-type", "application/json");
+        }
+        builder
+            .body(match body {
+                Some(json) => Body::from(json.to_string()),
+                None => Body::empty(),
+            })
+            .expect("request")
+    };
+    let dataplane = unique("dp");
+    let dataplanes = format!("/api/v1/teams/{}/dataplanes", team.name);
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &dataplanes,
+            Some(serde_json::json!({"name": dataplane, "description": "edge"})),
+        ))
+        .await
+        .expect("create dataplane");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let (ca_cert_path, ca_key_path) = write_test_ca("rotation");
+    std::env::set_var("FLOWPLANE_CERT_ISSUER_CA_CERT_PATH", &ca_cert_path);
+    std::env::set_var("FLOWPLANE_CERT_ISSUER_CA_KEY_PATH", &ca_key_path);
+    let certs = format!("/api/v1/teams/{}/proxy-certificates", team.name);
+    let issue_body = || serde_json::json!({"dataplane": dataplane, "ttl_hours": 1});
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{certs}/issue"),
+            Some(issue_body()),
+        ))
+        .await
+        .expect("issue initial certificate");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let initial = json_of(response).await;
+    let initial_serial = initial["certificate"]["serial_number"]
+        .as_str()
+        .expect("initial serial")
+        .to_owned();
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{certs}/issue"),
+            Some(issue_body()),
+        ))
+        .await
+        .expect("issue overlapping replacement");
+    let status = response.status();
+    let replacement = json_of(response).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "overlapping replacement response: {replacement}"
+    );
+    assert_ne!(replacement["certificate"]["serial_number"], initial_serial);
+
+    let response = app
+        .oneshot(request(
+            "POST",
+            &format!("{certs}/{initial_serial}/revoke"),
+            Some(serde_json::json!({"reason": "rotation"})),
+        ))
+        .await
+        .expect("revoke old certificate after replacement");
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

@@ -18,7 +18,7 @@ const DP_COLUMNS: &str = "id, team_id, name, description, version, last_heartbea
 	                          last_config_verify_at, total_requests, total_errors, \
 	                          warming_failures, created_at, updated_at";
 const CERT_COLUMNS: &str = "id, team_id, dataplane_id, spiffe_uri, serial_number, issued_at, \
-	                            expires_at, revoked_at, revoked_reason, created_at";
+	                            fingerprint_sha256, expires_at, revoked_at, revoked_reason, created_at";
 
 #[derive(Debug, Clone, Copy)]
 pub struct TelemetryDelta<'a> {
@@ -27,6 +27,17 @@ pub struct TelemetryDelta<'a> {
     pub errors_delta: i64,
     pub warming_failures_delta: i64,
     pub config_verified: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NewProxyCertificate<'a> {
+    pub team_id: TeamId,
+    pub dataplane_id: DataplaneId,
+    pub spiffe_uri: &'a str,
+    pub serial_number: &'a str,
+    pub fingerprint_sha256: Option<&'a str>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub issued_by: Option<UserId>,
 }
 
 fn dataplane_from_row(row: &PgRow) -> Dataplane {
@@ -198,6 +209,7 @@ fn cert_from_row(row: &PgRow) -> ProxyCertificate {
         dataplane_id: DataplaneId::from(row.get::<Uuid, _>("dataplane_id")),
         spiffe_uri: row.get("spiffe_uri"),
         serial_number: row.get("serial_number"),
+        fingerprint_sha256: row.get("fingerprint_sha256"),
         issued_at: row.get("issued_at"),
         expires_at: row.get("expires_at"),
         revoked_at: row.get("revoked_at"),
@@ -282,25 +294,21 @@ pub async fn count_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64>
 
 pub async fn register_certificate(
     tx: &mut Transaction<'_, Postgres>,
-    team_id: TeamId,
-    dataplane_id: DataplaneId,
-    spiffe_uri: &str,
-    serial_number: &str,
-    expires_at: chrono::DateTime<chrono::Utc>,
-    issued_by: Option<UserId>,
+    certificate: NewProxyCertificate<'_>,
 ) -> DomainResult<ProxyCertificate> {
     let row = sqlx::query(&format!(
         "INSERT INTO proxy_certificates \
-           (id, team_id, dataplane_id, spiffe_uri, serial_number, expires_at, issued_by_user_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {CERT_COLUMNS}"
+           (id, team_id, dataplane_id, spiffe_uri, serial_number, fingerprint_sha256, expires_at, issued_by_user_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING {CERT_COLUMNS}"
     ))
     .bind(ProxyCertificateId::generate().as_uuid())
-    .bind(team_id.as_uuid())
-    .bind(dataplane_id.as_uuid())
-    .bind(spiffe_uri)
-    .bind(serial_number)
-    .bind(expires_at)
-    .bind(issued_by.map(|u| u.as_uuid()))
+    .bind(certificate.team_id.as_uuid())
+    .bind(certificate.dataplane_id.as_uuid())
+    .bind(certificate.spiffe_uri)
+    .bind(certificate.serial_number)
+    .bind(certificate.fingerprint_sha256)
+    .bind(certificate.expires_at)
+    .bind(certificate.issued_by.map(|user| user.as_uuid()))
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| match &e {
