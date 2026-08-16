@@ -18,13 +18,16 @@ use envoy_types::pb::envoy::service::discovery::v3::{
 use envoy_types::pb::envoy::service::ext_proc::v3::{
     external_processor_client::ExternalProcessorClient, ProcessingRequest,
 };
-use fp_domain::{DataplaneId, TeamId};
-use fp_xds::ads::{CertRegistryResolver, PeerIdentity, TeamResolver};
+use fp_core::{GrantSet, PrincipalCtx};
+use fp_domain::authz::TeamRef;
+use fp_domain::{DataplaneId, OrgId, OrgRole, RequestId, TeamId};
+use fp_storage::repos::identity;
+use fp_xds::ads::{publish_revocations, CertRegistryResolver, PeerIdentity, TeamResolver};
 use fp_xds::diagnostics::{
     diagnostics_report, DiagnosticsReport, EnvoyDiagnosticsServiceClient, HeartbeatReport,
 };
 use fp_xds::server::{serve_mtls, XdsTlsPaths};
-use fp_xds::snapshot::{SnapshotCache, CLUSTER_TYPE_URL};
+use fp_xds::snapshot::{handle_events, SnapshotCache, CLUSTER_TYPE_URL};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::path::{Path, PathBuf};
@@ -313,8 +316,10 @@ fn derives_exact_identity_from_leaf_der_and_fails_closed_on_malformed_der() {
 
 struct World {
     pool: PgPool,
+    org_id: uuid::Uuid,
     team_id: uuid::Uuid,
     dataplane_id: uuid::Uuid,
+    dataplane_name: String,
 }
 
 async fn world() -> Option<World> {
@@ -344,18 +349,21 @@ async fn world() -> Option<World> {
         .execute(&pool)
         .await
         .expect("team fixture");
+    let dataplane_name = unique("exact-leaf-dataplane");
     sqlx::query("INSERT INTO dataplanes (id, team_id, org_id, name) VALUES ($1, $2, $3, $4)")
         .bind(dataplane_id)
         .bind(team_id)
         .bind(org_id)
-        .bind(unique("exact-leaf-dataplane"))
+        .bind(&dataplane_name)
         .execute(&pool)
         .await
         .expect("dataplane fixture");
     Some(World {
         pool,
+        org_id,
         team_id,
         dataplane_id,
+        dataplane_name,
     })
 }
 
@@ -1334,6 +1342,156 @@ async fn restart_and_rotation_keep_both_exact_leaves_until_old_is_revoked() {
         .send(replacement_certificate_id)
         .expect("bounded replacement stream cleanup");
     assert_permission_denied(replacement_stream, Service::Ads).await;
+}
+
+/// Centralized wished-for service seam for slice fpv2-7f3.7.
+async fn retire_for_mtls(
+    world: &World,
+    ctx: &PrincipalCtx,
+    expected_revision: i64,
+    request_id: RequestId,
+) -> fp_domain::DomainResult<()> {
+    let _retired: fp_domain::Dataplane = fp_core::services::dataplanes::retire_dataplane(
+        &world.pool,
+        ctx,
+        TeamRef {
+            id: TeamId::from(world.team_id),
+            org_id: OrgId::from(world.org_id),
+        },
+        &world.dataplane_name,
+        expected_revision,
+        "real mTLS retirement",
+        request_id,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn retirement_terminates_all_bound_mtls_streams_and_rejects_every_reconnect() {
+    let Some(world) = world().await else { return };
+    let pki = TestPki::new();
+    let spiffe_uri = format!(
+        "spiffe://flowplane.test/dataplane/{}/retirement",
+        world.dataplane_id
+    );
+    let leaf = pki.issue_client("retirement-all-streams", &spiffe_uri, "f731");
+    insert_registry_row(&world, &spiffe_uri, &leaf, RegistryState::Exact(&leaf)).await;
+
+    let user = identity::upsert_user_by_subject(
+        &world.pool,
+        &unique("retirement-mtls-operator"),
+        "retirement-mtls@test.invalid",
+        "Retirement mTLS Operator",
+    )
+    .await
+    .expect("retirement operator");
+    identity::add_org_membership(&world.pool, user, OrgId::from(world.org_id), OrgRole::Admin)
+        .await
+        .expect("retirement operator membership");
+    let ctx = PrincipalCtx::User {
+        user_id: user,
+        platform_admin: false,
+        org_selector_required: false,
+        org: Some((OrgId::from(world.org_id), OrgRole::Admin)),
+        grants: GrantSet::default(),
+    };
+    let revision: i64 = sqlx::query_scalar("SELECT version FROM dataplanes WHERE id = $1")
+        .bind(world.dataplane_id)
+        .fetch_one(&world.pool)
+        .await
+        .expect("dataplane revision");
+    let consumer = unique("retirement-mtls-consumer");
+    fp_storage::outbox::register_consumer_at_head(&world.pool, &consumer)
+        .await
+        .expect("register retirement outbox consumer");
+    let server = start_server(&pki, world.pool.clone(), world.pool.clone()).await;
+
+    let mut streams = Vec::new();
+    for service in SERVICES {
+        streams.push((
+            service,
+            open_live_stream(
+                channel(&pki, server.addr, &leaf)
+                    .await
+                    .expect("real mTLS handshake before retirement"),
+                service,
+                world.team_id,
+                world.dataplane_id,
+            )
+            .await,
+        ));
+    }
+    for _ in 0..40 {
+        if server.revocations.receiver_count() >= SERVICES.len() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        server.revocations.receiver_count() >= SERVICES.len(),
+        "all ADS/diagnostics/ALS/AI ExtProc/no-AI ExtProc streams must bind to revocation"
+    );
+
+    retire_for_mtls(&world, &ctx, revision, RequestId::generate())
+        .await
+        .expect("authorized retirement");
+    while fp_storage::outbox::process_batch(&world.pool, &consumer, 1000, |events| {
+        let cache = SnapshotCache::new();
+        let pool = world.pool.clone();
+        let revocations = server.revocations.clone();
+        async move {
+            publish_revocations(&revocations, &events);
+            handle_events(&cache, &pool, events).await
+        }
+    })
+    .await
+    .expect("process retirement outbox")
+        > 0
+    {}
+
+    let heartbeat_before_reconnect: (i64, i64, i64, Option<chrono::DateTime<chrono::Utc>>) =
+        sqlx::query_as(
+            "SELECT total_requests, total_errors, warming_failures, last_heartbeat_at \
+         FROM dataplanes WHERE id = $1",
+        )
+        .bind(world.dataplane_id)
+        .fetch_one(&world.pool)
+        .await
+        .expect("retired dataplane heartbeat baseline");
+
+    for (service, stream) in streams {
+        assert_permission_denied(stream, service).await;
+        let status = bounded_service_result(
+            channel(&pki, server.addr, &leaf)
+                .await
+                .expect("retired leaf still completes trusted TLS"),
+            service,
+            world.team_id,
+            world.dataplane_id,
+        )
+        .await
+        .expect_err("retired dataplane credential must not reconnect");
+        assert_eq!(
+            status.code(),
+            tonic::Code::Unauthenticated,
+            "{service:?} reconnect must fail at exact registry authentication"
+        );
+    }
+
+    let heartbeat_after_reconnect: (i64, i64, i64, Option<chrono::DateTime<chrono::Utc>>) =
+        sqlx::query_as(
+            "SELECT total_requests, total_errors, warming_failures, last_heartbeat_at \
+         FROM dataplanes WHERE id = $1",
+        )
+        .bind(world.dataplane_id)
+        .fetch_one(&world.pool)
+        .await
+        .expect("retired dataplane heartbeat after rejected reconnect");
+    assert_eq!(
+        heartbeat_after_reconnect, heartbeat_before_reconnect,
+        "UUID-addressed diagnostics heartbeat must not mutate a retired dataplane"
+    );
 }
 
 #[derive(Clone)]

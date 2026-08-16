@@ -173,7 +173,7 @@ fn openapi_document_covers_every_registered_operation() {
     for item in paths.values() {
         operations += item.as_object().map(|o| o.len()).unwrap_or(0);
     }
-    // whoami + 3 resources x 5 + 9 team/member/grant + 6 agent + 7 org + 4 dataplane
+    // whoami + 3 resources x 5 + 9 team/member/grant + 6 agent + 7 org + 5 dataplane
     // + 4 proxy-certificate + 3 ops/xds diagnostics operations.
     // + 4 secrets operations + 2 dataplane/stats telemetry operations.
     // + 16 API lifecycle/MCP tool operations + 6 learning-session operations.
@@ -188,8 +188,8 @@ fn openapi_document_covers_every_registered_operation() {
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 120,
-        "expected 120 documented operations, got {operations}"
+        operations, 121,
+        "expected 121 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     let schemas = json["components"]["schemas"].as_object().expect("schemas");

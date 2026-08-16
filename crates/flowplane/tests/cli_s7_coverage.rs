@@ -204,6 +204,7 @@ const SHARED_LAYER_COVERED: &[&str] = &[
     "dataplane list",
     "dataplane get",
     "dataplane create",
+    "dataplane delete",
     "dataplane telemetry",
     // stats
     "stats overview",

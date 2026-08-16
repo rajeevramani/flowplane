@@ -16,9 +16,12 @@ use uuid::Uuid;
 
 const DP_COLUMNS: &str = "id, team_id, name, description, version, last_heartbeat_at, \
 	                          last_config_verify_at, total_requests, total_errors, \
-	                          warming_failures, created_at, updated_at";
+	                          warming_failures, retired_at, retired_reason, created_at, updated_at";
 const CERT_COLUMNS: &str = "id, team_id, dataplane_id, spiffe_uri, serial_number, issued_at, \
 	                            fingerprint_sha256, expires_at, revoked_at, revoked_reason, created_at";
+const QUALIFIED_CERT_COLUMNS: &str = "pc.id, pc.team_id, pc.dataplane_id, pc.spiffe_uri, \
+	 pc.serial_number, pc.issued_at, pc.fingerprint_sha256, pc.expires_at, pc.revoked_at, \
+	 pc.revoked_reason, pc.created_at";
 
 #[derive(Debug, Clone, Copy)]
 pub struct TelemetryDelta<'a> {
@@ -53,6 +56,8 @@ fn dataplane_from_row(row: &PgRow) -> Dataplane {
         total_requests: row.get("total_requests"),
         total_errors: row.get("total_errors"),
         warming_failures: row.get("warming_failures"),
+        retired_at: row.get("retired_at"),
+        retired_reason: row.get("retired_reason"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
@@ -69,7 +74,8 @@ pub async fn record_telemetry(
         .await
         .map_err(|e| DomainError::internal(format!("record dataplane telemetry: begin: {e}")))?;
     let row = sqlx::query(&format!(
-        "SELECT {DP_COLUMNS} FROM dataplanes WHERE team_id = $1 AND name = $2 FOR UPDATE"
+        "SELECT {DP_COLUMNS} FROM dataplanes \
+         WHERE team_id = $1 AND name = $2 AND retired_at IS NULL FOR UPDATE"
     ))
     .bind(team_id.as_uuid())
     .bind(name)
@@ -98,7 +104,8 @@ pub async fn record_telemetry_by_id(
         .await
         .map_err(|e| DomainError::internal(format!("record dataplane telemetry: begin: {e}")))?;
     let row = sqlx::query(&format!(
-        "SELECT {DP_COLUMNS} FROM dataplanes WHERE team_id = $1 AND id = $2 FOR UPDATE"
+        "SELECT {DP_COLUMNS} FROM dataplanes \
+         WHERE team_id = $1 AND id = $2 AND retired_at IS NULL FOR UPDATE"
     ))
     .bind(team_id.as_uuid())
     .bind(dataplane_id.as_uuid())
@@ -156,7 +163,7 @@ async fn apply_telemetry_delta(
             total_errors = total_errors + $3, \
             warming_failures = warming_failures + $4, \
             updated_at = now() \
-         WHERE team_id = $5 AND id = $6 RETURNING {DP_COLUMNS}"
+         WHERE team_id = $5 AND id = $6 AND retired_at IS NULL RETURNING {DP_COLUMNS}"
     ))
     .bind(telemetry.config_verified)
     .bind(requests_delta)
@@ -184,7 +191,7 @@ pub async fn stats_overview(
             coalesce(sum(total_requests), 0)::bigint AS total_requests, \
             coalesce(sum(total_errors), 0)::bigint AS total_errors, \
             coalesce(sum(warming_failures), 0)::bigint AS warming_failures \
-         FROM dataplanes WHERE team_id = $1",
+         FROM dataplanes WHERE team_id = $1 AND retired_at IS NULL",
     )
     .bind(team_id.as_uuid())
     .bind(now)
@@ -252,7 +259,8 @@ pub async fn get_dataplane(
     name: &str,
 ) -> DomainResult<Option<Dataplane>> {
     let row = sqlx::query(&format!(
-        "SELECT {DP_COLUMNS} FROM dataplanes WHERE team_id = $1 AND name = $2"
+        "SELECT {DP_COLUMNS} FROM dataplanes \
+         WHERE team_id = $1 AND name = $2 AND retired_at IS NULL"
     ))
     .bind(team_id.as_uuid())
     .bind(name)
@@ -269,7 +277,8 @@ pub async fn list_dataplanes(
     offset: i64,
 ) -> DomainResult<(Vec<Dataplane>, i64)> {
     let rows = sqlx::query(&format!(
-        "SELECT {DP_COLUMNS} FROM dataplanes WHERE team_id = $1 ORDER BY name LIMIT $2 OFFSET $3"
+        "SELECT {DP_COLUMNS} FROM dataplanes \
+         WHERE team_id = $1 AND retired_at IS NULL ORDER BY name LIMIT $2 OFFSET $3"
     ))
     .bind(team_id.as_uuid())
     .bind(limit.clamp(1, 500))
@@ -277,16 +286,18 @@ pub async fn list_dataplanes(
     .fetch_all(pool)
     .await
     .map_err(|e| DomainError::internal(format!("list dataplanes: {e}")))?;
-    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM dataplanes WHERE team_id = $1")
-        .bind(team_id.as_uuid())
-        .fetch_one(pool)
-        .await
-        .map_err(|e| DomainError::internal(format!("count dataplanes: {e}")))?;
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM dataplanes WHERE team_id = $1 AND retired_at IS NULL",
+    )
+    .bind(team_id.as_uuid())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("count dataplanes: {e}")))?;
     Ok((rows.iter().map(dataplane_from_row).collect(), total))
 }
 
 pub async fn count_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64> {
-    sqlx::query_scalar("SELECT count(*) FROM dataplanes WHERE team_id = $1")
+    sqlx::query_scalar("SELECT count(*) FROM dataplanes WHERE team_id = $1 AND retired_at IS NULL")
         .bind(team_id.as_uuid())
         .fetch_one(pool)
         .await
@@ -300,15 +311,15 @@ pub async fn lock_certificate_capacity(
     team_id: TeamId,
     dataplane_id: DataplaneId,
 ) -> DomainResult<()> {
-    let locked: Option<uuid::Uuid> =
-        sqlx::query_scalar("SELECT id FROM dataplanes WHERE team_id = $1 AND id = $2 FOR UPDATE")
-            .bind(team_id.as_uuid())
-            .bind(dataplane_id.as_uuid())
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(|error| {
-                DomainError::internal(format!("lock certificate dataplane: {error}"))
-            })?;
+    let locked: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT id FROM dataplanes \
+             WHERE team_id = $1 AND id = $2 AND retired_at IS NULL FOR UPDATE",
+    )
+    .bind(team_id.as_uuid())
+    .bind(dataplane_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|error| DomainError::internal(format!("lock certificate dataplane: {error}")))?;
     if locked.is_none() {
         return Err(DomainError::not_found(
             "dataplane",
@@ -390,9 +401,10 @@ pub async fn find_active_certificate_exact(
     fingerprint_sha256: &str,
 ) -> DomainResult<Option<ProxyCertificate>> {
     let row = sqlx::query(&format!(
-        "SELECT {CERT_COLUMNS} FROM proxy_certificates \
-         WHERE spiffe_uri = $1 AND fingerprint_sha256 = $2 \
-           AND revoked_at IS NULL AND expires_at > now()"
+        "SELECT {QUALIFIED_CERT_COLUMNS} FROM proxy_certificates pc \
+         JOIN dataplanes dp ON dp.id = pc.dataplane_id AND dp.team_id = pc.team_id \
+         WHERE pc.spiffe_uri = $1 AND pc.fingerprint_sha256 = $2 \
+           AND pc.revoked_at IS NULL AND pc.expires_at > now() AND dp.retired_at IS NULL"
     ))
     .bind(spiffe_uri)
     .bind(fingerprint_sha256)
@@ -414,10 +426,12 @@ pub async fn pin_legacy_certificate_fingerprint(
     let row = sqlx::query(&format!(
         "UPDATE proxy_certificates SET fingerprint_sha256 = $3 \
          WHERE id = ( \
-           SELECT id FROM proxy_certificates \
-           WHERE spiffe_uri = $1 AND serial_number = $2 \
-             AND fingerprint_sha256 IS NULL \
-             AND revoked_at IS NULL AND expires_at > now() \
+           SELECT pc.id FROM proxy_certificates pc \
+           JOIN dataplanes dp ON dp.id = pc.dataplane_id AND dp.team_id = pc.team_id \
+           WHERE pc.spiffe_uri = $1 AND pc.serial_number = $2 \
+             AND pc.fingerprint_sha256 IS NULL \
+             AND pc.revoked_at IS NULL AND pc.expires_at > now() \
+             AND dp.retired_at IS NULL \
            FOR UPDATE \
          ) \
          AND fingerprint_sha256 IS NULL \
@@ -471,6 +485,29 @@ pub async fn revoke_certificate(
     serial_number: &str,
     reason: &str,
 ) -> DomainResult<ProxyCertificate> {
+    let dataplane_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT dataplane_id FROM proxy_certificates WHERE team_id = $1 AND serial_number = $2",
+    )
+    .bind(team_id.as_uuid())
+    .bind(serial_number)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("revoke certificate: resolve dataplane: {e}")))?;
+    let Some(dataplane_id) = dataplane_id else {
+        return Err(DomainError::not_found("proxy certificate", serial_number));
+    };
+    let active: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM dataplanes \
+         WHERE team_id = $1 AND id = $2 AND retired_at IS NULL FOR UPDATE",
+    )
+    .bind(team_id.as_uuid())
+    .bind(dataplane_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("revoke certificate: lock dataplane: {e}")))?;
+    if active.is_none() {
+        return Err(DomainError::conflict("dataplane is retired"));
+    }
     let row = sqlx::query(&format!(
         "UPDATE proxy_certificates SET revoked_at = now(), revoked_reason = $1 \
          WHERE team_id = $2 AND serial_number = $3 AND revoked_at IS NULL \
@@ -502,6 +539,64 @@ pub async fn revoke_certificate(
             })
         }
     }
+}
+
+pub async fn retire_dataplane(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+    expected_version: i64,
+    reason: &str,
+) -> DomainResult<(Dataplane, Vec<ProxyCertificate>)> {
+    let current = sqlx::query(&format!(
+        "SELECT {DP_COLUMNS} FROM dataplanes \
+         WHERE team_id = $1 AND name = $2 AND retired_at IS NULL FOR UPDATE"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(name)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("retire dataplane: lock: {e}")))?;
+    let Some(current) = current else {
+        return Err(DomainError::not_found("dataplane", name));
+    };
+    let current = dataplane_from_row(&current);
+    if current.version != expected_version {
+        return Err(DomainError::new(
+            fp_domain::ErrorCode::RevisionMismatch,
+            format!(
+                "dataplane \"{name}\" is at revision {}, you supplied {expected_version}",
+                current.version
+            ),
+        )
+        .with_hint("re-read the dataplane and retry with the current revision"));
+    }
+
+    let retired = sqlx::query(&format!(
+        "UPDATE dataplanes SET retired_at = now(), retired_reason = $1, \
+             version = version + 1, updated_at = now() \
+         WHERE id = $2 AND team_id = $3 AND retired_at IS NULL RETURNING {DP_COLUMNS}"
+    ))
+    .bind(reason)
+    .bind(current.id.as_uuid())
+    .bind(team_id.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("retire dataplane: tombstone: {e}")))?;
+    let certificates = sqlx::query(&format!(
+        "UPDATE proxy_certificates SET revoked_at = now(), revoked_reason = 'dataplane retired' \
+         WHERE team_id = $1 AND dataplane_id = $2 AND revoked_at IS NULL \
+         RETURNING {CERT_COLUMNS}"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(current.id.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("retire dataplane: revoke credentials: {e}")))?;
+    Ok((
+        dataplane_from_row(&retired),
+        certificates.iter().map(cert_from_row).collect(),
+    ))
 }
 
 #[cfg(test)]

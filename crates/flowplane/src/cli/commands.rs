@@ -1113,6 +1113,20 @@ pub enum DataplaneCommand {
         #[arg(long, default_value = "")]
         description: String,
     },
+    /// Retire a dataplane and revoke its active credentials.
+    #[command(
+        after_help = "Example:\n  flowplane dataplane delete edge-1 --team payments --revision 3 --reason decommissioned --yes"
+    )]
+    Delete {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Name of the dataplane to retire.
+        name: String,
+        /// Operator-supplied retirement reason.
+        #[arg(long)]
+        reason: String,
+    },
     /// Submit dataplane telemetry from a JSON file.
     #[command(
         after_help = "Example:\n  flowplane dataplane telemetry edge-1 --team payments -f telemetry.json"

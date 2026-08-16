@@ -3,10 +3,10 @@
 
 use crate::error::{ApiError, ErrorBody};
 use crate::extract::ApiJson;
-use crate::resources::{resolve_team, ListQuery, Page};
+use crate::resources::{resolve_team, revision_from, ListQuery, Page};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use fp_core::services::dataplanes as svc;
@@ -29,6 +29,8 @@ pub struct DataplaneView {
     pub total_requests: i64,
     pub total_errors: i64,
     pub warming_failures: i64,
+    pub retired_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub retired_reason: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -46,6 +48,8 @@ impl From<Dataplane> for DataplaneView {
             total_requests: value.total_requests,
             total_errors: value.total_errors,
             warming_failures: value.warming_failures,
+            retired_at: value.retired_at,
+            retired_reason: value.retired_reason,
             created_at: value.created_at,
             updated_at: value.updated_at,
         }
@@ -58,6 +62,12 @@ pub struct CreateDataplaneBody {
     pub name: String,
     #[serde(default)]
     pub description: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RetireDataplaneBody {
+    pub reason: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -317,6 +327,49 @@ pub async fn get_dataplane(
     run.await
         .map(|v| Json(DataplaneView::from(v)))
         .map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(delete, path = "/api/v1/teams/{team}/dataplanes/{name}",
+    tag = "Dataplanes",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "Dataplane name"),
+        ("If-Match" = i64, Header, description = "Expected dataplane revision"),
+    ),
+    request_body = RetireDataplaneBody,
+    responses(
+        (status = 204),
+        (status = 400, body = ErrorBody),
+        (status = 401, body = ErrorBody),
+        (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody),
+        (status = 409, body = ErrorBody),
+    ))]
+pub async fn retire_dataplane(
+    State(state): State<AppState>,
+    Path((team, name)): Path<(String, String)>,
+    headers: HeaderMap,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+    ApiJson(body): ApiJson<RetireDataplaneBody>,
+) -> Result<StatusCode, ApiError> {
+    let run = async {
+        let expected_revision = revision_from(&headers)?;
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::retire_dataplane(
+            &state.pool,
+            &ctx,
+            team,
+            &name,
+            expected_revision,
+            &body.reason,
+            rid,
+        )
+        .await
+    };
+    run.await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|error| ApiError::new(error, rid))
 }
 
 #[utoipa::path(post, path = "/api/v1/teams/{team}/dataplanes/{name}/telemetry",
@@ -732,6 +785,8 @@ mod tests {
             total_requests: 0,
             total_errors: 0,
             warming_failures: 0,
+            retired_at: None,
+            retired_reason: None,
             created_at: now,
             updated_at: now,
         };

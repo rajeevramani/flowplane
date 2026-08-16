@@ -24,6 +24,7 @@ use openssl::x509::extension::{
 use openssl::x509::{X509NameBuilder, X509};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::sync::Barrier;
 use tower::ServiceExt;
 
 fn unique(prefix: &str) -> String {
@@ -485,6 +486,9 @@ async fn external_registration_verifies_chain_derives_metadata_and_fails_closed(
         .as_str()
         .expect("dataplane UUID")
         .to_owned();
+    let dataplane_revision = dataplane_body["revision"]
+        .as_i64()
+        .expect("dataplane revision");
     let spiffe_uri = format!(
         "spiffe://flowplane.test/org/{}/team/{}/proxy/{dataplane_id}",
         owner_org.id.as_uuid(),
@@ -734,6 +738,7 @@ async fn external_registration_verifies_chain_derives_metadata_and_fails_closed(
     );
 
     let response = app
+        .clone()
         .oneshot(request(&owner_token, "GET", &registration_path, None))
         .await
         .expect("list certificates");
@@ -749,5 +754,216 @@ async fn external_registration_verifies_chain_derives_metadata_and_fails_closed(
     assert_eq!(
         matching, 1,
         "only the trusted valid chain may mutate the registry: {certificates}"
+    );
+
+    let retire_path = format!(
+        "/api/v1/teams/{}/dataplanes/{dataplane_name}",
+        owner_team.name
+    );
+    let retire = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        app.clone().oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(&retire_path)
+                .header("authorization", format!("Bearer {owner_token}"))
+                .header("if-match", dataplane_revision.to_string())
+                .header("content-type", "application/json")
+                .header("x-request-id", uuid::Uuid::now_v7().to_string())
+                .body(Body::from(
+                    serde_json::json!({"reason": "external registration rejection fixture"})
+                        .to_string(),
+                ))
+                .expect("retire dataplane request"),
+        ),
+    )
+    .await
+    .expect("retirement completed within five seconds")
+    .expect("retirement response");
+    assert_eq!(retire.status(), StatusCode::NO_CONTENT);
+
+    let post_retirement_leaf = leaf_fixture(&trusted_pki, &spiffe_uri, true, "0F");
+    let rejected = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        app.clone().oneshot(request(
+            &owner_token,
+            "POST",
+            &registration_path,
+            Some(serde_json::json!({
+                "dataplane": dataplane_name,
+                "certificate_chain_pem": post_retirement_leaf.chain_pem
+            })),
+        )),
+    )
+    .await
+    .expect("post-retirement registration completed within five seconds")
+    .expect("post-retirement registration response");
+    assert_eq!(
+        rejected.status(),
+        StatusCode::NOT_FOUND,
+        "a standards-complete externally issued chain must not register to a retired dataplane"
+    );
+
+    let certificate_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM proxy_certificates WHERE dataplane_id = $1")
+            .bind(uuid::Uuid::parse_str(&dataplane_id).expect("dataplane UUID"))
+            .fetch_one(&pool)
+            .await
+            .expect("post-retirement certificate count");
+    assert_eq!(
+        certificate_count, 1,
+        "rejected post-retirement registration must not insert a certificate"
+    );
+
+    // A valid external leaf and retirement start together. Registration may lose cleanly, or
+    // commit before retirement and then be revoked; neither scheduler outcome may leave it active.
+    let retire_race_name = unique("external-register-retire-race");
+    let response = app
+        .clone()
+        .oneshot(request(
+            &owner_token,
+            "POST",
+            &dataplanes_path,
+            Some(serde_json::json!({
+                "name": retire_race_name,
+                "description": "external register-retire contention"
+            })),
+        ))
+        .await
+        .expect("create register-retire race dataplane");
+    let status = response.status();
+    let retire_race_dataplane = json(response).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "create register-retire race dataplane: {retire_race_dataplane}"
+    );
+    let retire_race_id = uuid::Uuid::parse_str(
+        retire_race_dataplane["id"]
+            .as_str()
+            .expect("register-retire race dataplane UUID"),
+    )
+    .expect("register-retire race dataplane UUID syntax");
+    let retire_race_revision = retire_race_dataplane["revision"]
+        .as_i64()
+        .expect("register-retire race dataplane revision");
+    let retire_race_spiffe_uri = format!(
+        "spiffe://flowplane.test/org/{}/team/{}/proxy/{retire_race_id}",
+        owner_org.id.as_uuid(),
+        owner_team.id.as_uuid()
+    );
+    let retire_race_leaf = leaf_fixture(&trusted_pki, &retire_race_spiffe_uri, true, "2A");
+    let retire_race_delete_path = format!(
+        "/api/v1/teams/{}/dataplanes/{retire_race_name}",
+        owner_team.name
+    );
+
+    let barrier = Arc::new(Barrier::new(2));
+    let register_barrier = Arc::clone(&barrier);
+    let register_app = app.clone();
+    let register_token = owner_token.clone();
+    let register_path = registration_path.clone();
+    let register_name = retire_race_name.clone();
+    let register = async move {
+        register_barrier.wait().await;
+        register_app
+            .oneshot(request(
+                &register_token,
+                "POST",
+                &register_path,
+                Some(serde_json::json!({
+                    "dataplane": register_name,
+                    "certificate_chain_pem": retire_race_leaf.chain_pem
+                })),
+            ))
+            .await
+    };
+    let retire_barrier = Arc::clone(&barrier);
+    let retire_app = app.clone();
+    let retire_token = owner_token.clone();
+    let retire = async move {
+        retire_barrier.wait().await;
+        retire_app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(&retire_race_delete_path)
+                    .header("authorization", format!("Bearer {retire_token}"))
+                    .header("if-match", retire_race_revision.to_string())
+                    .header("content-type", "application/json")
+                    .header("x-request-id", uuid::Uuid::now_v7().to_string())
+                    .body(Body::from(
+                        serde_json::json!({"reason": "external register-retire contention"})
+                            .to_string(),
+                    ))
+                    .expect("concurrent external-register retirement request"),
+            )
+            .await
+    };
+    let (register_result, retire_result) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(register, retire)
+        })
+        .await
+        .expect("register-retire race completed within ten seconds");
+    let register_response = register_result.expect("concurrent external registration response");
+    let retire_response = retire_result.expect("concurrent external retirement response");
+    assert_eq!(
+        retire_response.status(),
+        StatusCode::NO_CONTENT,
+        "retirement must succeed regardless of scheduler winner"
+    );
+    assert!(
+        matches!(
+            register_response.status(),
+            StatusCode::CREATED | StatusCode::NOT_FOUND | StatusCode::CONFLICT
+        ),
+        "external registration must commit first or lose with a lifecycle classification, got {}",
+        register_response.status()
+    );
+
+    let active_after_retirement: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM proxy_certificates WHERE dataplane_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(retire_race_id)
+    .fetch_one(&pool)
+    .await
+    .expect("final external register-retire active certificate count");
+    assert_eq!(
+        active_after_retirement, 0,
+        "no externally registered certificate may remain active after retirement"
+    );
+    let retire_race_certificate_ids: Vec<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM proxy_certificates WHERE dataplane_id = $1 ORDER BY id")
+            .bind(retire_race_id)
+            .fetch_all(&pool)
+            .await
+            .expect("external register-retire certificate rows");
+    for certificate_id in &retire_race_certificate_ids {
+        let event_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM events WHERE event_type = 'proxy_certificate.revoked' \
+             AND payload->>'certificate_id' = $1",
+        )
+        .bind(certificate_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("external register-retire revocation event count");
+        assert_eq!(
+            event_count, 1,
+            "each externally registered credential changed by retirement emits one event"
+        );
+    }
+    let retire_race_revocation_events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM events WHERE event_type = 'proxy_certificate.revoked' \
+         AND payload->>'dataplane_id' = $1",
+    )
+    .bind(retire_race_id.to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("external register-retire scoped revocation evidence");
+    assert_eq!(
+        retire_race_revocation_events,
+        retire_race_certificate_ids.len() as i64,
+        "external registration race must leave no duplicate or orphan revocation evidence"
     );
 }

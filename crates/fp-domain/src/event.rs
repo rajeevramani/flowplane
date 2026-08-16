@@ -32,6 +32,8 @@ pub enum DomainEvent {
     // Dataplanes / mTLS certificate registry (S5.4)
     #[serde(rename = "dataplane.created", alias = "dataplane_created")]
     DataplaneCreated { dataplane_id: Uuid, name: String },
+    #[serde(rename = "dataplane.retired", alias = "dataplane_retired")]
+    DataplaneRetired { dataplane_id: Uuid, name: String },
     #[serde(
         rename = "proxy_certificate.registered",
         alias = "proxy_certificate_registered"
@@ -128,6 +130,7 @@ impl DomainEvent {
             Self::TeamCreated { .. } => "team.created",
             Self::TeamDeleted { .. } => "team.deleted",
             Self::DataplaneCreated { .. } => "dataplane.created",
+            Self::DataplaneRetired { .. } => "dataplane.retired",
             Self::ProxyCertificateRegistered { .. } => "proxy_certificate.registered",
             Self::ProxyCertificateFingerprintPinned { .. } => {
                 "proxy_certificate.fingerprint_pinned"
@@ -196,6 +199,10 @@ mod tests {
                 name: "x".into(),
             },
             DomainEvent::DataplaneCreated {
+                dataplane_id: uuid,
+                name: "x".into(),
+            },
+            DomainEvent::DataplaneRetired {
                 dataplane_id: uuid,
                 name: "x".into(),
             },

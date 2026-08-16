@@ -22,6 +22,8 @@ pub struct Dataplane {
     pub total_requests: i64,
     pub total_errors: i64,
     pub warming_failures: i64,
+    pub retired_at: Option<DateTime<Utc>>,
+    pub retired_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

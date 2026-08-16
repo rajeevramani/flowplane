@@ -509,6 +509,83 @@ pub async fn revoke_certificate(
     Ok(cert)
 }
 
+pub async fn retire_dataplane(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    expected_revision: i64,
+    reason: &str,
+    request_id: RequestId,
+) -> DomainResult<Dataplane> {
+    authorize(
+        pool,
+        ctx,
+        Resource::Dataplanes,
+        Action::Delete,
+        team,
+        request_id,
+    )
+    .await?;
+    let reason = reason.trim();
+    if reason.is_empty() || reason.len() > 500 {
+        return Err(DomainError::validation(
+            "retirement reason must contain 1..=500 characters",
+        ));
+    }
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("retire dataplane: begin"))?;
+    let (retired, certificates) =
+        dataplanes::retire_dataplane(&mut tx, team.id, name, expected_revision, reason).await?;
+    for certificate in &certificates {
+        fp_storage::outbox::append(
+            &mut tx,
+            &DomainEvent::ProxyCertificateRevoked {
+                certificate_id: certificate.id.as_uuid(),
+                spiffe_uri: certificate.spiffe_uri.clone(),
+            },
+            EventScope {
+                org_id: Some(team.org_id),
+                team_id: Some(team.id),
+            },
+            trace_context_json(),
+        )
+        .await?;
+    }
+    fp_storage::outbox::append(
+        &mut tx,
+        &DomainEvent::DataplaneRetired {
+            dataplane_id: retired.id.as_uuid(),
+            name: retired.name.clone(),
+        },
+        EventScope {
+            org_id: Some(team.org_id),
+            team_id: Some(team.id),
+        },
+        trace_context_json(),
+    )
+    .await?;
+    let mut audit_entry = mutation_audit(
+        ctx,
+        request_id,
+        team,
+        "dataplane.retire",
+        &format!("dataplanes/{name}"),
+    );
+    audit_entry.detail = serde_json::json!({
+        "dataplane_id": retired.id.as_uuid(),
+        "revoked_certificate_count": certificates.len(),
+    });
+    audit::record_in_tx(&mut tx, &audit_entry).await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("retire dataplane: commit"))?;
+    Ok(retired)
+}
+
 #[derive(Debug, Clone)]
 pub struct DataplaneTelemetry {
     pub idempotency_key: String,

@@ -201,7 +201,10 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             dataplanes_api::list_dataplanes,
             dataplanes_api::create_dataplane
         ))
-        .routes(routes!(dataplanes_api::get_dataplane))
+        .routes(routes!(
+            dataplanes_api::get_dataplane,
+            dataplanes_api::retire_dataplane
+        ))
         .routes(routes!(dataplanes_api::record_dataplane_telemetry))
         .routes(routes!(dataplanes_api::get_envoy_config))
         .routes(routes!(dataplanes_api::stats_overview))

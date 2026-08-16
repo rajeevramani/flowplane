@@ -2128,6 +2128,16 @@ pub async fn run_dataplane(global: GlobalOptions, command: DataplaneCommand) -> 
                 )
                 .await?
         }
+        DataplaneCommand::Delete { team, name, reason } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::DELETE,
+                    &format!("/api/v1/teams/{team}/dataplanes/{name}"),
+                    Some(json!({"reason": reason})),
+                )
+                .await?
+        }
         DataplaneCommand::Telemetry { team, name, file } => {
             let team = client.team(team)?;
             client
