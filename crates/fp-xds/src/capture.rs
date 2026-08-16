@@ -4,7 +4,7 @@
 //! thin: it parses Envoy protobufs into the domain `ObservationIngest` shape and delegates all
 //! tenancy, quota, merge, TTL, and counter rules to storage.
 
-use crate::ads::TeamResolver;
+use crate::ads::{PeerIdentity, TeamResolver};
 use chrono::{DateTime, SecondsFormat, Utc};
 use envoy_types::pb::envoy::config::core::v3::{
     header_value_option, HeaderMap, HeaderValue, HeaderValueOption, RequestMethod,
@@ -52,6 +52,7 @@ pub struct LearningCaptureService {
 #[derive(Debug, Clone, Copy)]
 struct ConfigCaptureContext {
     team_id: TeamId,
+    _peer_identity: PeerIdentity,
     session_id: CaptureSessionId,
     api_definition_id: Option<ApiDefinitionId>,
     route_config_id: RouteConfigId,
@@ -61,6 +62,7 @@ struct ConfigCaptureContext {
 #[derive(Debug, Clone)]
 struct DiscoveryCaptureContext {
     team_id: TeamId,
+    _peer_identity: PeerIdentity,
     session_id: DiscoverySessionId,
     listener_id: ListenerId,
     forwarded_upstream_host: String,
@@ -88,6 +90,7 @@ struct ExtProcState {
 #[derive(Debug, Clone, Default)]
 struct AiExtProcState {
     context: Option<AiExtProcContext>,
+    _peer_identity: Option<PeerIdentity>,
     include_usage_injected: bool,
     response_status: Option<i32>,
     response_content_type: Option<String>,
@@ -382,17 +385,20 @@ impl ExternalProcessor for LearningCaptureService {
         request: Request<Streaming<ProcessingRequest>>,
     ) -> Result<Response<Self::ProcessStream>, Status> {
         if is_ai_processor(request.metadata()) {
+            let peer_certificate = crate::server::presented_certificate_identity(&request);
+            let identity = self
+                .resolver
+                .resolve("ext-proc", peer_certificate.as_ref())
+                .await?;
             let context = ai_context(request.metadata())?;
             let context = match context {
                 Some(mut ctx) => {
-                    let team_id = authenticated_team(
-                        &request,
-                        &self.resolver,
-                        ctx.team_id,
-                        "AI processor team_id does not match the client certificate",
-                    )
-                    .await?;
-                    ctx.team_id = team_id;
+                    if identity.team_id != ctx.team_id {
+                        return Err(Status::permission_denied(
+                            "AI processor team_id does not match the client certificate",
+                        ));
+                    }
+                    ctx.team_id = identity.team_id;
                     Some(ctx)
                 }
                 None => None,
@@ -401,6 +407,7 @@ impl ExternalProcessor for LearningCaptureService {
                 self.pool.clone(),
                 request.into_inner(),
                 context,
+                Some(identity),
             ))));
         }
         let ctx = capture_context(&request, &self.resolver).await?;
@@ -445,6 +452,7 @@ fn ai_process_stream<S>(
     pool: sqlx::PgPool,
     mut stream: S,
     context: Option<AiExtProcContext>,
+    peer_identity: Option<PeerIdentity>,
 ) -> tokio::sync::mpsc::Receiver<Result<ProcessingResponse, Status>>
 where
     S: tokio_stream::Stream<Item = Result<ProcessingRequest, Status>> + Send + Unpin + 'static,
@@ -454,6 +462,7 @@ where
     tokio::spawn(async move {
         let mut state = AiExtProcState {
             context,
+            _peer_identity: peer_identity,
             ..Default::default()
         };
         loop {
@@ -625,10 +634,9 @@ fn parse_ai_failover_chain(
 
 /// Resolve the peer's certificate-bound team identity and verify it matches a claimed team.
 ///
-/// Extracts the verified peer SPIFFE URI from `Request::peer_certs()` (with the `PeerSpiffe`
-/// test-extension fallback), invokes `resolver.resolve("team=<claimed>", peer_spiffe)`, and
-/// rejects when the resolved team differs from the claimed team. Returns the resolver-derived
-/// team — the authoritative tenant identity for all downstream scoping.
+/// Extracts the verified peer's exact leaf identity, invokes the resolver, and rejects when the
+/// resolved team differs from the claimed team. Returns the full resolver-derived identity so
+/// downstream stream state retains the exact certificate binding.
 ///
 /// The `mismatch_message` parameter lets each call site use a context-specific denial message
 /// that leaks no team identity (no oracle), matching `CertRegistryResolver`'s indistinct-failure
@@ -638,27 +646,18 @@ async fn authenticated_team<T>(
     resolver: &Arc<dyn TeamResolver>,
     claimed_team_id: TeamId,
     mismatch_message: &'static str,
-) -> Result<TeamId, Status> {
-    let peer_spiffe = request
-        .peer_certs()
-        .and_then(|certs| {
-            certs
-                .first()
-                .and_then(|der| crate::server::spiffe_uri_from_der(der.as_ref()))
-        })
-        .or_else(|| {
-            request
-                .extensions()
-                .get::<crate::server::PeerSpiffe>()
-                .map(|p| p.0.clone())
-        });
+) -> Result<PeerIdentity, Status> {
+    let peer_certificate = crate::server::presented_certificate_identity(request);
     let identity = resolver
-        .resolve(&format!("team={claimed_team_id}"), peer_spiffe.as_deref())
+        .resolve(
+            &format!("team={claimed_team_id}"),
+            peer_certificate.as_ref(),
+        )
         .await?;
     if identity.team_id != claimed_team_id {
         return Err(Status::permission_denied(mismatch_message));
     }
-    Ok(identity.team_id)
+    Ok(identity)
 }
 
 async fn capture_context<T>(
@@ -667,17 +666,19 @@ async fn capture_context<T>(
 ) -> Result<CaptureContext, Status> {
     let metadata = request.metadata();
     let claimed_team_id = TeamId::from(metadata_uuid(metadata, "x-flowplane-team-id")?);
-    let team_id = authenticated_team(
+    let peer_identity = authenticated_team(
         request,
         resolver,
         claimed_team_id,
         "capture team_id does not match the client certificate",
     )
     .await?;
+    let team_id = peer_identity.team_id;
     if let Some(session_id) = optional_metadata_uuid(metadata, "x-flowplane-discovery-session-id")?
     {
         return Ok(CaptureContext::Discovery(DiscoveryCaptureContext {
             team_id,
+            _peer_identity: peer_identity,
             session_id: DiscoverySessionId::from(session_id),
             listener_id: ListenerId::from(metadata_uuid(
                 metadata,
@@ -694,6 +695,7 @@ async fn capture_context<T>(
     }
     Ok(CaptureContext::Config(ConfigCaptureContext {
         team_id,
+        _peer_identity: peer_identity,
         session_id: CaptureSessionId::from(metadata_uuid(
             metadata,
             "x-flowplane-capture-session-id",
@@ -2316,7 +2318,7 @@ mod tests {
         async fn resolve(
             &self,
             _node_id: &str,
-            _peer_spiffe: Option<&str>,
+            _peer_certificate: Option<&crate::server::PresentedCertificateIdentity>,
         ) -> Result<PeerIdentity, Status> {
             Ok(PeerIdentity {
                 team_id: self.team_id,
@@ -2328,8 +2330,8 @@ mod tests {
 
     /// Build an AI ExtProc upstream-context streaming request: `x-flowplane-ai-processor: true`
     /// plus team/route-config/provider/backend-position metadata for `claimed_team_id`, over an
-    /// empty (no-message) request stream. `PeerSpiffe` in the request extensions represents the
-    /// certificate-bound identity the resolver sees.
+    /// empty (no-message) request stream. `PeerCertificateIdentity` in the request extensions
+    /// represents the certificate-bound identity the resolver sees.
     fn ai_process_request(
         claimed_team_id: TeamId,
         bound_team_id: TeamId,
@@ -2363,9 +2365,15 @@ mod tests {
         );
         request
             .extensions_mut()
-            .insert(crate::server::PeerSpiffe(format!(
-                "spiffe://flowplane.test/team/{bound_team_id}/proxy/dp-test"
-            )));
+            .insert(crate::server::PeerCertificateIdentity(
+                crate::server::PresentedCertificateIdentity {
+                    spiffe_uri: format!(
+                        "spiffe://flowplane.test/team/{bound_team_id}/proxy/dp-test"
+                    ),
+                    serial_number: "1".to_owned(),
+                    fingerprint_sha256: "0".repeat(64),
+                },
+            ));
         request
     }
 
@@ -4825,6 +4833,7 @@ mod tests {
                 backend_position: Some(0),
                 failover_chain: Vec::new(),
             }),
+            None,
         );
 
         // The 429 is received before any row read is attempted — the write is spawned
@@ -4954,6 +4963,7 @@ mod tests {
                 backend_position: Some(0),
                 failover_chain: Vec::new(),
             }),
+            None,
         );
 
         let response = rx.recv().await.expect("immediate response");
@@ -5212,6 +5222,7 @@ mod tests {
                     backend_position: Some(position),
                     failover_chain: Vec::new(),
                 }),
+                None,
             );
             let response = rx.recv().await.expect("immediate response");
             let processing_response::Response::ImmediateResponse(immediate) = response
@@ -5355,6 +5366,7 @@ mod tests {
                 backend_position: None,
                 failover_chain: Vec::new(),
             }),
+            None,
         );
         let listener_response = listener_rx
             .recv()
@@ -5859,6 +5871,7 @@ mod tests {
                 backend_position: None,
                 failover_chain: Vec::new(),
             }),
+            None,
         );
         while rx.recv().await.is_some() {}
         assert!(
@@ -5887,6 +5900,7 @@ mod tests {
                 backend_position: Some(0),
                 failover_chain: Vec::new(),
             }),
+            None,
         );
         while rx.recv().await.is_some() {}
 
@@ -6062,6 +6076,7 @@ mod tests {
                 backend_position: None,
                 failover_chain: Vec::new(),
             }),
+            None,
         );
         while rx.recv().await.is_some() {}
         assert!(
@@ -6084,6 +6099,7 @@ mod tests {
                 backend_position: Some(0),
                 failover_chain: Vec::new(),
             }),
+            None,
         );
         let response = rx.recv().await.expect("immediate response");
         assert!(matches!(

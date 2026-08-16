@@ -34,6 +34,28 @@ fn certificate_serial() -> String {
     uuid::Uuid::now_v7().simple().to_string()
 }
 
+struct TestLegacyPinner(sqlx::PgPool);
+
+#[fp_xds::async_trait]
+impl fp_xds::ads::LegacyCertificateFingerprintPinner for TestLegacyPinner {
+    async fn pin(
+        &self,
+        spiffe_uri: &str,
+        serial_number: &str,
+        fingerprint_sha256: &str,
+        request_id: RequestId,
+    ) -> fp_domain::DomainResult<fp_domain::ProxyCertificate> {
+        fp_core::services::dataplanes::pin_legacy_certificate_fingerprint(
+            &self.0,
+            spiffe_uri,
+            serial_number,
+            fingerprint_sha256,
+            request_id,
+        )
+        .await
+    }
+}
+
 /// Run openssl, panicking with its stderr on failure (test fixture only).
 fn openssl(dir: &Path, args: &[&str]) {
     let out = Command::new("openssl")
@@ -141,6 +163,15 @@ impl TestPki {
     /// CA-signed client certificate carrying `spiffe_uri` as a URI SAN. Returns the
     /// identity for the tonic client.
     fn client_identity(&self, name: &str, spiffe_uri: &str) -> Identity {
+        self.client_identity_with_serial(name, spiffe_uri, &certificate_serial())
+    }
+
+    fn client_identity_with_serial(
+        &self,
+        name: &str,
+        spiffe_uri: &str,
+        serial_number: &str,
+    ) -> Identity {
         std::fs::write(
             self.dir.join(format!("{name}-san.cnf")),
             format!("subjectAltName=URI:{spiffe_uri}\n"),
@@ -185,6 +216,8 @@ impl TestPki {
                 "-CAkey",
                 "ca.key",
                 "-CAcreateserial",
+                "-set_serial",
+                &format!("0x{serial_number}"),
                 "-out",
                 &format!("{name}.crt"),
                 "-days",
@@ -286,11 +319,12 @@ async fn start_server(
     let (revocations, _) = tokio::sync::broadcast::channel::<uuid::Uuid>(16);
     let tls = pki.tls_paths();
     let bus = revocations.clone();
+    let pinner = Arc::new(TestLegacyPinner(pool.clone()));
     tokio::spawn(async move {
         serve_mtls(
             addr,
             cache,
-            Arc::new(CertRegistryResolver::new(pool.clone())),
+            Arc::new(CertRegistryResolver::new(pool.clone(), pinner)),
             bus,
             pool,
             &tls,
@@ -396,7 +430,7 @@ async fn ai_ext_proc_mtls_binds_team_before_opening_stream() {
 
     let cache = SnapshotCache::new();
     let (addr, _revocations) = start_server(&pki, cache, w.pool.clone()).await;
-    let identity = pki.client_identity("ai-ext-proc", &spiffe);
+    let identity = pki.client_identity_with_serial("ai-ext-proc", &spiffe, &serial);
     let channel = tls_channel(&pki, addr, Some(identity))
         .await
         .expect("mTLS connect");
@@ -473,8 +507,8 @@ async fn registry_binds_team_and_revocation_kills_live_stream() {
     tx.commit().await.expect("commit certificate fixture");
 
     let (addr, revocations) = start_server(&pki, cache.clone(), w.pool.clone()).await;
-    let identity = pki.client_identity("dp-good", &spiffe);
-    let channel = tls_channel(&pki, addr, Some(identity))
+    let identity = pki.client_identity_with_serial("dp-good", &spiffe, &serial);
+    let channel = tls_channel(&pki, addr, Some(identity.clone()))
         .await
         .expect("mTLS connect");
     let mut client = AggregatedDiscoveryServiceClient::new(channel);
@@ -543,7 +577,6 @@ async fn registry_binds_team_and_revocation_kills_live_stream() {
     }
 
     // Reconnect with the same (now revoked) certificate: rejected at the registry.
-    let identity = pki.client_identity("dp-good-2", &spiffe);
     let channel = tls_channel(&pki, addr, Some(identity))
         .await
         .expect("TLS still succeeds; authz happens at the registry");

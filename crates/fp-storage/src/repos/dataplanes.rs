@@ -1,7 +1,7 @@
 //! Dataplane + proxy-certificate registry repository (S5.4).
 //!
-//! `find_active_certificate` is the xDS authentication primitive: full-SPIFFE-URI lookup
-//! with the revocation and expiry predicates in SQL. Anything that does not match an
+//! `find_active_certificate_exact` is the xDS authentication primitive: exact verified leaf
+//! identity lookup with revocation and expiry predicates in SQL. Anything that does not match an
 //! active row authenticates nothing — fail closed is the only mode.
 
 use fp_domain::authz::TeamRef;
@@ -323,21 +323,22 @@ pub async fn register_certificate(
     Ok(cert_from_row(&row))
 }
 
-/// The xDS authentication lookup: the certificate row for `spiffe_uri` that is neither
-/// revoked nor expired. The predicates live in SQL so there is no code path that can see
-/// (and mistakenly trust) an inactive row.
-pub async fn find_active_certificate(
+/// Resolve one active registry row by the exact verified leaf identity.
+pub async fn find_active_certificate_exact(
     pool: &PgPool,
     spiffe_uri: &str,
+    fingerprint_sha256: &str,
 ) -> DomainResult<Option<ProxyCertificate>> {
     let row = sqlx::query(&format!(
         "SELECT {CERT_COLUMNS} FROM proxy_certificates \
-         WHERE spiffe_uri = $1 AND revoked_at IS NULL AND expires_at > now()"
+         WHERE spiffe_uri = $1 AND fingerprint_sha256 = $2 \
+           AND revoked_at IS NULL AND expires_at > now()"
     ))
     .bind(spiffe_uri)
+    .bind(fingerprint_sha256)
     .fetch_optional(pool)
     .await
-    .map_err(|e| DomainError::internal(format!("certificate lookup: {e}")))?;
+    .map_err(|error| DomainError::internal(format!("exact certificate lookup: {error}")))?;
     Ok(row.as_ref().map(cert_from_row))
 }
 

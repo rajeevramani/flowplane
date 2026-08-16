@@ -6,21 +6,31 @@ use crate::ads::{AdsService, TeamResolver};
 use crate::capture::LearningCaptureService;
 use crate::diagnostics::DiagnosticsService;
 use crate::snapshot::SnapshotCache;
+use fp_domain::dataplane::canonical_certificate_serial;
 use fp_domain::{DomainError, DomainResult};
+use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// SPIFFE URI SAN of the connecting peer — test-only injection point; the real path
-/// extracts it from the TLS-verified client certificate.
-#[derive(Clone)]
-pub struct PeerSpiffe(pub String);
+/// Exact identity derived from the TLS-verified presented leaf certificate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PresentedCertificateIdentity {
+    pub spiffe_uri: String,
+    pub serial_number: String,
+    pub fingerprint_sha256: String,
+}
 
-/// Extract the first `spiffe://` URI SAN from a DER-encoded certificate. Returns `None`
-/// for unparseable certs or certs without one — the resolver then rejects the stream.
-pub fn spiffe_uri_from_der(der: &[u8]) -> Option<String> {
+/// Test-only injection point matching the full production leaf identity shape.
+#[derive(Clone)]
+pub struct PeerCertificateIdentity(pub PresentedCertificateIdentity);
+
+/// Derive the exact identity from one DER-encoded leaf. Ambiguous SPIFFE SANs fail closed.
+pub fn certificate_identity_from_der(der: &[u8]) -> Option<PresentedCertificateIdentity> {
     let (_, cert) = x509_parser::parse_x509_certificate(der).ok()?;
+    let mut spiffe_uri = None;
     for ext in cert.extensions() {
         if let x509_parser::extensions::ParsedExtension::SubjectAlternativeName(san) =
             ext.parsed_extension()
@@ -28,13 +38,43 @@ pub fn spiffe_uri_from_der(der: &[u8]) -> Option<String> {
             for name in &san.general_names {
                 if let x509_parser::extensions::GeneralName::URI(uri) = name {
                     if uri.starts_with("spiffe://") {
-                        return Some((*uri).to_string());
+                        if spiffe_uri.is_some() {
+                            return None;
+                        }
+                        spiffe_uri = Some((*uri).to_owned());
                     }
                 }
             }
         }
     }
-    None
+    let mut serial = String::with_capacity(cert.raw_serial().len() * 2);
+    for byte in cert.raw_serial() {
+        write!(&mut serial, "{byte:02x}").ok()?;
+    }
+    Some(PresentedCertificateIdentity {
+        spiffe_uri: spiffe_uri?,
+        serial_number: canonical_certificate_serial(&serial).ok()?,
+        fingerprint_sha256: format!("{:x}", Sha256::digest(der)),
+    })
+}
+
+/// Extract the real TLS leaf identity, with an exact-shape extension fallback for tests.
+pub fn presented_certificate_identity<T>(
+    request: &tonic::Request<T>,
+) -> Option<PresentedCertificateIdentity> {
+    request
+        .peer_certs()
+        .and_then(|certs| {
+            certs
+                .first()
+                .and_then(|der| certificate_identity_from_der(der.as_ref()))
+        })
+        .or_else(|| {
+            request
+                .extensions()
+                .get::<PeerCertificateIdentity>()
+                .map(|identity| identity.0.clone())
+        })
 }
 
 /// TLS material for the mandatory-mTLS xDS listener.

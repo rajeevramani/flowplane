@@ -216,22 +216,10 @@ impl EnvoyDiagnosticsService for DiagnosticsService {
         &self,
         request: Request<Streaming<DiagnosticsReport>>,
     ) -> Result<Response<Self::ReportDiagnosticsStream>, Status> {
-        let peer_spiffe = request
-            .peer_certs()
-            .and_then(|certs| {
-                certs
-                    .first()
-                    .and_then(|der| crate::server::spiffe_uri_from_der(der.as_ref()))
-            })
-            .or_else(|| {
-                request
-                    .extensions()
-                    .get::<crate::server::PeerSpiffe>()
-                    .map(|p| p.0.clone())
-            });
+        let peer_certificate = crate::server::presented_certificate_identity(&request);
         let identity = self
             .resolver
-            .resolve("diagnostics", peer_spiffe.as_deref())
+            .resolve("diagnostics", peer_certificate.as_ref())
             .await?;
         let Some(bound_dataplane_id) = identity.dataplane_id else {
             return Err(Status::unauthenticated(

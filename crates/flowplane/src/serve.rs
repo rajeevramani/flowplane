@@ -74,9 +74,7 @@ pub async fn run() -> anyhow::Result<()> {
     let pool = fp_storage::connect(&config.database_url, config.db_max_connections).await?;
     fp_storage::migrate(&pool).await?;
     tracing::info!("database connected and migrations applied");
-    // Slice fpv2-7f3.3 defines and composes the injection boundary; exact resolver use lands in
-    // fpv2-7f3.4 so runtime resolution remains unchanged in this safe intermediate.
-    let _legacy_certificate_pinner: Arc<dyn fp_xds::ads::LegacyCertificateFingerprintPinner> =
+    let legacy_certificate_pinner: Arc<dyn fp_xds::ads::LegacyCertificateFingerprintPinner> =
         Arc::new(CoreLegacyCertificateFingerprintPinner(pool.clone()));
 
     let validator: Option<std::sync::Arc<fp_core::OidcValidator>> = if config.dev_mode {
@@ -200,7 +198,10 @@ pub async fn run() -> anyhow::Result<()> {
             key_path: xds_tls.key_path.clone(),
             client_ca_path: xds_tls.client_ca_path.clone(),
         };
-        let resolver = std::sync::Arc::new(fp_xds::ads::CertRegistryResolver::new(pool.clone()));
+        let resolver = std::sync::Arc::new(fp_xds::ads::CertRegistryResolver::new(
+            pool.clone(),
+            legacy_certificate_pinner.clone(),
+        ));
         let revocations = revocation_tx.clone();
         let nack_pool = pool.clone();
         let shutdown = xds_shutdown_signal(&xds_shutdown_tx);
