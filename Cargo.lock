@@ -1031,6 +1031,7 @@ dependencies = [
  "fp-domain",
  "metrics",
  "rustls",
+ "serde",
  "serde_json",
  "sha2",
  "sqlx",

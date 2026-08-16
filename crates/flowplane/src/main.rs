@@ -169,6 +169,8 @@ enum Command {
 
 #[derive(Subcommand)]
 enum DbCommand {
+    /// Check credential-lifecycle migration blockers without changing the database.
+    Preflight,
     /// Apply pending migrations (forward-only) and exit.
     Migrate,
 }
@@ -216,6 +218,9 @@ fn run() -> anyhow::Result<()> {
         Command::Db {
             command: DbCommand::Migrate,
         } => runtime.block_on(serve::migrate_only()),
+        Command::Db {
+            command: DbCommand::Preflight,
+        } => runtime.block_on(serve::credential_preflight()),
         Command::Openapi => {
             let doc = fp_api::routes::openapi_document();
             println!(
@@ -700,6 +705,7 @@ mod tests {
             "dataplane get",
             "dataplane list",
             "db migrate",
+            "db preflight",
             "learn cancel",
             "learn discover generate-spec",
             "learn discover list",

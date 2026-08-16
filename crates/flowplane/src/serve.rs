@@ -570,6 +570,22 @@ pub async fn migrate_only() -> anyhow::Result<()> {
     Ok(())
 }
 
+pub async fn credential_preflight() -> anyhow::Result<()> {
+    let config = load_config()?;
+    let pool = fp_storage::connect(&config.database_url, 2).await?;
+    let report = fp_storage::credential_migration::preflight(&pool).await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report)
+            .map_err(|error| anyhow::anyhow!("serialize credential preflight: {error}"))?
+    );
+    if report.is_ready() {
+        Ok(())
+    } else {
+        anyhow::bail!("credential migration preflight found blockers")
+    }
+}
+
 /// Dev-mode startup: triple-gated (config flag + build feature + release ack), then seeds
 /// dev resources and boots the in-process issuer (spec/10 §4a).
 #[cfg(feature = "dev-oidc")]

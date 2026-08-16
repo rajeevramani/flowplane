@@ -58,6 +58,7 @@ const EXEMPT: &[&str] = &[
     "dashboard",               // long-running local presentation server (fpv2-03m), no envelope
     "completion",              // emits a shell completion script, not the envelope
     "db migrate",              // database migration runner
+    "db preflight",            // read-only local database upgrade guard
     "auth login",              // interactive OIDC browser/device flow
     "auth logout",             // clears local credentials
     "auth token",              // prints the raw bearer token to stdout

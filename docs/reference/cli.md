@@ -158,6 +158,7 @@ Database operations.
 
 | Subcommand | Purpose |
 |------------|---------|
+| `db preflight` | Read-only `3.1.3` lifecycle migration check. Emits stable blocker codes plus dataplane/certificate UUIDs; never certificate material. Exits nonzero when blocked. |
 | `db migrate` | Apply pending migrations (forward-only) and exit. |
 
 ### `openapi`

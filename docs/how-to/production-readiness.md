@@ -118,24 +118,83 @@ model has Flowplane operate the dataplane filesystem or co-locate multiple tenan
 
 ## Upgrade, Rollback, And Version Skew
 
-For the `3.1.1` split-node release path, run the control plane, CLI, `flowplane-agent`, and `flowplane-rls` from the same `3.1.1` artifact set. Short-lived skew during a rolling restart is acceptable for replacing one process at a time, but do not plan a long-lived mixed-version CP/agent/RLS deployment until a later compatibility policy says so.
+The `3.1.2` to `3.1.3` credential-lifecycle transition is stop-the-world for control-plane
+instances. Mixed-version or rolling control-plane operation is unsupported: every old control
+plane must stop before a `3.1.3` binary applies migrations. Keep the CLI, control plane,
+`flowplane-agent`, and `flowplane-rls` on one verified release artifact set.
 
 Upgrade:
 
-1. Back up PostgreSQL and active/retired secret-encryption keys.
-2. Download and verify the new release archive and image digests.
-3. Upgrade the control plane and run `flowplane db migrate`.
-4. Upgrade `flowplane-agent` and `flowplane-rls` on dataplane/RLS hosts.
-5. Regenerate dataplane bootstrap only when CP xDS host, port, mode, or cert paths changed.
-6. Verify `/healthz`, `/readyz`, `flowplane stats overview`, `flowplane ops xds status`, agent `/healthz`, and RLS `/healthz`/`/readyz`.
+1. Download and verify the complete `3.1.3` artifact set while `3.1.2` remains active.
+2. Run `flowplane db preflight`. A `blocked` report names only stable `FP_*` codes,
+   dataplane UUIDs, and certificate UUIDs; resolve every blocker before continuing.
+3. Stop **all** old control-plane instances and verify none can drain or migrate the database.
+4. Back up PostgreSQL plus active/retired secret-encryption keys, then verify the backup by
+   restoring it into an isolated database before migration.
+5. Start exactly one `3.1.3` control plane or run `flowplane db migrate`; wait for readiness.
+6. Verify an existing legacy dataplane reconnects through exact certificate binding before
+   reopening API/xDS traffic or adding replicas.
+7. Upgrade the CLI, `flowplane-agent`, and `flowplane-rls`; regenerate bootstrap only when CP xDS
+   host, port, mode, or certificate paths changed.
+8. Verify `/healthz`, `/readyz`, `flowplane stats overview`, `flowplane ops xds status`, agent
+   `/healthz`, and RLS `/healthz`/`/readyz`.
+
+Historical audit rows and outbox payloads keep their original serial text. Migration canonicalizes
+the live certificate registry only; correlate historical evidence by certificate UUID and
+request/event identity, not by textual serial equality.
 
 Rollback:
 
-1. Keep the prior release archive/image available before upgrading.
-2. If no database migration ran, roll back CP/agent/RLS binaries together and restart.
-3. If a database migration ran and rollback is required, restore the matching database backup and KEK material before starting the old CP.
-4. Existing dataplanes keep serving their last-applied Envoy config during a CP restart; new dataplanes cannot join until the CP is back.
-5. If xDS host, port, mode, or cert paths changed during the failed upgrade, regenerate bootstrap before reconnecting the dataplane.
+1. Keep the verified prior release archive/image and the pre-migration backup available.
+2. Before migration, roll back CP/agent/RLS binaries together normally.
+3. After migration, the prior binary rejects the database's newer sqlx migration and cannot be
+   used as a binary-only rollback.
+4. The pre-migration backup may be restored only while the upgraded system has accepted **no**
+   certificate issue/registration, legacy fingerprint pin, revocation, dataplane retirement, or
+   same-name recreation. Verify that condition before starting the old control plane.
+5. After the first such lifecycle write, recovery is roll-forward only. Restoring the old backup
+   could resurrect revoked credentials, un-retire identities, or erase replacement history. Do not
+   reopen API/xDS traffic from that backup without a separately approved incident plan that
+   re-establishes trust and every post-backup revocation.
+6. Existing dataplanes keep serving their last-applied Envoy config during a CP outage; new
+   dataplanes cannot join until the upgraded CP is ready.
+
+Before authorizing a pre-migration backup restore, run this read-only check against the upgraded
+database. **Any returned row means restore is forbidden and recovery is roll-forward-only.** The
+query emits action names and counts only; it does not expose certificate identity or material.
+
+```bash
+psql "$FLOWPLANE_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+WITH migration_cutoff AS (
+  SELECT installed_on
+  FROM _sqlx_migrations
+  WHERE version = 34
+), write_counts AS (
+  SELECT action, count(*) AS writes_after_migration
+  FROM audit_log, migration_cutoff
+  WHERE occurred_at >= migration_cutoff.installed_on
+    AND outcome = 'success'
+    AND action IN (
+      'dataplane.create',
+      'dataplane.retire',
+      'proxy-certificate.issue',
+      'proxy-certificate.register',
+      'proxy-certificate.revoke',
+      'proxy_certificate.fingerprint_pin'
+    )
+  GROUP BY action
+)
+SELECT action, writes_after_migration FROM write_counts
+UNION ALL
+SELECT 'FP_MIGRATION_0034_MISSING', 1
+WHERE NOT EXISTS (SELECT 1 FROM migration_cutoff)
+ORDER BY action;
+SQL
+```
+
+This is a necessary eligibility check, not proof that a restore is safe: also prove that API/xDS
+traffic stayed closed since migration and reconcile deployment/incident logs. Missing audit
+evidence or an uncertain traffic boundary requires roll-forward recovery.
 
 ## Issuer CA compatibility and upgrade
 
@@ -289,6 +348,10 @@ flowplane mcp status --team <team>
 ```
 
 Then reconnect one non-production dataplane and confirm ADS opens without NACK/quarantine alerts.
+
+For a `3.1.2` to `3.1.3` rollback rehearsal, this restore is eligible only before the upgraded
+system performs any credential/dataplane lifecycle write listed in the rollback section. After
+that cutoff, use roll-forward recovery instead.
 
 ## CLI Workflow
 

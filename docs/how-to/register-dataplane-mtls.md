@@ -75,7 +75,7 @@ The response (`IssuedProxyCertificateView`) contains:
 - `ca_certificate_pem` — the **issuer/trust CA** that signed the client cert above. This is the *client-cert chain* CA: it is what the control plane is configured to trust as its xDS `FLOWPLANE_XDS_TLS_CLIENT_CA` so it can verify the agent. It is **not** the agent's `--tls-ca-path` (see step 3).
 - `certificate.spiffe_uri` — the identity that binds this stream to the team/dataplane
 
-The SPIFFE identity is `spiffe://<trust-domain>/org/<org-id>/team/<team-id>/proxy/<dataplane-id>`, where `<trust-domain>` is `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN` (default `flowplane.local`). At runtime the control plane trusts the full registered SPIFFE URI as the binding key, not the path segments inside the cert.
+The SPIFFE identity is `spiffe://<trust-domain>/org/<org-id>/team/<team-id>/proxy/<dataplane-id>`, where `<trust-domain>` is `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN` (default `flowplane.local`). At runtime the control plane binds the verified leaf's SPIFFE URI **and SHA-256 fingerprint** to one exact active registry row. A different leaf with the same URI is rejected unless it is separately registered for bounded rotation overlap.
 
 Write the client cert and key to files the agent host can read:
 
@@ -103,7 +103,10 @@ echo "$CP_XDS_SERVER_CA_PEM" > /etc/flowplane/dp/server-ca.crt
 > }
 > ```
 >
-> The control plane verifies the chain against `FLOWPLANE_XDS_TLS_CLIENT_CA`, requires a client-auth leaf whose SPIFFE URI identifies that dataplane UUID, and derives serial, fingerprint, and validity from the leaf. It rejects caller-asserted identity metadata, untrusted or ambiguous chains, and registration when xDS client trust is not configured.
+> The control-plane verifies the chain against `FLOWPLANE_XDS_TLS_CLIENT_CA`, requires a client-auth leaf whose SPIFFE URI identifies that dataplane UUID, and derives serial, fingerprint, and validity from the leaf. It rejects caller-asserted identity metadata, untrusted or ambiguous chains, and registration when xDS client trust is not configured.
+
+> Rotation is issue/register replacement → connect and verify replacement health → revoke old.
+> Up to two unrevoked exact credentials may overlap for one dataplane. Do not revoke first.
 
 ## 3. Generate and run the Envoy bootstrap
 
@@ -195,6 +198,12 @@ flowplane ops xds status --team payments
 ```
 
 `dataplane get` (`GET /api/v1/teams/{team}/dataplanes/{name}`) shows `last_heartbeat_at` advancing once the agent is reporting; `stats overview` reflects the dataplane under `live_dataplanes`.
+
+To retire an identity without deleting its audit/certificate history, run
+`flowplane dataplane delete <name> --team <team> --reason <reason> --revision <revision> --yes`.
+Default get/list calls omit retired rows; authorized operators can inspect blockers with
+`flowplane dataplane list --team <team> --include-retired`. Reusing the retired name creates a new
+dataplane UUID and SPIFFE URI; credentials from the retired incarnation cannot authenticate it.
 
 ## Further reading
 
