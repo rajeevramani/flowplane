@@ -128,6 +128,18 @@ pub async fn list_dataplanes(
     offset: i64,
     request_id: RequestId,
 ) -> DomainResult<(Vec<Dataplane>, i64)> {
+    list_dataplanes_with_lifecycle(pool, ctx, team, limit, offset, false, request_id).await
+}
+
+pub async fn list_dataplanes_with_lifecycle(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    limit: i64,
+    offset: i64,
+    include_retired: bool,
+    request_id: RequestId,
+) -> DomainResult<(Vec<Dataplane>, i64)> {
     authorize(
         pool,
         ctx,
@@ -137,7 +149,7 @@ pub async fn list_dataplanes(
         request_id,
     )
     .await?;
-    dataplanes::list_dataplanes(pool, team.id, limit, offset).await
+    dataplanes::list_dataplanes_with_lifecycle(pool, team.id, limit, offset, include_retired).await
 }
 
 pub async fn list_certificates(

@@ -3,7 +3,7 @@
 
 use crate::error::{ApiError, ErrorBody};
 use crate::extract::ApiJson;
-use crate::resources::{resolve_team, revision_from, ListQuery, Page};
+use crate::resources::{resolve_team, revision_from, Page};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -68,6 +68,23 @@ pub struct CreateDataplaneBody {
 #[serde(deny_unknown_fields)]
 pub struct RetireDataplaneBody {
     pub reason: String,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct DataplaneListQuery {
+    /// Max items (default 50, cap 500).
+    #[serde(default = "default_list_limit")]
+    pub limit: i64,
+    /// Items to skip.
+    #[serde(default)]
+    pub offset: i64,
+    /// Include retired dataplanes retained for lifecycle history.
+    #[serde(default)]
+    pub include_retired: bool,
+}
+
+fn default_list_limit() -> i64 {
+    50
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -252,7 +269,7 @@ fn default_admin_port() -> u16 {
 
 #[utoipa::path(get, path = "/api/v1/teams/{team}/dataplanes",
     tag = "Dataplanes",
-    params(("team" = String, Path, description = "Team name or UUID"), ListQuery),
+    params(("team" = String, Path, description = "Team name or UUID"), DataplaneListQuery),
     responses(
         (status = 200, body = Page<DataplaneView>),
         (status = 401, body = ErrorBody),
@@ -261,13 +278,22 @@ fn default_admin_port() -> u16 {
 pub async fn list_dataplanes(
     State(state): State<AppState>,
     Path(team): Path<String>,
-    Query(query): Query<ListQuery>,
+    Query(query): Query<DataplaneListQuery>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
 ) -> Result<Json<Page<DataplaneView>>, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
-        svc::list_dataplanes(&state.pool, &ctx, team, query.limit, query.offset, rid).await
+        svc::list_dataplanes_with_lifecycle(
+            &state.pool,
+            &ctx,
+            team,
+            query.limit,
+            query.offset,
+            query.include_retired,
+            rid,
+        )
+        .await
     };
     let (items, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
     Ok(Json(Page {

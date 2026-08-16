@@ -955,9 +955,9 @@ async fn external_registration_verifies_chain_derives_metadata_and_fails_closed(
     }
     let retire_race_revocation_events: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM events WHERE event_type = 'proxy_certificate.revoked' \
-         AND payload->>'dataplane_id' = $1",
+         AND payload->>'spiffe_uri' = $1",
     )
-    .bind(retire_race_id.to_string())
+    .bind(&retire_race_spiffe_uri)
     .fetch_one(&pool)
     .await
     .expect("external register-retire scoped revocation evidence");

@@ -248,6 +248,9 @@ pub async fn create_dataplane(
             DomainError::conflict(format!("dataplane \"{name}\" already exists in this team"))
                 .with_hint("choose a different name")
         }
+        sqlx::Error::Database(db) if db.code().as_deref() == Some("23503") => {
+            DomainError::conflict("team no longer exists").with_hint("refresh the team and retry")
+        }
         _ => DomainError::internal(format!("create dataplane: {e}")),
     })?;
     Ok(dataplane_from_row(&row))
@@ -276,20 +279,33 @@ pub async fn list_dataplanes(
     limit: i64,
     offset: i64,
 ) -> DomainResult<(Vec<Dataplane>, i64)> {
+    list_dataplanes_with_lifecycle(pool, team_id, limit, offset, false).await
+}
+
+pub async fn list_dataplanes_with_lifecycle(
+    pool: &PgPool,
+    team_id: TeamId,
+    limit: i64,
+    offset: i64,
+    include_retired: bool,
+) -> DomainResult<(Vec<Dataplane>, i64)> {
     let rows = sqlx::query(&format!(
         "SELECT {DP_COLUMNS} FROM dataplanes \
-         WHERE team_id = $1 AND retired_at IS NULL ORDER BY name LIMIT $2 OFFSET $3"
+         WHERE team_id = $1 AND ($4 OR retired_at IS NULL) \
+         ORDER BY name, retired_at NULLS FIRST, created_at LIMIT $2 OFFSET $3"
     ))
     .bind(team_id.as_uuid())
     .bind(limit.clamp(1, 500))
     .bind(offset.max(0))
+    .bind(include_retired)
     .fetch_all(pool)
     .await
     .map_err(|e| DomainError::internal(format!("list dataplanes: {e}")))?;
     let total: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM dataplanes WHERE team_id = $1 AND retired_at IS NULL",
+        "SELECT count(*) FROM dataplanes WHERE team_id = $1 AND ($2 OR retired_at IS NULL)",
     )
     .bind(team_id.as_uuid())
+    .bind(include_retired)
     .fetch_one(pool)
     .await
     .map_err(|e| DomainError::internal(format!("count dataplanes: {e}")))?;

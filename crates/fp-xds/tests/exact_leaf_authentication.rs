@@ -1494,6 +1494,115 @@ async fn retirement_terminates_all_bound_mtls_streams_and_rejects_every_reconnec
     );
 }
 
+#[tokio::test]
+async fn retired_same_name_recreation_rejects_old_leaf_and_accepts_replacement_identity() {
+    let Some(world) = world().await else { return };
+    let pki = TestPki::new();
+    let old_spiffe = format!("spiffe://flowplane.test/dataplane/{}", world.dataplane_id);
+    let old_leaf = pki.issue_client("recreation-old", &old_spiffe, "f738");
+    let old_certificate_id = insert_registry_row(
+        &world,
+        &old_spiffe,
+        &old_leaf,
+        RegistryState::Exact(&old_leaf),
+    )
+    .await;
+
+    let user = identity::upsert_user_by_subject(
+        &world.pool,
+        &unique("recreation-mtls-operator"),
+        "recreation-mtls@test.invalid",
+        "Recreation mTLS Operator",
+    )
+    .await
+    .expect("recreation operator");
+    identity::add_org_membership(&world.pool, user, OrgId::from(world.org_id), OrgRole::Admin)
+        .await
+        .expect("recreation operator membership");
+    let ctx = PrincipalCtx::User {
+        user_id: user,
+        platform_admin: false,
+        org_selector_required: false,
+        org: Some((OrgId::from(world.org_id), OrgRole::Admin)),
+        grants: GrantSet::default(),
+    };
+    let revision: i64 = sqlx::query_scalar("SELECT version FROM dataplanes WHERE id = $1")
+        .bind(world.dataplane_id)
+        .fetch_one(&world.pool)
+        .await
+        .expect("old dataplane revision");
+    retire_for_mtls(&world, &ctx, revision, RequestId::generate())
+        .await
+        .expect("retire old incarnation through public service");
+
+    let team = TeamRef {
+        id: TeamId::from(world.team_id),
+        org_id: OrgId::from(world.org_id),
+    };
+    let replacement = fp_core::services::dataplanes::create_dataplane(
+        &world.pool,
+        &ctx,
+        team,
+        &world.dataplane_name,
+        "same-name replacement",
+        RequestId::generate(),
+    )
+    .await
+    .expect("same-name recreation through public service");
+    let replacement_id = replacement.id.as_uuid();
+    assert_ne!(replacement_id, world.dataplane_id);
+    let replacement_spiffe = format!("spiffe://flowplane.test/dataplane/{replacement_id}");
+    assert_ne!(replacement_spiffe, old_spiffe);
+    let replacement_leaf = pki.issue_client("recreation-new", &replacement_spiffe, "f739");
+    let replacement_world = World {
+        pool: world.pool.clone(),
+        org_id: world.org_id,
+        team_id: world.team_id,
+        dataplane_id: replacement_id,
+        dataplane_name: world.dataplane_name.clone(),
+    };
+    insert_registry_row(
+        &replacement_world,
+        &replacement_spiffe,
+        &replacement_leaf,
+        RegistryState::Exact(&replacement_leaf),
+    )
+    .await;
+
+    let old_history: (uuid::Uuid, bool) = sqlx::query_as(
+        "SELECT dataplane_id, revoked_at IS NOT NULL FROM proxy_certificates WHERE id = $1",
+    )
+    .bind(old_certificate_id)
+    .fetch_one(&world.pool)
+    .await
+    .expect("old exact credential history");
+    assert_eq!(old_history, (world.dataplane_id, true));
+
+    let server = start_server(&pki, world.pool.clone(), world.pool.clone()).await;
+    let old_status = bounded_service_result(
+        channel(&pki, server.addr, &old_leaf)
+            .await
+            .expect("old leaf remains trusted by TLS"),
+        Service::Ads,
+        world.team_id,
+        world.dataplane_id,
+    )
+    .await
+    .expect_err("old exact leaf cannot authenticate replacement");
+    assert_eq!(old_status.code(), tonic::Code::Unauthenticated);
+
+    bounded_service_result(
+        channel(&pki, server.addr, &replacement_leaf)
+            .await
+            .expect("replacement leaf TLS"),
+        Service::Ads,
+        world.team_id,
+        replacement_id,
+    )
+    .await
+    .expect("replacement exact identity authenticates");
+}
+
 #[derive(Clone)]
 struct InjectedIdentityResolver {
     identity: PeerIdentity,

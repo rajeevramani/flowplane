@@ -1092,6 +1092,9 @@ pub enum DataplaneCommand {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
         team: Option<String>,
+        /// Include retired dataplanes retained for lifecycle history.
+        #[arg(long)]
+        include_retired: bool,
     },
     /// Show one dataplane.
     Get {

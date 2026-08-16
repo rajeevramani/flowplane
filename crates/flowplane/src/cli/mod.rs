@@ -2094,15 +2094,17 @@ pub async fn run_dataplane(global: GlobalOptions, command: DataplaneCommand) -> 
     let dry_run_global = global.clone();
     let client = RestClient::new(global)?;
     match command {
-        DataplaneCommand::List { team } => {
+        DataplaneCommand::List {
+            team,
+            include_retired,
+        } => {
             let team = client.team(team)?;
-            client
-                .request(
-                    reqwest::Method::GET,
-                    &format!("/api/v1/teams/{team}/dataplanes"),
-                    None,
-                )
-                .await?
+            let path = if include_retired {
+                format!("/api/v1/teams/{team}/dataplanes?include_retired=true")
+            } else {
+                format!("/api/v1/teams/{team}/dataplanes")
+            };
+            client.request(reqwest::Method::GET, &path, None).await?
         }
         DataplaneCommand::Get { team, name } => {
             let team = client.team(team)?;
