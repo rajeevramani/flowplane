@@ -13,10 +13,15 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use openssl::asn1::Asn1Time;
 use openssl::bn::BigNum;
 use openssl::hash::MessageDigest;
-use openssl::pkey::PKey;
+use openssl::pkey::{PKey, Private};
 use openssl::rsa::Rsa;
-use openssl::x509::extension::{BasicConstraints, KeyUsage};
-use openssl::x509::X509NameBuilder;
+use openssl::stack::Stack;
+use openssl::x509::extension::{
+    AuthorityKeyIdentifier, BasicConstraints, KeyUsage, SubjectKeyIdentifier,
+};
+use openssl::x509::store::X509StoreBuilder;
+use openssl::x509::verify::X509VerifyFlags;
+use openssl::x509::{X509NameBuilder, X509PurposeId, X509StoreContext, X509};
 use std::path::PathBuf;
 use tower::ServiceExt;
 
@@ -37,11 +42,8 @@ async fn json_of(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
 }
 
-fn write_test_ca(prefix: &str) -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("flowplane-test-ca-{}", unique(prefix)));
-    std::fs::create_dir_all(&dir).expect("ca dir");
-    let ca_key = PKey::from_rsa(Rsa::generate(2048).expect("rsa")).expect("pkey");
-    let mut builder = openssl::x509::X509::builder().expect("x509");
+fn build_test_ca(ca_key: &PKey<Private>, issuer_for_key_id: Option<&X509>) -> X509 {
+    let mut builder = X509::builder().expect("x509");
     builder.set_version(2).expect("version");
     let serial = BigNum::from_u32(1)
         .and_then(|n| n.to_asn1_integer())
@@ -53,7 +55,7 @@ fn write_test_ca(prefix: &str) -> (PathBuf, PathBuf) {
     let name = name.build();
     builder.set_subject_name(&name).expect("subject");
     builder.set_issuer_name(&name).expect("issuer");
-    builder.set_pubkey(&ca_key).expect("pubkey");
+    builder.set_pubkey(ca_key).expect("pubkey");
     let not_before = Asn1Time::days_from_now(0).expect("not before");
     let not_after = Asn1Time::days_from_now(1).expect("not after");
     builder.set_not_before(&not_before).expect("not before");
@@ -70,24 +72,96 @@ fn write_test_ca(prefix: &str) -> (PathBuf, PathBuf) {
     builder
         .append_extension(
             KeyUsage::new()
+                .critical()
                 .key_cert_sign()
                 .crl_sign()
                 .build()
                 .expect("key usage"),
         )
         .expect("key usage");
+    let subject_key_identifier = {
+        let context = builder.x509v3_context(None, None);
+        SubjectKeyIdentifier::new()
+            .build(&context)
+            .expect("subject key identifier")
+    };
     builder
-        .sign(&ca_key, MessageDigest::sha256())
-        .expect("sign");
+        .append_extension(subject_key_identifier)
+        .expect("subject key identifier");
+    if let Some(issuer) = issuer_for_key_id {
+        let authority_key_identifier = {
+            let context = builder.x509v3_context(Some(issuer), None);
+            AuthorityKeyIdentifier::new()
+                .keyid(true)
+                .build(&context)
+                .expect("authority key identifier")
+        };
+        builder
+            .append_extension(authority_key_identifier)
+            .expect("authority key identifier");
+    }
+    builder.sign(ca_key, MessageDigest::sha256()).expect("sign");
+    builder.build()
+}
+
+fn write_test_ca(prefix: &str) -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("flowplane-test-ca-{}", unique(prefix)));
+    std::fs::create_dir_all(&dir).expect("ca dir");
+    let ca_key = PKey::from_rsa(Rsa::generate(2048).expect("rsa")).expect("pkey");
+    let issuer_template = build_test_ca(&ca_key, None);
+    let ca_cert = build_test_ca(&ca_key, Some(&issuer_template));
     let ca_cert_path = dir.join("ca.crt");
     let ca_key_path = dir.join("ca.key");
-    std::fs::write(&ca_cert_path, builder.build().to_pem().expect("ca pem")).expect("write cert");
+    std::fs::write(&ca_cert_path, ca_cert.to_pem().expect("ca pem")).expect("write cert");
     std::fs::write(
         &ca_key_path,
         ca_key.private_key_to_pem_pkcs8().expect("key pem"),
     )
     .expect("write key");
     (ca_cert_path, ca_key_path)
+}
+
+fn assert_strict_client_leaf(certificate_pem: &str, ca_certificate_pem: &str) {
+    let leaf = X509::from_pem(certificate_pem.as_bytes()).expect("issued certificate PEM");
+    let ca = X509::from_pem(ca_certificate_pem.as_bytes()).expect("issuer certificate PEM");
+
+    let subject_key_id = leaf
+        .subject_key_id()
+        .expect("issued leaf must contain Subject Key Identifier");
+    assert!(
+        !subject_key_id.as_slice().is_empty(),
+        "issued leaf Subject Key Identifier must not be empty"
+    );
+    let authority_key_id = leaf
+        .authority_key_id()
+        .expect("issued leaf must contain key-identifier Authority Key Identifier");
+    let issuer_subject_key_id = ca
+        .subject_key_id()
+        .expect("configured issuer must contain Subject Key Identifier");
+    assert_eq!(
+        authority_key_id.as_slice(),
+        issuer_subject_key_id.as_slice(),
+        "issued leaf Authority Key Identifier must identify the configured issuer key"
+    );
+
+    let mut store = X509StoreBuilder::new().expect("certificate store");
+    store
+        .set_flags(X509VerifyFlags::X509_STRICT | X509VerifyFlags::PARTIAL_CHAIN)
+        .expect("strict partial-chain verification flags");
+    store
+        .set_purpose(X509PurposeId::SSL_CLIENT)
+        .expect("SSL client verification purpose");
+    store.add_cert(ca).expect("configured issuer trust anchor");
+    let store = store.build();
+    let chain = Stack::new().expect("empty untrusted chain");
+    let mut context = X509StoreContext::new().expect("verification context");
+    let verified = context
+        .init(&store, &leaf, &chain, |context| context.verify_cert())
+        .expect("strict SSL-client verification must execute");
+    assert!(
+        verified,
+        "issued leaf must pass OpenSSL X509_STRICT + PARTIAL_CHAIN verification for SSL_CLIENT"
+    );
 }
 
 #[test]
@@ -99,7 +173,7 @@ fn openapi_document_covers_every_registered_operation() {
     for item in paths.values() {
         operations += item.as_object().map(|o| o.len()).unwrap_or(0);
     }
-    // whoami + 3 resources x 5 + 9 team/member/grant + 6 agent + 7 org + 4 dataplane
+    // whoami + 3 resources x 5 + 9 team/member/grant + 6 agent + 7 org + 5 dataplane
     // + 4 proxy-certificate + 3 ops/xds diagnostics operations.
     // + 4 secrets operations + 2 dataplane/stats telemetry operations.
     // + 16 API lifecycle/MCP tool operations + 6 learning-session operations.
@@ -114,8 +188,8 @@ fn openapi_document_covers_every_registered_operation() {
     // Updating this pin is a deliberate speed bump when the surface changes: the doc IS
     // the contract.
     assert_eq!(
-        operations, 120,
-        "expected 120 documented operations, got {operations}"
+        operations, 121,
+        "expected 121 documented operations, got {operations}"
     );
     assert!(json["components"]["securitySchemes"]["bearerAuth"].is_object());
     let schemas = json["components"]["schemas"].as_object().expect("schemas");
@@ -1166,8 +1240,9 @@ async fn proxy_certificate_registry_flow_over_http() {
         ))
         .await
         .expect("issue cert");
-    assert_eq!(response.status(), StatusCode::CREATED);
+    let status = response.status();
     let body = json_of(response).await;
+    assert_eq!(status, StatusCode::CREATED, "issue response: {body}");
     let issued_serial = body["certificate"]["serial_number"]
         .as_str()
         .expect("issued serial")
@@ -1181,42 +1256,28 @@ async fn proxy_certificate_registry_flow_over_http() {
             body["certificate"]["dataplane_id"].as_str().expect("dp id")
         )
     );
-    assert!(body["certificate_pem"]
-        .as_str()
-        .expect("cert pem")
-        .contains("BEGIN CERTIFICATE"));
+    let certificate_pem = body["certificate_pem"].as_str().expect("cert pem");
+    assert!(certificate_pem.contains("BEGIN CERTIFICATE"));
+    let leaf = X509::from_pem(certificate_pem.as_bytes()).expect("issued leaf PEM");
+    let expected_fingerprint = openssl::hash::hash(
+        MessageDigest::sha256(),
+        &leaf.to_der().expect("issued leaf DER"),
+    )
+    .expect("issued leaf SHA-256")
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect::<String>();
+    assert_eq!(
+        body["certificate"]["fingerprint_sha256"], expected_fingerprint,
+        "REST metadata must bind the exact issued leaf"
+    );
     assert!(body["private_key_pem"]
         .as_str()
         .expect("key pem")
         .contains("BEGIN PRIVATE KEY"));
-    assert!(body["ca_certificate_pem"]
-        .as_str()
-        .expect("ca pem")
-        .contains("BEGIN CERTIFICATE"));
-
-    let serial = unique("serial");
-    let spiffe = format!(
-        "spiffe://flowplane.test/org/{}/team/{}/proxy/{}",
-        org.name, team.name, dataplane
-    );
-    let response = app
-        .clone()
-        .oneshot(request(
-            "POST",
-            &certs,
-            Some(serde_json::json!({
-                "dataplane": dataplane,
-                "spiffe_uri": spiffe,
-                "serial_number": serial,
-                "expires_at": "2099-01-01T00:00:00Z"
-            })),
-        ))
-        .await
-        .expect("register cert");
-    assert_eq!(response.status(), StatusCode::CREATED);
-    let body = json_of(response).await;
-    assert_eq!(body["serial_number"], serial);
-    assert!(body["revoked_at"].is_null());
+    let ca_certificate_pem = body["ca_certificate_pem"].as_str().expect("ca pem");
+    assert!(ca_certificate_pem.contains("BEGIN CERTIFICATE"));
+    assert_strict_client_leaf(certificate_pem, ca_certificate_pem);
 
     let response = app
         .clone()
@@ -1229,14 +1290,9 @@ async fn proxy_certificate_registry_flow_over_http() {
         .as_array()
         .expect("cert list")
         .iter()
-        .any(|cert| cert["serial_number"] == serial));
-    assert!(body
-        .as_array()
-        .expect("cert list")
-        .iter()
         .any(|cert| cert["serial_number"] == issued_serial));
 
-    let revoke = format!("{certs}/{serial}/revoke");
+    let revoke = format!("{certs}/{issued_serial}/revoke");
     let response = app
         .clone()
         .oneshot(request(
@@ -1261,6 +1317,257 @@ async fn proxy_certificate_registry_flow_over_http() {
         .expect("double revoke");
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(json_of(response).await["code"], "conflict");
+}
+
+#[tokio::test]
+// RED for fpv2-7f3.6: exclude this exact test from earlier slice workspace gates.
+async fn proxy_certificate_rotation_allows_overlap_before_revoking_old() {
+    let Ok(url) = std::env::var("FLOWPLANE_TEST_DATABASE_URL") else {
+        eprintln!("skipping: FLOWPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let pool = fp_storage::connect(&url, 4).await.expect("connect");
+    fp_storage::migrate(&pool).await.expect("migrate");
+
+    let issuer = DevIssuer::generate().expect("issuer");
+    let validator = fp_core::OidcValidator::new(issuer.oidc_config());
+    validator
+        .load_jwks_json(issuer.jwks_json())
+        .await
+        .expect("jwks");
+    let subject = unique("sub");
+    let token = issuer
+        .mint(&subject, "rotation-http@test", "Rotation HTTP", 600)
+        .expect("mint");
+    let org = identity::create_org(&pool, &unique("org"), "")
+        .await
+        .expect("org");
+    let team = identity::create_team(&pool, org.id, &unique("team"), "")
+        .await
+        .expect("team");
+    let user =
+        identity::upsert_user_by_subject(&pool, &subject, "rotation-http@test", "Rotation HTTP")
+            .await
+            .expect("user");
+    identity::add_org_membership(&pool, user, org.id, OrgRole::Admin)
+        .await
+        .expect("member");
+
+    let app = fp_api::build_router(fp_api::AppState {
+        pool: pool.clone(),
+        prometheus: PrometheusBuilder::new().build_recorder().handle(),
+        version: "test",
+        validator: Some(std::sync::Arc::new(validator)),
+        write_throttle: std::sync::Arc::new(fp_api::throttle::WriteThrottle::new(1000)),
+        xds_readiness: None,
+        xds_degraded: None,
+        discovery_forwarding_policy: Default::default(),
+        egress_advisory: Default::default(),
+        rls_repush: None,
+        rls_grpc_configured: false,
+    });
+    let request = |method: &str, path: &str, body: Option<serde_json::Value>| {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("authorization", format!("Bearer {token}"));
+        if body.is_some() {
+            builder = builder.header("content-type", "application/json");
+        }
+        builder
+            .body(match body {
+                Some(json) => Body::from(json.to_string()),
+                None => Body::empty(),
+            })
+            .expect("request")
+    };
+    let dataplane = unique("dp");
+    let dataplanes = format!("/api/v1/teams/{}/dataplanes", team.name);
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &dataplanes,
+            Some(serde_json::json!({"name": dataplane, "description": "edge"})),
+        ))
+        .await
+        .expect("create dataplane");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let (ca_cert_path, ca_key_path) = write_test_ca("rotation");
+    std::env::set_var("FLOWPLANE_CERT_ISSUER_CA_CERT_PATH", &ca_cert_path);
+    std::env::set_var("FLOWPLANE_CERT_ISSUER_CA_KEY_PATH", &ca_key_path);
+    let certs = format!("/api/v1/teams/{}/proxy-certificates", team.name);
+    let issue_body = || serde_json::json!({"dataplane": dataplane, "ttl_hours": 1});
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{certs}/issue"),
+            Some(issue_body()),
+        ))
+        .await
+        .expect("issue initial certificate");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let initial = json_of(response).await;
+    let initial_serial = initial["certificate"]["serial_number"]
+        .as_str()
+        .expect("initial serial")
+        .to_owned();
+
+    // Expiry is not an implicit lifecycle transition: the old row remains unrevoked and must
+    // continue to consume one of the two overlap slots.
+    sqlx::query(
+        "UPDATE proxy_certificates SET expires_at = now() - interval '1 second' \
+         WHERE team_id = $1 AND serial_number = $2",
+    )
+    .bind(team.id.as_uuid())
+    .bind(&initial_serial)
+    .execute(&pool)
+    .await
+    .expect("expire initial credential without revoking it");
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{certs}/issue"),
+            Some(issue_body()),
+        ))
+        .await
+        .expect("issue overlapping replacement");
+    let status = response.status();
+    let replacement = json_of(response).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "overlapping replacement response: {replacement}"
+    );
+    let replacement_serial = replacement["certificate"]["serial_number"]
+        .as_str()
+        .expect("replacement serial")
+        .to_owned();
+    assert_ne!(replacement_serial, initial_serial);
+    assert_strict_client_leaf(
+        replacement["certificate_pem"]
+            .as_str()
+            .expect("replacement certificate PEM"),
+        replacement["ca_certificate_pem"]
+            .as_str()
+            .expect("replacement CA PEM"),
+    );
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{certs}/issue"),
+            Some(issue_body()),
+        ))
+        .await
+        .expect("reject third unrevoked credential");
+    let third_status = response.status();
+    let third_body = json_of(response).await;
+    assert_eq!(
+        third_status,
+        StatusCode::CONFLICT,
+        "expired-but-unrevoked old credential must still consume capacity: {third_body}"
+    );
+    assert_eq!(
+        third_body["code"], "conflict",
+        "overlap-cap errors must map stably"
+    );
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{certs}/{initial_serial}/revoke"),
+            Some(serde_json::json!({"reason": "rotation"})),
+        ))
+        .await
+        .expect("revoke old certificate after replacement");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{certs}/issue"),
+            Some(issue_body()),
+        ))
+        .await
+        .expect("issue after explicit revocation restores capacity");
+    let restored_status = response.status();
+    let restored = json_of(response).await;
+    assert_eq!(
+        restored_status,
+        StatusCode::CREATED,
+        "explicit revoke must restore one overlap slot: {restored}"
+    );
+    assert_strict_client_leaf(
+        restored["certificate_pem"]
+            .as_str()
+            .expect("restored-capacity certificate PEM"),
+        restored["ca_certificate_pem"]
+            .as_str()
+            .expect("restored-capacity CA PEM"),
+    );
+
+    // A distinct dataplane provides a parallel-safe product-issue race: after one active row,
+    // exactly one of two simultaneous replacements may claim the final slot.
+    let race_dataplane = unique("race-dp");
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &dataplanes,
+            Some(serde_json::json!({
+                "name": race_dataplane,
+                "description": "concurrent overlap fixture"
+            })),
+        ))
+        .await
+        .expect("create race dataplane");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let race_body = || serde_json::json!({"dataplane": race_dataplane, "ttl_hours": 1});
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{certs}/issue"),
+            Some(race_body()),
+        ))
+        .await
+        .expect("issue race baseline");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let issue_path = format!("{certs}/issue");
+    let (left, right) = tokio::join!(
+        app.clone()
+            .oneshot(request("POST", &issue_path, Some(race_body()))),
+        app.clone()
+            .oneshot(request("POST", &issue_path, Some(race_body())))
+    );
+    let left = left.expect("left concurrent issue");
+    let right = right.expect("right concurrent issue");
+    let statuses = [left.status(), right.status()];
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::CREATED)
+            .count(),
+        1,
+        "exactly one concurrent replacement may claim the second slot: {statuses:?}"
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::CONFLICT)
+            .count(),
+        1,
+        "the losing concurrent issue must map stably to conflict: {statuses:?}"
+    );
 }
 
 #[tokio::test]

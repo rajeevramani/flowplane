@@ -2,6 +2,7 @@
 
 mod cli;
 mod paths;
+mod qualification;
 mod serve;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
@@ -40,6 +41,11 @@ enum Command {
     },
     /// Print the OpenAPI document this binary serves (the exact API contract).
     Openapi,
+    /// Build, validate, and redact production-qualification evidence contracts.
+    Qualification {
+        #[command(subcommand)]
+        command: qualification::QualificationCommand,
+    },
     /// Client auth helpers.
     Auth {
         #[command(subcommand)]
@@ -163,6 +169,8 @@ enum Command {
 
 #[derive(Subcommand)]
 enum DbCommand {
+    /// Check credential-lifecycle migration blockers without changing the database.
+    Preflight,
     /// Apply pending migrations (forward-only) and exit.
     Migrate,
 }
@@ -210,6 +218,9 @@ fn run() -> anyhow::Result<()> {
         Command::Db {
             command: DbCommand::Migrate,
         } => runtime.block_on(serve::migrate_only()),
+        Command::Db {
+            command: DbCommand::Preflight,
+        } => runtime.block_on(serve::credential_preflight()),
         Command::Openapi => {
             let doc = fp_api::routes::openapi_document();
             println!(
@@ -219,6 +230,7 @@ fn run() -> anyhow::Result<()> {
             );
             Ok(())
         }
+        Command::Qualification { command } => qualification::run(command),
         Command::Auth { command } => runtime.block_on(cli::run_auth(
             cli.client,
             command,
@@ -601,7 +613,7 @@ mod tests {
         // from `--help`. The union guard forces every FUTURE leaf to be classified one way or the
         // other. Pure in-process (no temp dir / network) so it is inherently parallel-safe.
 
-        // 51 SPINE leaves (space-joined paths) — each must expose a parseable example.
+        // 52 SPINE leaves (space-joined paths) — each must expose a parseable example.
         const SPINE: &[&str] = &[
             "auth login",
             "config set-context",
@@ -646,6 +658,7 @@ mod tests {
             "secret create",
             "secret rotate",
             "dataplane create",
+            "dataplane delete",
             "dataplane telemetry",
             "dataplane bootstrap",
             "dataplane cert register",
@@ -656,7 +669,7 @@ mod tests {
             "apply",
         ];
 
-        // 82 EXEMPT leaves (space-joined paths) — no example required.
+        // 85 EXEMPT leaves (space-joined paths) — no example required.
         const EXEMPT: &[&str] = &[
             "agent grants",
             "agent list",
@@ -692,6 +705,7 @@ mod tests {
             "dataplane get",
             "dataplane list",
             "db migrate",
+            "db preflight",
             "learn cancel",
             "learn discover generate-spec",
             "learn discover list",
@@ -708,6 +722,9 @@ mod tests {
             "mcp status",
             "mcp tools",
             "openapi",
+            "qualification assemble",
+            "qualification inventory",
+            "qualification validate",
             "ops trace",
             "ops xds nacks",
             "ops xds status",

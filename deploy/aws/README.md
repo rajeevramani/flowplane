@@ -88,6 +88,15 @@ cert_issuer_ca_cert_secret_arn   = "arn:aws:secretsmanager:..."
 cert_issuer_ca_key_secret_arn    = "arn:aws:secretsmanager:..."
 ```
 
+The issuer certificate stored by `cert_issuer_ca_cert_secret_arn` must be currently valid, match
+the private key stored by `cert_issuer_ca_key_secret_arn`, contain `CA:TRUE`, `keyCertSign`, and a
+Subject Key Identifier, and allow `clientAuth`. A standards-complete intermediate is supported as
+the explicit trust anchor. Before upgrading incomplete material, follow the
+[issuer CA compatibility and upgrade](../../docs/how-to/production-readiness.md#issuer-ca-compatibility-and-upgrade)
+procedure: update every public-CA secret and verifier first, then restart consumers, then reissue
+leaves. Reissuing a CA certificate with the same key is not a CA-key rotation, and upgrading
+Flowplane does not automatically replace running sessions or trust material.
+
 Set OIDC values from your identity provider. These are operator-provided deployment inputs, not
 repo-local files:
 

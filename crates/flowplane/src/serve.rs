@@ -36,6 +36,29 @@ impl fp_api::state::XdsDegradedSource for SnapshotDegradedSource {
     }
 }
 
+/// Composition-root adapter from fp-xds's injected pin boundary to the fp-core transaction.
+struct CoreLegacyCertificateFingerprintPinner(sqlx::PgPool);
+
+#[fp_xds::async_trait]
+impl fp_xds::ads::LegacyCertificateFingerprintPinner for CoreLegacyCertificateFingerprintPinner {
+    async fn pin(
+        &self,
+        spiffe_uri: &str,
+        serial_number: &str,
+        fingerprint_sha256: &str,
+        request_id: fp_domain::RequestId,
+    ) -> fp_domain::DomainResult<fp_domain::ProxyCertificate> {
+        fp_core::services::dataplanes::pin_legacy_certificate_fingerprint(
+            &self.0,
+            spiffe_uri,
+            serial_number,
+            fingerprint_sha256,
+            request_id,
+        )
+        .await
+    }
+}
+
 pub async fn run() -> anyhow::Result<()> {
     let config = load_config()?;
     let otel_provider = init_tracing(&config)?;
@@ -51,6 +74,8 @@ pub async fn run() -> anyhow::Result<()> {
     let pool = fp_storage::connect(&config.database_url, config.db_max_connections).await?;
     fp_storage::migrate(&pool).await?;
     tracing::info!("database connected and migrations applied");
+    let legacy_certificate_pinner: Arc<dyn fp_xds::ads::LegacyCertificateFingerprintPinner> =
+        Arc::new(CoreLegacyCertificateFingerprintPinner(pool.clone()));
 
     let validator: Option<std::sync::Arc<fp_core::OidcValidator>> = if config.dev_mode {
         Some(setup_dev_mode(&pool, config.dev_token_path.as_deref()).await?)
@@ -173,7 +198,10 @@ pub async fn run() -> anyhow::Result<()> {
             key_path: xds_tls.key_path.clone(),
             client_ca_path: xds_tls.client_ca_path.clone(),
         };
-        let resolver = std::sync::Arc::new(fp_xds::ads::CertRegistryResolver::new(pool.clone()));
+        let resolver = std::sync::Arc::new(fp_xds::ads::CertRegistryResolver::new(
+            pool.clone(),
+            legacy_certificate_pinner.clone(),
+        ));
         let revocations = revocation_tx.clone();
         let nack_pool = pool.clone();
         let shutdown = xds_shutdown_signal(&xds_shutdown_tx);
@@ -291,7 +319,13 @@ pub async fn run() -> anyhow::Result<()> {
         rls_repush,
         rls_grpc_configured: config.rls_grpc_url.is_some(),
     };
-    let router = fp_api::build_router(state);
+    let router = fp_api::build_router_with_xds_client_ca(
+        state,
+        config
+            .xds_tls
+            .as_ref()
+            .map(|tls| tls.client_ca_path.as_path()),
+    );
 
     tracing::info!(addr = %config.api_addr, tls = config.api_tls.is_some(), "API listener starting");
 
@@ -534,6 +568,22 @@ pub async fn migrate_only() -> anyhow::Result<()> {
     fp_storage::migrate(&pool).await?;
     tracing::info!("migrations applied");
     Ok(())
+}
+
+pub async fn credential_preflight() -> anyhow::Result<()> {
+    let config = load_config()?;
+    let pool = fp_storage::connect(&config.database_url, 2).await?;
+    let report = fp_storage::credential_migration::preflight(&pool).await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report)
+            .map_err(|error| anyhow::anyhow!("serialize credential preflight: {error}"))?
+    );
+    if report.is_ready() {
+        Ok(())
+    } else {
+        anyhow::bail!("credential migration preflight found blockers")
+    }
 }
 
 /// Dev-mode startup: triple-gated (config flag + build feature + release ack), then seeds

@@ -306,7 +306,14 @@ pub async fn create_team_tx(
     .bind(display_name)
     .fetch_one(&mut **tx)
     .await
-    .map_err(|e| map_unique_violation(e, "team", name))?;
+    .map_err(|e| {
+        if is_fk_violation(&e) {
+            DomainError::conflict("organization no longer exists")
+                .with_hint("refresh the organization and retry")
+        } else {
+            map_unique_violation(e, "team", name)
+        }
+    })?;
     team_from_row(&row)
 }
 
@@ -826,18 +833,30 @@ pub async fn delete_team_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     team_id: TeamId,
 ) -> DomainResult<()> {
-    let (clusters, listeners, rcs): (i64, i64, i64) = sqlx::query_as(
+    let locked: Option<Uuid> = sqlx::query_scalar("SELECT id FROM teams WHERE id = $1 FOR UPDATE")
+        .bind(team_id.as_uuid())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| DomainError::internal(format!("delete team: lock: {e}")))?;
+    if locked.is_none() {
+        return Err(DomainError::new(
+            fp_domain::ErrorCode::NotFound,
+            "team not found",
+        ));
+    }
+    let (clusters, listeners, rcs, dataplanes): (i64, i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM clusters WHERE team_id = $1), \
                 (SELECT count(*) FROM listeners WHERE team_id = $1), \
-                (SELECT count(*) FROM route_configs WHERE team_id = $1)",
+                (SELECT count(*) FROM route_configs WHERE team_id = $1), \
+                (SELECT count(*) FROM dataplanes WHERE team_id = $1)",
     )
     .bind(team_id.as_uuid())
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("delete team: counts: {e}")))?;
-    if clusters + listeners + rcs > 0 {
+    if clusters + listeners + rcs + dataplanes > 0 {
         return Err(DomainError::conflict(format!(
-            "team still owns resources ({clusters} clusters, {listeners} listeners, {rcs} route configs)"
+            "team still owns resources ({clusters} clusters, {listeners} listeners, {rcs} route configs, {dataplanes} dataplanes)"
         ))
         .with_hint("delete the team's resources first"));
     }
@@ -845,7 +864,14 @@ pub async fn delete_team_tx(
         .bind(team_id.as_uuid())
         .execute(&mut **tx)
         .await
-        .map_err(|e| DomainError::internal(format!("delete team: {e}")))?;
+        .map_err(|e| {
+            if is_fk_violation(&e) {
+                DomainError::conflict("team still owns resources")
+                    .with_hint("delete the team's resources first")
+            } else {
+                DomainError::internal(format!("delete team: {e}"))
+            }
+        })?;
     if deleted.rows_affected() == 0 {
         return Err(DomainError::new(
             fp_domain::ErrorCode::NotFound,
@@ -1161,30 +1187,59 @@ pub async fn resolve_org_by_name(pool: &PgPool, name: &str) -> DomainResult<Opti
     Ok(id.map(OrgId::from))
 }
 
-/// Delete an org. Refuses while teams exist (RESTRICT semantics with a helpful error).
+/// Delete an org. Refuses while teams or their retained dataplanes exist.
 pub async fn delete_org(pool: &PgPool, org_id: OrgId) -> DomainResult<()> {
-    let teams: i64 = sqlx::query_scalar("SELECT count(*) FROM teams WHERE org_id = $1")
-        .bind(org_id.as_uuid())
-        .fetch_one(pool)
+    let mut tx = pool
+        .begin()
         .await
-        .map_err(|e| DomainError::internal(format!("delete org: count: {e}")))?;
-    if teams > 0 {
-        return Err(
-            DomainError::conflict(format!("organization still has {teams} team(s)"))
-                .with_hint("delete the org's teams first"),
-        );
+        .map_err(|e| DomainError::internal(format!("delete org: begin: {e}")))?;
+    let locked: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM organizations WHERE id = $1 FOR UPDATE")
+            .bind(org_id.as_uuid())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| DomainError::internal(format!("delete org: lock: {e}")))?;
+    if locked.is_none() {
+        return Err(DomainError::new(
+            fp_domain::ErrorCode::NotFound,
+            "organization not found",
+        ));
+    }
+    let (teams, dataplanes): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM teams WHERE org_id = $1), \
+                (SELECT count(*) FROM dataplanes WHERE org_id = $1)",
+    )
+    .bind(org_id.as_uuid())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("delete org: count: {e}")))?;
+    if teams > 0 || dataplanes > 0 {
+        return Err(DomainError::conflict(format!(
+            "organization still owns resources ({teams} teams, {dataplanes} dataplanes)"
+        ))
+        .with_hint("delete the org's teams first"));
     }
     let deleted = sqlx::query("DELETE FROM organizations WHERE id = $1")
         .bind(org_id.as_uuid())
-        .execute(pool)
+        .execute(&mut *tx)
         .await
-        .map_err(|e| DomainError::internal(format!("delete org: {e}")))?;
+        .map_err(|e| {
+            if is_fk_violation(&e) {
+                DomainError::conflict("organization still owns resources")
+                    .with_hint("delete the org's teams first")
+            } else {
+                DomainError::internal(format!("delete org: {e}"))
+            }
+        })?;
     if deleted.rows_affected() == 0 {
         return Err(DomainError::new(
             fp_domain::ErrorCode::NotFound,
             "organization not found",
         ));
     }
+    tx.commit()
+        .await
+        .map_err(|e| DomainError::internal(format!("delete org: commit: {e}")))?;
     Ok(())
 }
 

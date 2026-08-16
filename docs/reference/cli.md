@@ -146,7 +146,7 @@ clients must follow the code-derived table.
 
 ## Top-level commands
 
-`serve`, `db`, `openapi`, `auth`, `config`, `org`, `team`, `cluster`, `listener`, `route`, `api`, `mcp`, `ai`, `rate-limit`, `learn`, `secret`, `agent`, `dataplane`, `expose`, `unexpose`, `dashboard`, `stats`, `ops`, `apply`, `completion`, `version`, `schema`.
+`serve`, `db`, `openapi`, `qualification`, `auth`, `config`, `org`, `team`, `cluster`, `listener`, `route`, `api`, `mcp`, `ai`, `rate-limit`, `learn`, `secret`, `agent`, `dataplane`, `expose`, `unexpose`, `dashboard`, `stats`, `ops`, `apply`, `completion`, `version`, `schema`.
 
 ---
 
@@ -158,10 +158,22 @@ Database operations.
 
 | Subcommand | Purpose |
 |------------|---------|
+| `db preflight` | Read-only `3.1.3` lifecycle migration check. Emits stable blocker codes plus dataplane/certificate UUIDs; never certificate material. Exits nonzero when blocked. |
 | `db migrate` | Apply pending migrations (forward-only) and exit. |
 
 ### `openapi`
 Print the OpenAPI document this binary serves (the exact API contract). No subcommands or args.
+
+### `qualification`
+Build and validate release-qualification evidence contracts without contacting a control plane or reading ambient client credentials. These commands validate evidence structure and provenance; they do not by themselves prove production readiness.
+
+| Subcommand | Purpose |
+|------------|---------|
+| `qualification inventory --input <PATH> --output-path <PATH>` | Reconcile explicit classifications with the exact union of captured OpenAPI, CLI schema/help, stable-doc, dashboard-route, configuration, and binary surfaces. Output is deterministic for byte-identical input. |
+| `qualification validate --input <PATH>` | Reject blank classifications, code/OpenAPI-only support promotion, missing scenario origin/cleanup/rerun/evidence dimensions, incomplete six-class triage, or incorrect pinned GitHub/Beads linkage. |
+| `qualification assemble --input <PATH> --output-path <PATH>` | Redact defined credential markers and synthetic canaries before publication. This is a contract guard, not a general secret scanner. Structured nonzero results require an explicit failure class; successful results use `none`. |
+
+`scripts/qualification-inventory.py` is the capture adapter for repository and candidate-binary surfaces. Pass exact candidate binary paths and `--release`; it fails when the binary-reported version differs. Final release qualification must use published candidate artifacts, not locally rebuilt substitutes.
 
 ### `auth`
 Client auth helpers.

@@ -15,6 +15,47 @@ compatibility baseline.
 
 ## [Unreleased]
 
+### Security
+
+- Dataplane mTLS authorization now binds the verified leaf's SPIFFE URI and SHA-256 fingerprint to
+  one exact active certificate row across every xDS-family service. Bounded two-certificate overlap
+  supports connect-new-before-revoke-old rotation; exact revocation terminates only streams using
+  that certificate. Retiring a dataplane atomically revokes all active credentials, preserves
+  history, and prevents old leaves authenticating a same-name replacement. (`fpv2-7f3`)
+- Dataplane certificate issuance now rejects malformed, expired, not-yet-valid, key-mismatched, or
+  unsuitable issuer material before persistence, and issued client leaves include Subject Key
+  Identifier and issuer-linked Authority Key Identifier extensions with strict client-purpose
+  verification. Configured roots and explicit intermediate trust anchors remain supported. (#253)
+
+### Added
+
+- `flowplane db preflight` reports `3.1.2` credential migration blockers using stable
+  codes and resource UUIDs without exposing certificate material. Authorized dataplane reads and
+  CLI listing can explicitly include retired history. (`fpv2-7f3`)
+- `flowplane qualification inventory|validate|assemble` now provides a deterministic exact-artifact capability inventory, strict scenario/evidence and GitHub/Beads contract validation, and publication-bound evidence redaction. A repository capture adapter reconciles generated OpenAPI, CLI schema/help, stable docs, dashboard routes, documented configuration, and exact binary digests without treating code presence alone as supported behavior. Generated files use `--output-path` to remain distinct from the global output-format flag. (`fpv2-d23.2`)
+
+### Changed
+
+- Upgrading from `3.1.2` to `3.1.3` is a stop-the-world control-plane migration. Mixed-version CP
+  operation is prohibited; the prior binary fails closed on the migrated schema. Backup restore is
+  supported only before any post-upgrade credential/dataplane lifecycle write, after which recovery
+  is roll-forward only. Historical audit/outbox serial text remains immutable. (`fpv2-7f3`)
+- Existing issuer CAs must contain `CA:TRUE`, `keyCertSign`, and a Subject Key Identifier and must
+  allow `clientAuth`. This intentional fail-closed compatibility change may require a CA-certificate
+  reissue and public trust-anchor redistribution before new leaves are issued. A same-key
+  certificate reissue is not a CA-key rotation; upgrading Flowplane does not automatically rotate
+  keys, rewrite trust stores, replace leaves, or terminate running mTLS sessions. (#253)
+
+### Fixed
+
+- The RLS and evaluator PKI recipes now use explicit standards-complete CA/server/client profiles,
+  require OpenSSL 3.0 or newer, and strict-verify generated and reused material. (#253)
+- OIDC PKCE and device-code login now store the API access token as the bearer credential and
+  fail explicitly when the provider returns no access token, instead of treating an ID token as
+  an API credential. Existing CLI sessions must log in again to acquire the corrected credential.
+  (#251, fpv2-d23.13)
+- The split Envoy E2E harness now records the actual Python upstream process IDs, so subset and restart runs terminate their HTTP servers instead of orphaning listeners after cleanup. (`fpv2-d23.2`)
+
 ## [3.1.2] - 2026-08-10
 
 Patch release restoring certificate-bound tenant authorization on the AI gateway credential path,

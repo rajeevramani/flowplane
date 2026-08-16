@@ -308,6 +308,8 @@ mod tests {
             total_requests,
             total_errors,
             warming_failures,
+            retired_at: None,
+            retired_reason: None,
             created_at: now,
             updated_at: now,
         }

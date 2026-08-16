@@ -1092,6 +1092,9 @@ pub enum DataplaneCommand {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
         team: Option<String>,
+        /// Include retired dataplanes retained for lifecycle history.
+        #[arg(long)]
+        include_retired: bool,
     },
     /// Show one dataplane.
     Get {
@@ -1112,6 +1115,20 @@ pub enum DataplaneCommand {
         /// Optional description for the dataplane.
         #[arg(long, default_value = "")]
         description: String,
+    },
+    /// Retire a dataplane and revoke its active credentials.
+    #[command(
+        after_help = "Example:\n  flowplane dataplane delete edge-1 --team payments --revision 3 --reason decommissioned --yes"
+    )]
+    Delete {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Name of the dataplane to retire.
+        name: String,
+        /// Operator-supplied retirement reason.
+        #[arg(long)]
+        reason: String,
     },
     /// Submit dataplane telemetry from a JSON file.
     #[command(
@@ -1224,7 +1241,7 @@ pub enum CertCommand {
     },
     /// Register a proxy certificate from a JSON file.
     #[command(
-        after_help = "Example:\n  flowplane dataplane cert register --team payments -f cert.json"
+        after_help = "cert.json must contain only the dataplane name and PEM certificate chain:\n  {\"dataplane\":\"edge-1\",\"certificate_chain_pem\":\"-----BEGIN CERTIFICATE-----\\n...\"}\n\nExample:\n  flowplane dataplane cert register --team payments -f cert.json"
     )]
     Register {
         /// Team scope; defaults to the active context's team.

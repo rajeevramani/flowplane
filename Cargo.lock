@@ -1006,6 +1006,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
+ "x509-parser",
 ]
 
 [[package]]
@@ -1030,6 +1031,7 @@ dependencies = [
  "fp-domain",
  "metrics",
  "rustls",
+ "serde",
  "serde_json",
  "sha2",
  "sqlx",

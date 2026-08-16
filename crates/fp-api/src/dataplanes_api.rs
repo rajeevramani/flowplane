@@ -3,10 +3,10 @@
 
 use crate::error::{ApiError, ErrorBody};
 use crate::extract::ApiJson;
-use crate::resources::{resolve_team, ListQuery, Page};
+use crate::resources::{resolve_team, revision_from, Page};
 use crate::state::AppState;
 use axum::extract::{Extension, Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use fp_core::services::dataplanes as svc;
@@ -29,6 +29,8 @@ pub struct DataplaneView {
     pub total_requests: i64,
     pub total_errors: i64,
     pub warming_failures: i64,
+    pub retired_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub retired_reason: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -46,6 +48,8 @@ impl From<Dataplane> for DataplaneView {
             total_requests: value.total_requests,
             total_errors: value.total_errors,
             warming_failures: value.warming_failures,
+            retired_at: value.retired_at,
+            retired_reason: value.retired_reason,
             created_at: value.created_at,
             updated_at: value.updated_at,
         }
@@ -60,6 +64,29 @@ pub struct CreateDataplaneBody {
     pub description: String,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RetireDataplaneBody {
+    pub reason: String,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct DataplaneListQuery {
+    /// Max items (default 50, cap 500).
+    #[serde(default = "default_list_limit")]
+    pub limit: i64,
+    /// Items to skip.
+    #[serde(default)]
+    pub offset: i64,
+    /// Include retired dataplanes retained for lifecycle history.
+    #[serde(default)]
+    pub include_retired: bool,
+}
+
+fn default_list_limit() -> i64 {
+    50
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ProxyCertificateView {
     pub id: uuid::Uuid,
@@ -67,6 +94,7 @@ pub struct ProxyCertificateView {
     pub dataplane_id: uuid::Uuid,
     pub spiffe_uri: String,
     pub serial_number: String,
+    pub fingerprint_sha256: Option<String>,
     pub issued_at: chrono::DateTime<chrono::Utc>,
     pub expires_at: chrono::DateTime<chrono::Utc>,
     pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -82,6 +110,7 @@ impl From<ProxyCertificate> for ProxyCertificateView {
             dataplane_id: value.dataplane_id.as_uuid(),
             spiffe_uri: value.spiffe_uri,
             serial_number: value.serial_number,
+            fingerprint_sha256: value.fingerprint_sha256,
             issued_at: value.issued_at,
             expires_at: value.expires_at,
             revoked_at: value.revoked_at,
@@ -95,9 +124,7 @@ impl From<ProxyCertificate> for ProxyCertificateView {
 #[serde(deny_unknown_fields)]
 pub struct RegisterProxyCertificateBody {
     pub dataplane: String,
-    pub spiffe_uri: String,
-    pub serial_number: String,
-    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub certificate_chain_pem: String,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -242,7 +269,7 @@ fn default_admin_port() -> u16 {
 
 #[utoipa::path(get, path = "/api/v1/teams/{team}/dataplanes",
     tag = "Dataplanes",
-    params(("team" = String, Path, description = "Team name or UUID"), ListQuery),
+    params(("team" = String, Path, description = "Team name or UUID"), DataplaneListQuery),
     responses(
         (status = 200, body = Page<DataplaneView>),
         (status = 401, body = ErrorBody),
@@ -251,13 +278,22 @@ fn default_admin_port() -> u16 {
 pub async fn list_dataplanes(
     State(state): State<AppState>,
     Path(team): Path<String>,
-    Query(query): Query<ListQuery>,
+    Query(query): Query<DataplaneListQuery>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
 ) -> Result<Json<Page<DataplaneView>>, ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
-        svc::list_dataplanes(&state.pool, &ctx, team, query.limit, query.offset, rid).await
+        svc::list_dataplanes_with_lifecycle(
+            &state.pool,
+            &ctx,
+            team,
+            query.limit,
+            query.offset,
+            query.include_retired,
+            rid,
+        )
+        .await
     };
     let (items, total) = run.await.map_err(|e| ApiError::new(e, rid))?;
     Ok(Json(Page {
@@ -317,6 +353,49 @@ pub async fn get_dataplane(
     run.await
         .map(|v| Json(DataplaneView::from(v)))
         .map_err(|e| ApiError::new(e, rid))
+}
+
+#[utoipa::path(delete, path = "/api/v1/teams/{team}/dataplanes/{name}",
+    tag = "Dataplanes",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "Dataplane name"),
+        ("If-Match" = i64, Header, description = "Expected dataplane revision"),
+    ),
+    request_body = RetireDataplaneBody,
+    responses(
+        (status = 204),
+        (status = 400, body = ErrorBody),
+        (status = 401, body = ErrorBody),
+        (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody),
+        (status = 409, body = ErrorBody),
+    ))]
+pub async fn retire_dataplane(
+    State(state): State<AppState>,
+    Path((team, name)): Path<(String, String)>,
+    headers: HeaderMap,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+    ApiJson(body): ApiJson<RetireDataplaneBody>,
+) -> Result<StatusCode, ApiError> {
+    let run = async {
+        let expected_revision = revision_from(&headers)?;
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::retire_dataplane(
+            &state.pool,
+            &ctx,
+            team,
+            &name,
+            expected_revision,
+            &body.reason,
+            rid,
+        )
+        .await
+    };
+    run.await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|error| ApiError::new(error, rid))
 }
 
 #[utoipa::path(post, path = "/api/v1/teams/{team}/dataplanes/{name}/telemetry",
@@ -461,20 +540,20 @@ pub async fn register_proxy_certificate(
     Path(team): Path<String>,
     Extension(ctx): Extension<PrincipalCtx>,
     Extension(rid): Extension<RequestId>,
+    Extension(verifier): Extension<std::sync::Arc<svc::CertificateChainVerifier>>,
     ApiJson(body): ApiJson<RegisterProxyCertificateBody>,
 ) -> Result<(StatusCode, Json<ProxyCertificateView>), ApiError> {
     let run = async {
         let team = resolve_team(&state, &ctx, &team).await?;
-        svc::register_certificate(
+        svc::register_external_certificate(
             &state.pool,
             &ctx,
             team,
             svc::CertificateRegistration {
                 dataplane: &body.dataplane,
-                spiffe_uri: &body.spiffe_uri,
-                serial_number: &body.serial_number,
-                expires_at: body.expires_at,
+                certificate_chain_pem: &body.certificate_chain_pem,
             },
+            &verifier,
             rid,
         )
         .await
@@ -613,12 +692,20 @@ fn render_envoy_bootstrap(
             cert_path,
             key_path,
             ca_path,
-        } => format!(
-            r#"      transport_socket:
+        } => {
+            let is_ip = query.xds_host.parse::<std::net::IpAddr>().is_ok();
+            let san_type = if is_ip { "IP_ADDRESS" } else { "DNS" };
+            let sni = if is_ip {
+                String::new()
+            } else {
+                format!("          sni: {}\n", yaml_quote(&query.xds_host))
+            };
+            format!(
+                r#"      transport_socket:
         name: envoy.transport_sockets.tls
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
-          common_tls_context:
+{sni}          common_tls_context:
             tls_certificates:
               - certificate_chain:
                   filename: {cert_path}
@@ -627,11 +714,17 @@ fn render_envoy_bootstrap(
             validation_context:
               trusted_ca:
                 filename: {ca_path}
+              match_typed_subject_alt_names:
+                - san_type: {san_type}
+                  matcher:
+                    exact: {xds_host}
 "#,
-            cert_path = yaml_quote(cert_path),
-            key_path = yaml_quote(key_path),
-            ca_path = yaml_quote(ca_path),
-        ),
+                xds_host = yaml_quote(&query.xds_host),
+                cert_path = yaml_quote(cert_path),
+                key_path = yaml_quote(key_path),
+                ca_path = yaml_quote(ca_path),
+            )
+        }
     };
     format!(
         r#"node:
@@ -701,6 +794,46 @@ fn yaml_quote(value: &str) -> String {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use fp_domain::{DataplaneId, OrgId, TeamId};
+
+    fn rendered_mtls_bootstrap(xds_host: &str) -> serde_yaml::Value {
+        let team_id = TeamId::generate();
+        let now = Utc::now();
+        let dataplane = Dataplane {
+            id: DataplaneId::generate(),
+            team_id,
+            name: "dp-test".into(),
+            description: String::new(),
+            version: 1,
+            last_heartbeat_at: None,
+            last_config_verify_at: None,
+            total_requests: 0,
+            total_errors: 0,
+            warming_failures: 0,
+            retired_at: None,
+            retired_reason: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let query = validate_bootstrap_query(EnvoyConfigQuery {
+            mode: BootstrapMode::Mtls,
+            xds_host: xds_host.into(),
+            xds_port: 18000,
+            admin_port: 9901,
+            cert_path: Some("/cert.pem".into()),
+            key_path: Some("/key.pem".into()),
+            ca_path: Some("/ca.pem".into()),
+        })
+        .unwrap_or_else(|error| panic!("valid mTLS bootstrap query: {error}"));
+        let team = TeamRef {
+            id: team_id,
+            org_id: OrgId::generate(),
+        };
+
+        serde_yaml::from_str(&render_envoy_bootstrap(team, &dataplane, &query))
+            .unwrap_or_else(|error| panic!("rendered bootstrap must be valid YAML: {error}"))
+    }
 
     #[test]
     fn yaml_quote_escapes_double_quotes_and_backslashes() {
@@ -748,5 +881,29 @@ mod tests {
                 ca_path: "/ca.pem".into(),
             }
         );
+    }
+
+    #[test]
+    fn mtls_bootstrap_verifies_xds_dns_name() {
+        let bootstrap = rendered_mtls_bootstrap("cp.example.com");
+        let tls = &bootstrap["static_resources"]["clusters"][0]["transport_socket"]["typed_config"];
+
+        assert_eq!(tls["sni"].as_str(), Some("cp.example.com"));
+        let san =
+            &tls["common_tls_context"]["validation_context"]["match_typed_subject_alt_names"][0];
+        assert_eq!(san["san_type"].as_str(), Some("DNS"));
+        assert_eq!(san["matcher"]["exact"].as_str(), Some("cp.example.com"));
+    }
+
+    #[test]
+    fn mtls_bootstrap_verifies_xds_ip_address() {
+        let bootstrap = rendered_mtls_bootstrap("100.64.0.10");
+        let tls = &bootstrap["static_resources"]["clusters"][0]["transport_socket"]["typed_config"];
+
+        assert!(tls["sni"].is_null(), "IP literals must not be sent as SNI");
+        let san =
+            &tls["common_tls_context"]["validation_context"]["match_typed_subject_alt_names"][0];
+        assert_eq!(san["san_type"].as_str(), Some("IP_ADDRESS"));
+        assert_eq!(san["matcher"]["exact"].as_str(), Some("100.64.0.10"));
     }
 }

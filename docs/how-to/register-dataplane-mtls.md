@@ -10,6 +10,12 @@ It assumes the control plane is already running with xDS mTLS configured. The xD
 
 The control plane is up with the xDS mTLS triad set (`FLOWPLANE_XDS_TLS_CERT` / `_KEY` / `_CLIENT_CA`), and — for the `issue` step below — the cert-issuer triad `FLOWPLANE_CERT_ISSUER_CA_CERT_PATH` and `FLOWPLANE_CERT_ISSUER_CA_KEY_PATH` (optionally `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN`, default `flowplane.local`) is set **on the control-plane process**. See the [configuration reference](../reference/configuration.md).
 
+The configured issuer certificate must be currently valid, match its private key, contain
+`CA:TRUE`, `keyCertSign`, and a Subject Key Identifier, and must not restrict extended key usage
+away from `clientAuth`. A standards-complete intermediate certificate is supported when it is
+the explicit trust anchor. Before upgrading an existing issuer, run the detection and ordered
+redistribution procedure in [Production Readiness](production-readiness.md#issuer-ca-compatibility-and-upgrade).
+
 A **tenant org and a team must already exist** — a dataplane is registered under a team (`--team payments` below), and the platform org cannot host one. If you have only just bootstrapped the platform admin, first [create a tenant org and a team](create-tenant-org-and-team.md). Note that selecting the platform org for a tenant operation (`--org platform`) is rejected with `org_selector_required` (D-014): use your tenant org.
 
 The dataplane host must have Envoy and `flowplane-agent` installed. Install `flowplane-agent` from the published Flowplane release archive as shown in [Production Readiness](production-readiness.md).
@@ -69,7 +75,7 @@ The response (`IssuedProxyCertificateView`) contains:
 - `ca_certificate_pem` — the **issuer/trust CA** that signed the client cert above. This is the *client-cert chain* CA: it is what the control plane is configured to trust as its xDS `FLOWPLANE_XDS_TLS_CLIENT_CA` so it can verify the agent. It is **not** the agent's `--tls-ca-path` (see step 3).
 - `certificate.spiffe_uri` — the identity that binds this stream to the team/dataplane
 
-The SPIFFE identity is `spiffe://<trust-domain>/org/<org-id>/team/<team-id>/proxy/<dataplane-id>`, where `<trust-domain>` is `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN` (default `flowplane.local`). At runtime the control plane trusts the full registered SPIFFE URI as the binding key, not the path segments inside the cert.
+The SPIFFE identity is `spiffe://<trust-domain>/org/<org-id>/team/<team-id>/proxy/<dataplane-id>`, where `<trust-domain>` is `FLOWPLANE_CERT_ISSUER_TRUST_DOMAIN` (default `flowplane.local`). At runtime the control plane binds the verified leaf's SPIFFE URI **and SHA-256 fingerprint** to one exact active registry row. A different leaf with the same URI is rejected unless it is separately registered for bounded rotation overlap.
 
 Write the client cert and key to files the agent host can read:
 
@@ -88,7 +94,19 @@ echo "$CP_XDS_SERVER_CA_PEM" > /etc/flowplane/dp/server-ca.crt
 
 > These are two different CAs. `ca_certificate_pem` from the issue response is the *client* chain CA (used by the CP to verify the agent). The agent's `--tls-ca-path` is the *server* CA (used by the agent to verify the CP). They are the **same file only if** the CP's xDS server certificate happens to be signed by that same issuer CA — the code does not require it.
 
-> If your dataplane already has externally-issued certs, use `dataplane cert register` / `POST /api/v1/teams/{team}/proxy-certificates` instead to register the SPIFFE binding without minting a key. (Optional background — not needed to finish this task: the certificate lifecycle design, SPIFFE format, and revocation internals are in the design records linked under Further reading.)
+> If your dataplane already has externally-issued certs, use `dataplane cert register` / `POST /api/v1/teams/{team}/proxy-certificates` instead to register the SPIFFE binding without minting a key. Registration accepts only the dataplane name and a PEM chain with the leaf first, followed by intermediates:
+>
+> ```json
+> {
+>   "dataplane": "edge-1",
+>   "certificate_chain_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
+> }
+> ```
+>
+> The control-plane verifies the chain against `FLOWPLANE_XDS_TLS_CLIENT_CA`, requires a client-auth leaf whose SPIFFE URI identifies that dataplane UUID, and derives serial, fingerprint, and validity from the leaf. It rejects caller-asserted identity metadata, untrusted or ambiguous chains, and registration when xDS client trust is not configured.
+
+> Rotation is issue/register replacement → connect and verify replacement health → revoke old.
+> Up to two unrevoked exact credentials may overlap for one dataplane. Do not revoke first.
 
 ## 3. Generate and run the Envoy bootstrap
 
@@ -180,6 +198,12 @@ flowplane ops xds status --team payments
 ```
 
 `dataplane get` (`GET /api/v1/teams/{team}/dataplanes/{name}`) shows `last_heartbeat_at` advancing once the agent is reporting; `stats overview` reflects the dataplane under `live_dataplanes`.
+
+To retire an identity without deleting its audit/certificate history, run
+`flowplane dataplane delete <name> --team <team> --reason <reason> --revision <revision> --yes`.
+Default get/list calls omit retired rows; authorized operators can inspect blockers with
+`flowplane dataplane list --team <team> --include-retired`. Reusing the retired name creates a new
+dataplane UUID and SPIFFE URI; credentials from the retired incarnation cannot authenticate it.
 
 ## Further reading
 
