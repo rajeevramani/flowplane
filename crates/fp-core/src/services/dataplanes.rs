@@ -310,6 +310,7 @@ pub async fn register_external_certificate(
         .begin()
         .await
         .map_err(crate::services::db_err("register certificate: begin"))?;
+    dataplanes::lock_certificate_capacity(&mut tx, team.id, dataplane.id).await?;
     let cert = dataplanes::register_certificate(
         &mut tx,
         dataplanes::NewProxyCertificate {
@@ -402,6 +403,7 @@ pub async fn issue_certificate(
         .begin()
         .await
         .map_err(crate::services::db_err("issue certificate: begin"))?;
+    dataplanes::lock_certificate_capacity(&mut tx, team.id, dataplane.id).await?;
     let cert = dataplanes::register_certificate(
         &mut tx,
         dataplanes::NewProxyCertificate {

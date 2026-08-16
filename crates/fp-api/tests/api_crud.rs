@@ -1354,7 +1354,7 @@ async fn proxy_certificate_rotation_allows_overlap_before_revoking_old() {
         .expect("member");
 
     let app = fp_api::build_router(fp_api::AppState {
-        pool,
+        pool: pool.clone(),
         prometheus: PrometheusBuilder::new().build_recorder().handle(),
         version: "test",
         validator: Some(std::sync::Arc::new(validator)),
@@ -1415,6 +1415,18 @@ async fn proxy_certificate_rotation_allows_overlap_before_revoking_old() {
         .expect("initial serial")
         .to_owned();
 
+    // Expiry is not an implicit lifecycle transition: the old row remains unrevoked and must
+    // continue to consume one of the two overlap slots.
+    sqlx::query(
+        "UPDATE proxy_certificates SET expires_at = now() - interval '1 second' \
+         WHERE team_id = $1 AND serial_number = $2",
+    )
+    .bind(team.id.as_uuid())
+    .bind(&initial_serial)
+    .execute(&pool)
+    .await
+    .expect("expire initial credential without revoking it");
+
     let response = app
         .clone()
         .oneshot(request(
@@ -1431,9 +1443,43 @@ async fn proxy_certificate_rotation_allows_overlap_before_revoking_old() {
         StatusCode::CREATED,
         "overlapping replacement response: {replacement}"
     );
-    assert_ne!(replacement["certificate"]["serial_number"], initial_serial);
+    let replacement_serial = replacement["certificate"]["serial_number"]
+        .as_str()
+        .expect("replacement serial")
+        .to_owned();
+    assert_ne!(replacement_serial, initial_serial);
+    assert_strict_client_leaf(
+        replacement["certificate_pem"]
+            .as_str()
+            .expect("replacement certificate PEM"),
+        replacement["ca_certificate_pem"]
+            .as_str()
+            .expect("replacement CA PEM"),
+    );
 
     let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{certs}/issue"),
+            Some(issue_body()),
+        ))
+        .await
+        .expect("reject third unrevoked credential");
+    let third_status = response.status();
+    let third_body = json_of(response).await;
+    assert_eq!(
+        third_status,
+        StatusCode::CONFLICT,
+        "expired-but-unrevoked old credential must still consume capacity: {third_body}"
+    );
+    assert_eq!(
+        third_body["code"], "conflict",
+        "overlap-cap errors must map stably"
+    );
+
+    let response = app
+        .clone()
         .oneshot(request(
             "POST",
             &format!("{certs}/{initial_serial}/revoke"),
@@ -1442,6 +1488,86 @@ async fn proxy_certificate_rotation_allows_overlap_before_revoking_old() {
         .await
         .expect("revoke old certificate after replacement");
     assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{certs}/issue"),
+            Some(issue_body()),
+        ))
+        .await
+        .expect("issue after explicit revocation restores capacity");
+    let restored_status = response.status();
+    let restored = json_of(response).await;
+    assert_eq!(
+        restored_status,
+        StatusCode::CREATED,
+        "explicit revoke must restore one overlap slot: {restored}"
+    );
+    assert_strict_client_leaf(
+        restored["certificate_pem"]
+            .as_str()
+            .expect("restored-capacity certificate PEM"),
+        restored["ca_certificate_pem"]
+            .as_str()
+            .expect("restored-capacity CA PEM"),
+    );
+
+    // A distinct dataplane provides a parallel-safe product-issue race: after one active row,
+    // exactly one of two simultaneous replacements may claim the final slot.
+    let race_dataplane = unique("race-dp");
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &dataplanes,
+            Some(serde_json::json!({
+                "name": race_dataplane,
+                "description": "concurrent overlap fixture"
+            })),
+        ))
+        .await
+        .expect("create race dataplane");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let race_body = || serde_json::json!({"dataplane": race_dataplane, "ttl_hours": 1});
+    let response = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("{certs}/issue"),
+            Some(race_body()),
+        ))
+        .await
+        .expect("issue race baseline");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let issue_path = format!("{certs}/issue");
+    let (left, right) = tokio::join!(
+        app.clone()
+            .oneshot(request("POST", &issue_path, Some(race_body()))),
+        app.clone()
+            .oneshot(request("POST", &issue_path, Some(race_body())))
+    );
+    let left = left.expect("left concurrent issue");
+    let right = right.expect("right concurrent issue");
+    let statuses = [left.status(), right.status()];
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::CREATED)
+            .count(),
+        1,
+        "exactly one concurrent replacement may claim the second slot: {statuses:?}"
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::CONFLICT)
+            .count(),
+        1,
+        "the losing concurrent issue must map stably to conflict: {statuses:?}"
+    );
 }
 
 #[tokio::test]

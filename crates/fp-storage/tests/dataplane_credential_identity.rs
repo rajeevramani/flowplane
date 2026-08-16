@@ -123,7 +123,7 @@ fn sqlstate(error: &sqlx::Error) -> Option<String> {
 }
 
 #[tokio::test]
-async fn schema_adds_nullable_fingerprint_and_keeps_spiffe_uri_globally_unique() {
+async fn schema_adds_nullable_fingerprint_and_allows_spiffe_overlap() {
     let Some(w) = world().await else { return };
 
     let mut tx = w.pool.begin().await.expect("tx");
@@ -131,7 +131,7 @@ async fn schema_adds_nullable_fingerprint_and_keeps_spiffe_uri_globally_unique()
     let second_dataplane = create_dataplane(&mut tx, w.team).await;
     let shared_spiffe = format!("spiffe://flowplane.test/{}", unique("shared"));
 
-    // Exercise the retained URI constraint independently of the new fingerprint column.
+    // Slice .6 deliberately permits multiple exact credentials to share one workload URI.
     sqlx::query(
         "INSERT INTO proxy_certificates \
            (id, team_id, dataplane_id, spiffe_uri, serial_number, expires_at) \
@@ -145,7 +145,7 @@ async fn schema_adds_nullable_fingerprint_and_keeps_spiffe_uri_globally_unique()
     .await
     .expect("first URI registration");
 
-    let duplicate_uri = sqlx::query(
+    sqlx::query(
         "INSERT INTO proxy_certificates \
            (id, team_id, dataplane_id, spiffe_uri, serial_number, expires_at) \
          VALUES ($1, $2, $3, $4, '1b', now() + interval '1 hour')",
@@ -156,9 +156,8 @@ async fn schema_adds_nullable_fingerprint_and_keeps_spiffe_uri_globally_unique()
     .bind(&shared_spiffe)
     .execute(&mut *tx)
     .await
-    .expect_err("SPIFFE URI uniqueness remains global in slice .1");
-    assert_eq!(sqlstate(&duplicate_uri).as_deref(), Some("23505"));
-    tx.rollback().await.expect("clear aborted tx");
+    .expect("overlapping exact credentials may share one SPIFFE URI");
+    tx.rollback().await.expect("discard schema fixture");
 
     let column: Option<(String,)> = sqlx::query_as(
         "SELECT is_nullable FROM information_schema.columns \

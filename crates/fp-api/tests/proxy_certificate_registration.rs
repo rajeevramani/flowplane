@@ -560,6 +560,95 @@ async fn external_registration_verifies_chain_derives_metadata_and_fails_closed(
     assert_eq!(issued_at.timestamp(), trusted_leaf.not_before_unix);
     assert_eq!(expires_at.timestamp(), trusted_leaf.not_after_unix);
 
+    // Exercise external-registration serialization independently on a fresh dataplane. One active
+    // exact row exists before two replacement chains race for the single remaining overlap slot.
+    let race_dataplane_name = unique("external-race-dataplane");
+    let response = app
+        .clone()
+        .oneshot(request(
+            &owner_token,
+            "POST",
+            &dataplanes_path,
+            Some(serde_json::json!({
+                "name": race_dataplane_name,
+                "description": "external registration overlap race"
+            })),
+        ))
+        .await
+        .expect("create registration-race dataplane");
+    let race_status = response.status();
+    let race_dataplane = json(response).await;
+    assert_eq!(
+        race_status,
+        StatusCode::CREATED,
+        "create registration-race dataplane: {race_dataplane}"
+    );
+    let race_dataplane_id = race_dataplane["id"]
+        .as_str()
+        .expect("registration-race dataplane UUID");
+    let race_spiffe_uri = format!(
+        "spiffe://flowplane.test/org/{}/team/{}/proxy/{race_dataplane_id}",
+        owner_org.id.as_uuid(),
+        owner_team.id.as_uuid()
+    );
+    let race_initial = leaf_fixture(&trusted_pki, &race_spiffe_uri, true, "1A");
+    let race_left = leaf_fixture(&trusted_pki, &race_spiffe_uri, true, "1B");
+    let race_right = leaf_fixture(&trusted_pki, &race_spiffe_uri, true, "1C");
+    let response = app
+        .clone()
+        .oneshot(request(
+            &owner_token,
+            "POST",
+            &registration_path,
+            Some(serde_json::json!({
+                "dataplane": race_dataplane_name,
+                "certificate_chain_pem": race_initial.chain_pem
+            })),
+        ))
+        .await
+        .expect("register race baseline");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let (left, right) = tokio::join!(
+        app.clone().oneshot(request(
+            &owner_token,
+            "POST",
+            &registration_path,
+            Some(serde_json::json!({
+                "dataplane": race_dataplane_name,
+                "certificate_chain_pem": race_left.chain_pem
+            })),
+        )),
+        app.clone().oneshot(request(
+            &owner_token,
+            "POST",
+            &registration_path,
+            Some(serde_json::json!({
+                "dataplane": race_dataplane_name,
+                "certificate_chain_pem": race_right.chain_pem
+            })),
+        ))
+    );
+    let left = left.expect("left concurrent registration");
+    let right = right.expect("right concurrent registration");
+    let statuses = [left.status(), right.status()];
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::CREATED)
+            .count(),
+        1,
+        "exactly one concurrent external registration may claim the second slot: {statuses:?}"
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::CONFLICT)
+            .count(),
+        1,
+        "the losing concurrent registration must map stably to conflict: {statuses:?}"
+    );
+
     let malformed = "-----BEGIN CERTIFICATE-----\nnot base64 DER\n-----END CERTIFICATE-----\n";
     let private_key_pem = String::from_utf8(
         trusted_leaf

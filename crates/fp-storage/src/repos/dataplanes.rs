@@ -293,6 +293,47 @@ pub async fn count_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64>
         .map_err(|e| DomainError::internal(format!("count dataplanes: {e}")))
 }
 
+/// Serialize credential creation for one dataplane and enforce the bounded-overlap invariant.
+/// Expiry is deliberately irrelevant: only explicit revocation releases capacity.
+pub async fn lock_certificate_capacity(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    dataplane_id: DataplaneId,
+) -> DomainResult<()> {
+    let locked: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM dataplanes WHERE team_id = $1 AND id = $2 FOR UPDATE")
+            .bind(team_id.as_uuid())
+            .bind(dataplane_id.as_uuid())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|error| {
+                DomainError::internal(format!("lock certificate dataplane: {error}"))
+            })?;
+    if locked.is_none() {
+        return Err(DomainError::not_found(
+            "dataplane",
+            &dataplane_id.as_uuid().to_string(),
+        ));
+    }
+
+    let unrevoked: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM proxy_certificates \
+         WHERE team_id = $1 AND dataplane_id = $2 AND revoked_at IS NULL",
+    )
+    .bind(team_id.as_uuid())
+    .bind(dataplane_id.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|error| DomainError::internal(format!("count unrevoked certificates: {error}")))?;
+    if unrevoked >= 2 {
+        return Err(DomainError::conflict(
+            "dataplane already has the maximum of two unrevoked certificates",
+        )
+        .with_hint("revoke an old or abandoned certificate before creating another"));
+    }
+    Ok(())
+}
+
 pub async fn register_certificate(
     tx: &mut Transaction<'_, Postgres>,
     certificate: NewProxyCertificate<'_>,
@@ -313,14 +354,33 @@ pub async fn register_certificate(
     .bind(certificate.issued_by.map(|user| user.as_uuid()))
     .fetch_one(&mut **tx)
     .await
-    .map_err(|e| match &e {
-        sqlx::Error::Database(db) if db.code().as_deref() == Some("23505") => {
-            DomainError::conflict("a certificate with this SPIFFE URI or serial already exists")
-                .with_hint("each certificate must have a unique SPIFFE URI and serial number")
-        }
-        _ => DomainError::internal(format!("register certificate: {e}")),
-    })?;
+    .map_err(map_certificate_insert_error)?;
     Ok(cert_from_row(&row))
+}
+
+fn map_certificate_insert_error(error: sqlx::Error) -> DomainError {
+    let sqlx::Error::Database(database) = &error else {
+        return DomainError::internal(format!("register certificate: {error}"));
+    };
+    if database.code().as_deref() != Some("23505") {
+        return DomainError::internal(format!("register certificate: {error}"));
+    }
+    certificate_unique_conflict(database.constraint().unwrap_or_default())
+}
+
+fn certificate_unique_conflict(constraint: &str) -> DomainError {
+    match constraint {
+        "uq_proxy_certificates_fingerprint_sha256" => {
+            DomainError::conflict("a certificate with this leaf fingerprint is already registered")
+                .with_hint("register a distinct certificate leaf")
+        }
+        "proxy_certificates_team_id_serial_number_key" => {
+            DomainError::conflict("a certificate with this serial already exists in this team")
+                .with_hint("register a certificate with a distinct serial")
+        }
+        _ => DomainError::conflict("certificate identity conflicts with an existing registry row")
+            .with_hint("use a distinct certificate identity"),
+    }
 }
 
 /// Resolve one active registry row by the exact verified leaf identity.
@@ -440,6 +500,33 @@ pub async fn revoke_certificate(
                 )),
                 _ => DomainError::not_found("proxy certificate", serial_number),
             })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::certificate_unique_conflict;
+    use fp_domain::ErrorCode;
+
+    #[test]
+    fn certificate_unique_constraints_map_to_stable_conflicts() {
+        let cases = [
+            (
+                "uq_proxy_certificates_fingerprint_sha256",
+                "leaf fingerprint",
+            ),
+            (
+                "proxy_certificates_team_id_serial_number_key",
+                "serial already exists in this team",
+            ),
+            ("future_unique_constraint", "certificate identity conflicts"),
+        ];
+        for (constraint, message_fragment) in cases {
+            let error = certificate_unique_conflict(constraint);
+            assert_eq!(error.code, ErrorCode::Conflict);
+            assert!(error.message.contains(message_fragment));
+            assert!(error.hint.is_some());
         }
     }
 }

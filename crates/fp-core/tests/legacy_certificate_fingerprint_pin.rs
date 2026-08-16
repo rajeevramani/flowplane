@@ -603,12 +603,6 @@ async fn injected_outbox_failure_rolls_back_all_effects_and_multiple_candidates_
             .await
             .map_err(|error| format!("remove isolated outbox failure function: {error}"))?;
 
-        sqlx::query(
-            "ALTER TABLE proxy_certificates DROP CONSTRAINT proxy_certificates_spiffe_uri_key",
-        )
-        .execute(&pool)
-        .await
-        .map_err(|error| format!("drop scratch SPIFFE uniqueness: {error}"))?;
         let first = seed_world(pool.clone()).await;
         let second = seed_world(pool.clone()).await;
         let spiffe_uri = format!("spiffe://flowplane.test/{}", unique("ambiguous"));

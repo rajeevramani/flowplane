@@ -6,7 +6,7 @@
 
 use envoy_types::pb::envoy::config::core::v3::Node;
 use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service_client::AggregatedDiscoveryServiceClient;
-use envoy_types::pb::envoy::service::discovery::v3::DiscoveryRequest;
+use envoy_types::pb::envoy::service::discovery::v3::{DiscoveryRequest, DiscoveryResponse};
 use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_client::ExternalProcessorClient;
 use envoy_types::pb::envoy::service::ext_proc::v3::ProcessingRequest;
 use fp_core::{GrantSet, PrincipalCtx};
@@ -95,6 +95,12 @@ impl TestPki {
                 "-nodes",
                 "-subj",
                 "/CN=fp-test-ca",
+                "-addext",
+                "basicConstraints=critical,CA:TRUE",
+                "-addext",
+                "keyUsage=critical,keyCertSign,cRLSign",
+                "-addext",
+                "subjectKeyIdentifier=hash",
             ],
         );
         std::fs::write(
@@ -366,6 +372,35 @@ fn cds_subscribe(node_id: &str) -> DiscoveryRequest {
     }
 }
 
+async fn open_ads_stream(
+    pki: &TestPki,
+    addr: std::net::SocketAddr,
+    identity: Identity,
+) -> (
+    tokio::sync::mpsc::Sender<DiscoveryRequest>,
+    tonic::Streaming<DiscoveryResponse>,
+) {
+    let channel = tls_channel(pki, addr, Some(identity))
+        .await
+        .expect("mTLS channel");
+    let (requests, inbound) = tokio::sync::mpsc::channel(4);
+    requests
+        .send(cds_subscribe("rotation-dataplane"))
+        .await
+        .expect("subscribe");
+    let mut responses = AggregatedDiscoveryServiceClient::new(channel)
+        .stream_aggregated_resources(tokio_stream::wrappers::ReceiverStream::new(inbound))
+        .await
+        .expect("open ADS stream")
+        .into_inner();
+    tokio::time::timeout(Duration::from_secs(5), responses.message())
+        .await
+        .expect("initial ADS response deadline")
+        .expect("initial ADS response status")
+        .expect("initial ADS response");
+    (requests, responses)
+}
+
 fn ai_ext_proc_request(
     claimed_team: impl std::fmt::Display,
 ) -> (
@@ -451,6 +486,136 @@ async fn ai_ext_proc_mtls_binds_team_before_opening_stream() {
         .await
         .expect("matching team must open a response stream before any request message is sent")
         .expect("certificate-bound team claim must be accepted");
+}
+
+#[tokio::test]
+async fn product_issued_rotation_connects_both_then_revokes_only_old() {
+    let Some(w) = world().await else { return };
+    let pki = TestPki::new();
+    std::env::set_var("FLOWPLANE_CERT_ISSUER_CA_CERT_PATH", pki.dir.join("ca.crt"));
+    std::env::set_var("FLOWPLANE_CERT_ISSUER_CA_KEY_PATH", pki.dir.join("ca.key"));
+
+    let dataplane = unique("rotation-dp");
+    fp_core::services::dataplanes::create_dataplane(
+        &w.pool,
+        &w.ctx,
+        w.team,
+        &dataplane,
+        "",
+        RequestId::generate(),
+    )
+    .await
+    .expect("create rotation dataplane");
+    fp_core::services::clusters::create_cluster(
+        &w.pool,
+        &w.ctx,
+        w.team,
+        &unique("rotation-upstream"),
+        cluster_spec("10.2.0.1"),
+        RequestId::generate(),
+        Default::default(),
+    )
+    .await
+    .expect("create rotation snapshot resource");
+
+    let issue = || {
+        fp_core::services::dataplanes::issue_certificate(
+            &w.pool,
+            &w.ctx,
+            w.team,
+            fp_core::services::dataplanes::CertificateIssueRequest {
+                dataplane: &dataplane,
+                ttl_hours: 1,
+            },
+            RequestId::generate(),
+        )
+    };
+    let old = issue().await.expect("issue initial credential");
+    let replacement = issue().await.expect("issue overlapping replacement");
+    assert_ne!(old.certificate.id, replacement.certificate.id);
+
+    let cache = SnapshotCache::new();
+    cache
+        .rebuild_team(&w.pool, w.team.id)
+        .await
+        .expect("prime cache");
+    let (addr, revocations) = start_server(&pki, cache.clone(), w.pool.clone()).await;
+    let old_identity = Identity::from_pem(old.certificate_pem.clone(), old.private_key_pem.clone());
+    let replacement_identity = Identity::from_pem(
+        replacement.certificate_pem.clone(),
+        replacement.private_key_pem.clone(),
+    );
+    let (_old_requests, mut old_responses) =
+        open_ads_stream(&pki, addr, old_identity.clone()).await;
+    let (_replacement_requests, mut replacement_responses) =
+        open_ads_stream(&pki, addr, replacement_identity.clone()).await;
+
+    let consumer = unique("rotation-consumer");
+    fp_storage::outbox::register_consumer_at_head(&w.pool, &consumer)
+        .await
+        .expect("register rotation consumer");
+    fp_core::services::dataplanes::revoke_certificate(
+        &w.pool,
+        &w.ctx,
+        w.team,
+        &old.certificate.serial_number,
+        "rotation complete",
+        RequestId::generate(),
+    )
+    .await
+    .expect("revoke initial credential");
+    while fp_storage::outbox::process_batch(&w.pool, &consumer, 1000, |events| {
+        let cache = cache.clone();
+        let pool = w.pool.clone();
+        let revocations = revocations.clone();
+        async move {
+            publish_revocations(&revocations, &events);
+            handle_events(&cache, &pool, events).await
+        }
+    })
+    .await
+    .expect("process rotation outbox")
+        > 0
+    {}
+
+    let old_outcome = tokio::time::timeout(Duration::from_secs(5), old_responses.message())
+        .await
+        .expect("old stream termination deadline");
+    assert_eq!(
+        old_outcome.expect_err("old stream must terminate").code(),
+        tonic::Code::PermissionDenied
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), replacement_responses.message())
+            .await
+            .is_err(),
+        "replacement stream must remain live after old credential revocation"
+    );
+
+    let (_reconnect_requests, _reconnect_responses) =
+        open_ads_stream(&pki, addr, replacement_identity).await;
+    let channel = tls_channel(&pki, addr, Some(old_identity))
+        .await
+        .expect("revoked leaf still completes TLS");
+    let (requests, inbound) = tokio::sync::mpsc::channel(2);
+    requests
+        .send(cds_subscribe("revoked-old"))
+        .await
+        .expect("subscribe");
+    let mut responses = AggregatedDiscoveryServiceClient::new(channel)
+        .stream_aggregated_resources(tokio_stream::wrappers::ReceiverStream::new(inbound))
+        .await
+        .expect("open revoked ADS transport")
+        .into_inner();
+    let outcome = tokio::time::timeout(Duration::from_secs(5), responses.message())
+        .await
+        .expect("revoked reconnect deadline");
+    assert_eq!(
+        outcome
+            .expect_err("revoked old credential must not reconnect")
+            .code(),
+        tonic::Code::Unauthenticated
+    );
 }
 
 #[tokio::test]

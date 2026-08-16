@@ -1237,6 +1237,105 @@ async fn revoking_one_exact_certificate_selectively_terminates_all_mtls_service_
     }
 }
 
+#[tokio::test]
+async fn restart_and_rotation_keep_both_exact_leaves_until_old_is_revoked() {
+    let Some(world) = world().await else { return };
+    let pki = TestPki::new();
+    let spiffe_uri = format!(
+        "spiffe://flowplane.test/dataplane/{}/bounded-rotation",
+        world.dataplane_id
+    );
+    let old_leaf = pki.issue_client("bounded-rotation-old", &spiffe_uri, "f621");
+    let replacement_leaf = pki.issue_client("bounded-rotation-replacement", &spiffe_uri, "f622");
+    let old_certificate_id = insert_registry_row(
+        &world,
+        &spiffe_uri,
+        &old_leaf,
+        RegistryState::Exact(&old_leaf),
+    )
+    .await;
+    let replacement_certificate_id = insert_registry_row(
+        &world,
+        &spiffe_uri,
+        &replacement_leaf,
+        RegistryState::Exact(&replacement_leaf),
+    )
+    .await;
+    assert_ne!(old_certificate_id, replacement_certificate_id);
+
+    // The old exact credential survives a real listener restart without issuing a new identity.
+    let first_server = start_server(&pki, world.pool.clone(), world.pool.clone()).await;
+    bounded_service_result(
+        channel(&pki, first_server.addr, &old_leaf)
+            .await
+            .expect("old leaf TLS before restart"),
+        Service::Ads,
+        world.team_id,
+        world.dataplane_id,
+    )
+    .await
+    .expect("old exact leaf authenticates before restart");
+    drop(first_server);
+
+    let restarted = start_server(&pki, world.pool.clone(), world.pool.clone()).await;
+    let mut old_stream = open_live_stream(
+        channel(&pki, restarted.addr, &old_leaf)
+            .await
+            .expect("old leaf TLS after restart"),
+        Service::Ads,
+        world.team_id,
+        world.dataplane_id,
+    )
+    .await;
+    let mut replacement_stream = open_live_stream(
+        channel(&pki, restarted.addr, &replacement_leaf)
+            .await
+            .expect("replacement leaf TLS after restart"),
+        Service::Ads,
+        world.team_id,
+        world.dataplane_id,
+    )
+    .await;
+    assert_two_revocation_subscribers(&restarted.revocations, Service::Ads).await;
+    assert_stream_stays_live(&mut old_stream, Service::Ads, "overlap before revocation").await;
+    assert_stream_stays_live(
+        &mut replacement_stream,
+        Service::Ads,
+        "overlap before revocation",
+    )
+    .await;
+
+    restarted
+        .revocations
+        .send(old_certificate_id)
+        .expect("broadcast old exact credential revocation");
+    assert_permission_denied(old_stream, Service::Ads).await;
+    assert_stream_stays_live(
+        &mut replacement_stream,
+        Service::Ads,
+        "old exact credential revocation",
+    )
+    .await;
+
+    // The replacement remains an independently resolvable exact credential on a new connection.
+    bounded_service_result(
+        channel(&pki, restarted.addr, &replacement_leaf)
+            .await
+            .expect("replacement TLS reconnect after old revocation"),
+        Service::Ads,
+        world.team_id,
+        world.dataplane_id,
+    )
+    .await
+    .expect("replacement exact leaf reconnects after old revocation");
+
+    restarted
+        .revocations
+        .send(replacement_certificate_id)
+        .expect("bounded replacement stream cleanup");
+    assert_permission_denied(replacement_stream, Service::Ads).await;
+}
+
 #[derive(Clone)]
 struct InjectedIdentityResolver {
     identity: PeerIdentity,
