@@ -46,10 +46,18 @@ if [ -n "${TAILSCALE_AUTHKEY_FILE:-}" ]; then
         --accept-routes=false \
         --reset
 
-    /usr/local/bin/tailscale --socket=/var/run/tailscale/tailscaled.sock serve \
-        --bg \
-        --tcp="$tailscale_forward_port" \
-        "tcp://127.0.0.1:$tailscale_target_port"
+    if [ -n "${TAILSCALE_SERVICE_NAME:-}" ]; then
+        /usr/local/bin/tailscale --socket=/var/run/tailscale/tailscaled.sock serve \
+            --yes \
+            --service="$TAILSCALE_SERVICE_NAME" \
+            --tcp="$tailscale_forward_port" \
+            "tcp://127.0.0.1:$tailscale_target_port"
+    else
+        /usr/local/bin/tailscale --socket=/var/run/tailscale/tailscaled.sock serve \
+            --bg \
+            --tcp="$tailscale_forward_port" \
+            "tcp://127.0.0.1:$tailscale_target_port"
+    fi
 fi
 
 case "$role" in

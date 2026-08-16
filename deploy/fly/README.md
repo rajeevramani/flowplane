@@ -10,18 +10,20 @@ For this qualification, the frozen public API hostname is `cp.getflowplane.io`. 
 
 xDS port 18000 is not a Fly public service. Tailscale userspace networking exposes a tailnet-only raw TCP forwarder from the node's port 18000 to Flowplane's loopback port 18000. Tailscale does not terminate TLS: Flowplane terminates xDS mTLS and authorizes the dataplane client certificate.
 
-`rls.fly.toml` packages `flowplane-rls` as a separate private app. Its CP-facing admin listener uses HTTPS plus a secret-backed bearer over Fly 6PN. Its Envoy-facing gRPC listener remains loopback and is exposed only through a tailnet raw TCP forwarder; `flowplane-rls` terminates mandatory mTLS. The RLS manifest declares no public Fly service.
+`rls.fly.toml` packages `flowplane-rls` as a separate private app. Its CP-facing admin listener uses HTTPS plus a secret-backed bearer over Fly 6PN. Its Envoy-facing gRPC listener remains loopback and is exposed through the stable Tailscale Service `svc:fpq-flowplane-rls-g2` on raw TCP port 50051; `flowplane-rls` remains the mandatory mTLS terminator. The RLS manifest declares no public Fly service. The Service name is qualification packaging, not a product default.
+
+The tailnet administrator must define that Service before deployment, permit the qualification dataplane to reach `tcp:50051`, and auto-approve Service advertisements from `tag:fpq-rls-service`. The RLS Tailscale auth key must be short-lived, reusable, ephemeral, pre-authorized, and carry that tag. Each boot re-advertises the Service because Fly's root filesystem and `tailscaled.state` are disposable. Individual node DNS names may gain numeric suffixes; clients pin the stable Service FQDN `fpq-flowplane-rls-g2.tail67f704.ts.net`, which must also appear in the RLS certificate SAN.
 
 ## Runtime inputs
 
-Set these as ordinary Fly secrets; do not add their values to `fly.toml`:
+Configure these as deployment inputs. Keep sensitive values in Fly secrets; non-sensitive provider endpoints may be explicit manifest environment values:
 
 - `FLOWPLANE_DATABASE_URL`
 - `FLOWPLANE_OIDC_ISSUER`
 - `FLOWPLANE_OIDC_AUDIENCE`
 - `FLOWPLANE_SECRET_ENCRYPTION_KEY`
 - `FLOWPLANE_RLS_ADMIN_URL`
-- `FLOWPLANE_RLS_GRPC_URL`
+- `FLOWPLANE_RLS_GRPC_URL`; the qualification manifest pins the stable Tailscale Service FQDN plus port 50051, never an individual node name or TailVIP
 - `FLOWPLANE_DATAPLANE_TLS_CERT`, `_KEY`, and `_CLIENT_CA` as paths that exist on each
   dataplane VM; these values are emitted into Envoy configuration and are not CP-local files
 

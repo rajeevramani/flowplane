@@ -326,6 +326,37 @@ class FlyPackagingContract(unittest.TestCase):
             "the RLS admin listener must remain private and unpublished",
         )
 
+    def test_rls_uses_stable_raw_tcp_tailscale_service(self) -> None:
+        path = FLY_ROOT / "rls.fly.toml"
+        manifest = parse_manifest(read_text(path), path)
+        env = manifest.get("env", {})
+        self.assertIsInstance(env, dict)
+        self.assertEqual(env.get("TAILSCALE_SERVICE_NAME"), "svc:fpq-flowplane-rls-g2")
+
+        entrypoint = read_text(FLY_ROOT / "entrypoint.sh")
+        self.assertIn("--yes", entrypoint)
+        self.assertIn('--service="$TAILSCALE_SERVICE_NAME"', entrypoint)
+        self.assertIn('--tcp="$tailscale_forward_port"', entrypoint)
+        self.assertNotIn(
+            "--tls-terminated-tcp",
+            entrypoint,
+            "Tailscale must forward raw TCP so RLS remains the mTLS terminator",
+        )
+
+        _, cp_manifest = load_manifest()
+        cp_env = cp_manifest.get("env", {})
+        self.assertIsInstance(cp_env, dict)
+        self.assertNotIn(
+            "TAILSCALE_SERVICE_NAME",
+            cp_env,
+            "the RLS Service must not replace the control plane's node-specific xDS endpoint",
+        )
+        self.assertEqual(
+            cp_env.get("FLOWPLANE_RLS_GRPC_URL"),
+            "fpq-flowplane-rls-g2.tail67f704.ts.net:50051",
+            "Envoy must receive the stable Service FQDN, never an individual RLS node name",
+        )
+
     def test_private_pem_and_token_material_is_delivered_as_files(self) -> None:
         _, manifest = load_manifest()
         env = manifest.get("env", {})
