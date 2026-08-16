@@ -119,12 +119,14 @@ pub async fn serve_mtls(
     let service = AdsService::new(
         cache,
         resolver.clone(),
-        revocations,
+        revocations.clone(),
         Some(nack_pool.clone()),
     )
     .into_server();
-    let diagnostics = DiagnosticsService::new(resolver.clone(), nack_pool.clone()).into_server();
-    let capture = LearningCaptureService::new(nack_pool.clone(), resolver);
+    let diagnostics =
+        DiagnosticsService::new(resolver.clone(), nack_pool.clone(), revocations.clone())
+            .into_server();
+    let capture = LearningCaptureService::new(nack_pool.clone(), resolver, revocations);
     tracing::info!(%addr, "xDS ADS server starting (mTLS, certificate-registry binding)");
     tonic::transport::Server::builder()
         .tls_config(tls_config)
@@ -151,12 +153,12 @@ pub async fn serve_plaintext(
     // The bus sender lives inside AdsService for the server's lifetime; plaintext mode has
     // no cert-bound streams so nothing ever publishes on it.
     let (revocations, _) = tokio::sync::broadcast::channel(16);
-    let diagnostics = nack_pool
-        .clone()
-        .map(|pool| DiagnosticsService::new(resolver.clone(), pool).into_server());
+    let diagnostics = nack_pool.clone().map(|pool| {
+        DiagnosticsService::new(resolver.clone(), pool, revocations.clone()).into_server()
+    });
     let capture = nack_pool
         .clone()
-        .map(|pool| LearningCaptureService::new(pool, resolver.clone()));
+        .map(|pool| LearningCaptureService::new(pool, resolver.clone(), revocations.clone()));
     let service = AdsService::new(cache, resolver, revocations, nack_pool).into_server();
     tracing::info!(%addr, "xDS ADS server starting (plaintext dev mode)");
     let builder = tonic::transport::Server::builder().add_service(service);

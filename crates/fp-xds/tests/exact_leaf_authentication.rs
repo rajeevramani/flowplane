@@ -407,6 +407,7 @@ async fn insert_registry_row(
 
 struct ServerGuard {
     addr: std::net::SocketAddr,
+    revocations: tokio::sync::broadcast::Sender<uuid::Uuid>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<fp_domain::DomainResult<()>>,
 }
@@ -450,6 +451,7 @@ async fn start_server(pki: &TestPki, resolver_pool: PgPool, service_pool: PgPool
     drop(listener);
     let tls = pki.tls_paths();
     let (revocations, _) = tokio::sync::broadcast::channel(16);
+    let server_revocations = revocations.clone();
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let legacy_pinner = Arc::new(TestLegacyPinner(resolver_pool.clone()));
     let task = tokio::spawn(async move {
@@ -457,7 +459,7 @@ async fn start_server(pki: &TestPki, resolver_pool: PgPool, service_pool: PgPool
             addr,
             SnapshotCache::new(),
             Arc::new(CertRegistryResolver::new(resolver_pool, legacy_pinner)),
-            revocations,
+            server_revocations,
             service_pool,
             &tls,
             async move {
@@ -468,6 +470,7 @@ async fn start_server(pki: &TestPki, resolver_pool: PgPool, service_pool: PgPool
     });
     let guard = ServerGuard {
         addr,
+        revocations,
         stop: Some(stop),
         task,
     };
@@ -504,14 +507,16 @@ enum Service {
     Diagnostics,
     AccessLog,
     ExtProc,
+    ExtProcCapture,
     ExtProcNoContext,
 }
 
-const SERVICES: [Service; 4] = [
+const SERVICES: [Service; 5] = [
     Service::Ads,
     Service::Diagnostics,
     Service::AccessLog,
     Service::ExtProc,
+    Service::ExtProcCapture,
 ];
 
 async fn service_result(
@@ -630,6 +635,26 @@ async fn service_result(
                 uuid::Uuid::now_v7().to_string().parse().unwrap(),
             );
             metadata.insert("x-flowplane-ai-backend-position", "0".parse().unwrap());
+            client.process(request).await?;
+            Ok(())
+        }
+        Service::ExtProcCapture => {
+            let mut client = ExternalProcessorClient::new(channel);
+            let (_tx, rx) = tokio::sync::mpsc::channel::<ProcessingRequest>(1);
+            let mut request = tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(rx));
+            let metadata = request.metadata_mut();
+            metadata.insert(
+                "x-flowplane-team-id",
+                team_id.to_string().parse().expect("team metadata"),
+            );
+            metadata.insert(
+                "x-flowplane-capture-session-id",
+                uuid::Uuid::now_v7().to_string().parse().unwrap(),
+            );
+            metadata.insert(
+                "x-flowplane-route-config-id",
+                uuid::Uuid::now_v7().to_string().parse().unwrap(),
+            );
             client.process(request).await?;
             Ok(())
         }
@@ -895,6 +920,321 @@ async fn ext_proc_authenticates_before_the_no_ai_context_branch() {
     .await
     .expect_err("ExtProc no-context branch must not bypass exact authentication");
     assert_eq!(status.code(), tonic::Code::Unauthenticated);
+}
+
+struct LiveStream {
+    _inbound: LiveInbound,
+    outcome: tokio::task::JoinHandle<Result<(), tonic::Status>>,
+}
+
+enum LiveInbound {
+    Ads(tokio::sync::mpsc::Sender<DiscoveryRequest>),
+    Diagnostics(tokio::sync::mpsc::Sender<DiagnosticsReport>),
+    AccessLog(tokio::sync::mpsc::Sender<StreamAccessLogsMessage>),
+    ExtProc(tokio::sync::mpsc::Sender<ProcessingRequest>),
+}
+
+impl Drop for LiveStream {
+    fn drop(&mut self) {
+        match &self._inbound {
+            LiveInbound::Ads(tx) => drop(tx.clone()),
+            LiveInbound::Diagnostics(tx) => drop(tx.clone()),
+            LiveInbound::AccessLog(tx) => drop(tx.clone()),
+            LiveInbound::ExtProc(tx) => drop(tx.clone()),
+        }
+        self.outcome.abort();
+    }
+}
+
+async fn drain_responses<M>(mut responses: tonic::Streaming<M>) -> Result<(), tonic::Status>
+where
+    M: prost::Message + Default,
+{
+    loop {
+        if responses.message().await?.is_none() {
+            return Err(tonic::Status::unknown(
+                "certificate-bound stream closed without a terminal status",
+            ));
+        }
+    }
+}
+
+async fn open_live_stream(
+    channel: Channel,
+    service: Service,
+    team_id: uuid::Uuid,
+    dataplane_id: uuid::Uuid,
+) -> LiveStream {
+    match service {
+        Service::Ads => {
+            let (tx, rx) = tokio::sync::mpsc::channel(2);
+            tx.send(DiscoveryRequest {
+                node: Some(Node {
+                    id: format!("dataplane/{dataplane_id}"),
+                    ..Default::default()
+                }),
+                type_url: CLUSTER_TYPE_URL.to_owned(),
+                ..Default::default()
+            })
+            .await
+            .expect("prime ADS stream");
+            let responses = tokio::time::timeout(DEADLINE, async move {
+                AggregatedDiscoveryServiceClient::new(channel)
+                    .stream_aggregated_resources(tokio_stream::wrappers::ReceiverStream::new(rx))
+                    .await
+            })
+            .await
+            .expect("ADS must open within the deadline")
+            .expect("ADS exact leaf must authenticate")
+            .into_inner();
+            LiveStream {
+                _inbound: LiveInbound::Ads(tx),
+                outcome: tokio::spawn(drain_responses(responses)),
+            }
+        }
+        Service::Diagnostics => {
+            let (tx, rx) = tokio::sync::mpsc::channel(2);
+            tx.send(DiagnosticsReport {
+                schema_version: 1,
+                report_id: uuid::Uuid::now_v7().to_string(),
+                dataplane_id: dataplane_id.to_string(),
+                observed_at: Some(prost_types::Timestamp::from(std::time::SystemTime::now())),
+                payload: Some(diagnostics_report::Payload::Heartbeat(HeartbeatReport {
+                    requests_delta: 0,
+                    errors_delta: 0,
+                    warming_failures_delta: 0,
+                    config_verified: true,
+                })),
+            })
+            .await
+            .expect("prime diagnostics stream");
+            let responses = tokio::time::timeout(DEADLINE, async move {
+                EnvoyDiagnosticsServiceClient::new(channel)
+                    .report_diagnostics(tokio_stream::wrappers::ReceiverStream::new(rx))
+                    .await
+            })
+            .await
+            .expect("diagnostics must open within the deadline")
+            .expect("diagnostics exact leaf must authenticate")
+            .into_inner();
+            LiveStream {
+                _inbound: LiveInbound::Diagnostics(tx),
+                outcome: tokio::spawn(drain_responses(responses)),
+            }
+        }
+        Service::AccessLog => {
+            let (tx, rx) = tokio::sync::mpsc::channel(2);
+            tx.send(StreamAccessLogsMessage {
+                identifier: Some(stream_access_logs_message::Identifier {
+                    node: Some(Node {
+                        id: format!("dataplane/{dataplane_id}"),
+                        ..Default::default()
+                    }),
+                    log_name: "fpv2-7f3.5-selective-revocation".to_owned(),
+                }),
+                log_entries: Some(stream_access_logs_message::LogEntries::HttpLogs(
+                    stream_access_logs_message::HttpAccessLogEntries {
+                        log_entry: Vec::new(),
+                    },
+                )),
+            })
+            .await
+            .expect("prime access-log stream");
+            let mut request = tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(rx));
+            request.metadata_mut().insert(
+                "x-flowplane-team-id",
+                team_id.to_string().parse().expect("team metadata"),
+            );
+            request.metadata_mut().insert(
+                "x-flowplane-capture-session-id",
+                uuid::Uuid::now_v7()
+                    .to_string()
+                    .parse()
+                    .expect("capture metadata"),
+            );
+            request.metadata_mut().insert(
+                "x-flowplane-route-config-id",
+                uuid::Uuid::now_v7()
+                    .to_string()
+                    .parse()
+                    .expect("route metadata"),
+            );
+            let outcome = tokio::spawn(async move {
+                match AccessLogServiceClient::new(channel)
+                    .stream_access_logs(request)
+                    .await
+                {
+                    Ok(_) => Err(tonic::Status::unknown(
+                        "access-log stream closed without a terminal status",
+                    )),
+                    Err(status) => Err(status),
+                }
+            });
+            // ALS is client-streaming and has no open acknowledgement. A bounded settling
+            // window lets the first message cross the real mTLS/registry boundary.
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            assert!(!outcome.is_finished(), "access-log stream must be live");
+            LiveStream {
+                _inbound: LiveInbound::AccessLog(tx),
+                outcome,
+            }
+        }
+        Service::ExtProc | Service::ExtProcCapture => {
+            let (tx, rx) = tokio::sync::mpsc::channel::<ProcessingRequest>(2);
+            let mut request = tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(rx));
+            let metadata = request.metadata_mut();
+            metadata.insert(
+                "x-flowplane-team-id",
+                team_id.to_string().parse().expect("team metadata"),
+            );
+            if matches!(service, Service::ExtProc) {
+                metadata.insert("x-flowplane-ai-processor", "true".parse().unwrap());
+                metadata.insert(
+                    "x-flowplane-ai-provider-id",
+                    uuid::Uuid::now_v7().to_string().parse().unwrap(),
+                );
+                metadata.insert("x-flowplane-ai-backend-position", "0".parse().unwrap());
+            } else {
+                metadata.insert(
+                    "x-flowplane-capture-session-id",
+                    uuid::Uuid::now_v7().to_string().parse().unwrap(),
+                );
+            }
+            metadata.insert(
+                "x-flowplane-route-config-id",
+                uuid::Uuid::now_v7().to_string().parse().unwrap(),
+            );
+            let responses = tokio::time::timeout(DEADLINE, async move {
+                ExternalProcessorClient::new(channel).process(request).await
+            })
+            .await
+            .expect("ExtProc must open within the deadline")
+            .expect("ExtProc exact leaf must authenticate")
+            .into_inner();
+            LiveStream {
+                _inbound: LiveInbound::ExtProc(tx),
+                outcome: tokio::spawn(drain_responses(responses)),
+            }
+        }
+        Service::ExtProcNoContext => unreachable!("not a certificate-lifecycle service variant"),
+    }
+}
+
+async fn assert_stream_stays_live(stream: &mut LiveStream, service: Service, phase: &str) {
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), &mut stream.outcome)
+            .await
+            .is_err(),
+        "{service:?} stream terminated during {phase}"
+    );
+}
+
+async fn assert_permission_denied(mut stream: LiveStream, service: Service) {
+    let status = tokio::time::timeout(DEADLINE, &mut stream.outcome)
+        .await
+        .unwrap_or_else(|_| {
+            panic!("{service:?} did not terminate after exact-certificate revocation")
+        })
+        .expect("stream drain task")
+        .expect_err("revoked stream must terminate with a status");
+    assert_eq!(
+        status.code(),
+        tonic::Code::PermissionDenied,
+        "{service:?} must fail closed with permission denied"
+    );
+}
+
+async fn assert_two_revocation_subscribers(
+    revocations: &tokio::sync::broadcast::Sender<uuid::Uuid>,
+    service: Service,
+) {
+    for _ in 0..40 {
+        if revocations.receiver_count() >= 2 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!(
+        "{service:?} did not subscribe both certificate-bound streams to the revocation bus within one second"
+    );
+}
+
+#[tokio::test]
+async fn revoking_one_exact_certificate_selectively_terminates_all_mtls_service_paths() {
+    let Some(old_world) = world().await else {
+        return;
+    };
+    let Some(foreign_world) = world().await else {
+        return;
+    };
+    let pki = TestPki::new();
+    let spiffe_uri = format!(
+        "spiffe://flowplane.test/dataplane/{}/rotation",
+        old_world.dataplane_id
+    );
+    let foreign_spiffe_uri = format!(
+        "spiffe://flowplane.test/dataplane/{}/foreign",
+        foreign_world.dataplane_id
+    );
+    let old_leaf = pki.issue_client("revocation-old", &spiffe_uri, "e1");
+    let foreign_leaf = pki.issue_client("revocation-foreign", &foreign_spiffe_uri, "e2");
+    let old_certificate_id = insert_registry_row(
+        &old_world,
+        &spiffe_uri,
+        &old_leaf,
+        RegistryState::Exact(&old_leaf),
+    )
+    .await;
+    let foreign_certificate_id = insert_registry_row(
+        &foreign_world,
+        &foreign_spiffe_uri,
+        &foreign_leaf,
+        RegistryState::Exact(&foreign_leaf),
+    )
+    .await;
+    let server = start_server(&pki, old_world.pool.clone(), old_world.pool.clone()).await;
+
+    for service in SERVICES {
+        let mut old_stream = open_live_stream(
+            channel(&pki, server.addr, &old_leaf)
+                .await
+                .expect("old leaf TLS handshake"),
+            service,
+            old_world.team_id,
+            old_world.dataplane_id,
+        )
+        .await;
+        let mut foreign_stream = open_live_stream(
+            channel(&pki, server.addr, &foreign_leaf)
+                .await
+                .expect("foreign leaf TLS handshake"),
+            service,
+            foreign_world.team_id,
+            foreign_world.dataplane_id,
+        )
+        .await;
+
+        assert_two_revocation_subscribers(&server.revocations, service).await;
+        server
+            .revocations
+            .send(uuid::Uuid::now_v7())
+            .expect("broadcast unrelated certificate id");
+        assert_stream_stays_live(&mut old_stream, service, "unrelated revocation").await;
+        assert_stream_stays_live(&mut foreign_stream, service, "unrelated revocation").await;
+
+        server
+            .revocations
+            .send(old_certificate_id)
+            .expect("broadcast old certificate id");
+        assert_permission_denied(old_stream, service).await;
+        assert_stream_stays_live(&mut foreign_stream, service, "old-certificate revocation").await;
+
+        server
+            .revocations
+            .send(foreign_certificate_id)
+            .expect("bounded cleanup of foreign stream");
+        assert_permission_denied(foreign_stream, service).await;
+    }
 }
 
 #[derive(Clone)]

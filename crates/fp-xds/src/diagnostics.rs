@@ -2,7 +2,7 @@
 //! so dataplane agents can relay Envoy liveness/config health through the same mTLS
 //! identity boundary.
 
-use crate::ads::TeamResolver;
+use crate::ads::{revocation_decision, RevocationDecision, TeamResolver};
 use fp_domain::DataplaneId;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -196,11 +196,20 @@ impl<T> tonic::server::NamedService for EnvoyDiagnosticsServiceServer<T> {
 pub struct DiagnosticsService {
     resolver: Arc<dyn TeamResolver>,
     pool: sqlx::PgPool,
+    revocations: tokio::sync::broadcast::Sender<uuid::Uuid>,
 }
 
 impl DiagnosticsService {
-    pub fn new(resolver: Arc<dyn TeamResolver>, pool: sqlx::PgPool) -> Self {
-        Self { resolver, pool }
+    pub fn new(
+        resolver: Arc<dyn TeamResolver>,
+        pool: sqlx::PgPool,
+        revocations: tokio::sync::broadcast::Sender<uuid::Uuid>,
+    ) -> Self {
+        Self {
+            resolver,
+            pool,
+            revocations,
+        }
     }
 
     pub fn into_server(self) -> EnvoyDiagnosticsServiceServer<Self> {
@@ -216,6 +225,7 @@ impl EnvoyDiagnosticsService for DiagnosticsService {
         &self,
         request: Request<Streaming<DiagnosticsReport>>,
     ) -> Result<Response<Self::ReportDiagnosticsStream>, Status> {
+        let mut revocations = self.revocations.subscribe();
         let peer_certificate = crate::server::presented_certificate_identity(&request);
         let identity = self
             .resolver
@@ -230,16 +240,34 @@ impl EnvoyDiagnosticsService for DiagnosticsService {
         let mut inbound = request.into_inner();
         let pool = self.pool.clone();
         let team_id = identity.team_id;
+        let certificate_id = identity.certificate_id;
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<DiagnosticsAck, Status>>(32);
 
         tokio::spawn(async move {
-            while let Some(report) = inbound.next().await {
-                let ack = match report {
-                    Ok(report) => process_report(&pool, team_id, bound_dataplane_id, report).await,
-                    Err(status) => Err(status),
-                };
-                if tx.send(ack).await.is_err() {
-                    return;
+            loop {
+                tokio::select! {
+                    report = inbound.next() => {
+                        let Some(report) = report else { return };
+                        let ack = match report {
+                            Ok(report) => {
+                                process_report(&pool, team_id, bound_dataplane_id, report).await
+                            }
+                            Err(status) => Err(status),
+                        };
+                        if tx.send(ack).await.is_err() {
+                            return;
+                        }
+                    }
+                    revoked = revocations.recv() => {
+                        match revocation_decision(certificate_id, revoked) {
+                            RevocationDecision::Continue => {}
+                            RevocationDecision::Terminate(status) => {
+                                let _ = tx.send(Err(status)).await;
+                                return;
+                            }
+                            RevocationDecision::Shutdown => return,
+                        }
+                    }
                 }
             }
         });

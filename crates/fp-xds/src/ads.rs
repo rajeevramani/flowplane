@@ -188,6 +188,67 @@ pub fn publish_revocations(
     }
 }
 
+pub(crate) enum RevocationDecision {
+    Continue,
+    Terminate(Status),
+    Shutdown,
+}
+
+pub(crate) fn revocation_decision(
+    certificate_id: Option<Uuid>,
+    event: Result<Uuid, tokio::sync::broadcast::error::RecvError>,
+) -> RevocationDecision {
+    match event {
+        Ok(revoked_id) if certificate_id == Some(revoked_id) => {
+            RevocationDecision::Terminate(Status::permission_denied("certificate has been revoked"))
+        }
+        Ok(_) => RevocationDecision::Continue,
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) if certificate_id.is_some() => {
+            RevocationDecision::Terminate(Status::unavailable(
+                "revocation feed lagged; reconnect to re-validate",
+            ))
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => RevocationDecision::Continue,
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => RevocationDecision::Shutdown,
+    }
+}
+
+#[cfg(test)]
+mod revocation_tests {
+    use super::{revocation_decision, RevocationDecision};
+    use tokio::sync::broadcast::error::RecvError;
+    use tonic::Code;
+    use uuid::Uuid;
+
+    #[test]
+    fn matching_certificate_terminates_and_foreign_certificate_continues() {
+        let bound = Uuid::now_v7();
+        let foreign = Uuid::now_v7();
+
+        assert!(matches!(
+            revocation_decision(Some(bound), Ok(foreign)),
+            RevocationDecision::Continue
+        ));
+        assert!(matches!(
+            revocation_decision(Some(bound), Ok(bound)),
+            RevocationDecision::Terminate(status) if status.code() == Code::PermissionDenied
+        ));
+    }
+
+    #[test]
+    fn lagged_certificate_bound_stream_fails_closed_and_closed_bus_shuts_down() {
+        let bound = Uuid::now_v7();
+        assert!(matches!(
+            revocation_decision(Some(bound), Err(RecvError::Lagged(3))),
+            RevocationDecision::Terminate(status) if status.code() == Code::Unavailable
+        ));
+        assert!(matches!(
+            revocation_decision(Some(bound), Err(RecvError::Closed)),
+            RevocationDecision::Shutdown
+        ));
+    }
+}
+
 pub struct AdsService {
     cache: Arc<SnapshotCache>,
     resolver: Arc<dyn TeamResolver>,
@@ -427,30 +488,15 @@ impl AggregatedDiscoveryService for AdsService {
                         }
                     }
                     revoked = revocations.recv() => {
-                        match revoked {
-                            Ok(cert_id) => {
-                                if certificate_id == Some(cert_id) {
-                                    tracing::warn!(team = ?team, cert = %cert_id,
-                                        "terminating xDS stream: certificate revoked");
-                                    let _ = tx.send(Err(Status::permission_denied(
-                                        "certificate has been revoked",
-                                    ))).await;
-                                    return;
-                                }
+                        match revocation_decision(certificate_id, revoked) {
+                            RevocationDecision::Continue => {}
+                            RevocationDecision::Terminate(status) => {
+                                tracing::warn!(team = ?team, code = ?status.code(),
+                                    "terminating xDS stream: certificate revocation state");
+                                let _ = tx.send(Err(status)).await;
+                                return;
                             }
-                            // Lagged: we may have missed our own revocation — fail closed
-                            // for cert-bound streams; reconnect re-validates at the registry.
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                if certificate_id.is_some() {
-                                    let _ = tx.send(Err(Status::unavailable(
-                                        "revocation feed lagged; reconnect to re-validate",
-                                    ))).await;
-                                    return;
-                                }
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                return; // server shutting down
-                            }
+                            RevocationDecision::Shutdown => return,
                         }
                     }
                     changed = changes.changed() => {

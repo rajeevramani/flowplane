@@ -4,7 +4,7 @@
 //! thin: it parses Envoy protobufs into the domain `ObservationIngest` shape and delegates all
 //! tenancy, quota, merge, TTL, and counter rules to storage.
 
-use crate::ads::{PeerIdentity, TeamResolver};
+use crate::ads::{revocation_decision, PeerIdentity, RevocationDecision, TeamResolver};
 use chrono::{DateTime, SecondsFormat, Utc};
 use envoy_types::pb::envoy::config::core::v3::{
     header_value_option, HeaderMap, HeaderValue, HeaderValueOption, RequestMethod,
@@ -47,6 +47,7 @@ const MAX_AI_SSE_REMAINDER_BYTES: usize = 1024 * 1024;
 pub struct LearningCaptureService {
     pool: sqlx::PgPool,
     resolver: Arc<dyn TeamResolver>,
+    revocations: tokio::sync::broadcast::Sender<Uuid>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -75,6 +76,15 @@ struct DiscoveryCaptureContext {
 enum CaptureContext {
     Config(ConfigCaptureContext),
     Discovery(DiscoveryCaptureContext),
+}
+
+impl CaptureContext {
+    fn peer_identity(&self) -> PeerIdentity {
+        match self {
+            Self::Config(ctx) => ctx._peer_identity,
+            Self::Discovery(ctx) => ctx._peer_identity,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -269,8 +279,16 @@ struct AiExtProcContext {
 }
 
 impl LearningCaptureService {
-    pub fn new(pool: sqlx::PgPool, resolver: Arc<dyn TeamResolver>) -> Self {
-        Self { pool, resolver }
+    pub fn new(
+        pool: sqlx::PgPool,
+        resolver: Arc<dyn TeamResolver>,
+        revocations: tokio::sync::broadcast::Sender<Uuid>,
+    ) -> Self {
+        Self {
+            pool,
+            resolver,
+            revocations,
+        }
     }
 
     pub fn access_log_server(self) -> AccessLogServiceServer<Self> {
@@ -346,26 +364,40 @@ impl AccessLogService for LearningCaptureService {
         &self,
         request: Request<Streaming<StreamAccessLogsMessage>>,
     ) -> Result<Response<StreamAccessLogsResponse>, Status> {
+        let mut revocations = self.revocations.subscribe();
         let ctx = capture_context(&request, &self.resolver).await?;
+        let certificate_id = ctx.peer_identity().certificate_id;
         let mut stream = request.into_inner();
-        while let Some(message) = stream.message().await? {
-            if let Some(stream_access_logs_message::LogEntries::HttpLogs(entries)) =
-                message.log_entries
-            {
-                for entry in entries.log_entry {
-                    match observation_from_access_log(&entry) {
-                        Some(input) => {
-                            if let Err(status) = self.ingest(ctx.clone(), input).await {
-                                metrics::counter!(
-                                    "fp_capture_dropped_total",
-                                    "source" => "als",
-                                    "reason" => status.code().to_string()
-                                )
-                                .increment(1);
-                                tracing::warn!(code = ?status.code(), message = %status.message(), "dropped ALS learning observation");
+        loop {
+            tokio::select! {
+                message = stream.message() => {
+                    let Some(message) = message? else { break };
+                    if let Some(stream_access_logs_message::LogEntries::HttpLogs(entries)) =
+                        message.log_entries
+                    {
+                        for entry in entries.log_entry {
+                            match observation_from_access_log(&entry) {
+                                Some(input) => {
+                                    if let Err(status) = self.ingest(ctx.clone(), input).await {
+                                        metrics::counter!(
+                                            "fp_capture_dropped_total",
+                                            "source" => "als",
+                                            "reason" => status.code().to_string()
+                                        )
+                                        .increment(1);
+                                        tracing::warn!(code = ?status.code(), message = %status.message(), "dropped ALS learning observation");
+                                    }
+                                }
+                                None => tracing::debug!("skipping incomplete ALS learning entry"),
                             }
                         }
-                        None => tracing::debug!("skipping incomplete ALS learning entry"),
+                    }
+                }
+                revoked = revocations.recv() => {
+                    match revocation_decision(certificate_id, revoked) {
+                        RevocationDecision::Continue => {}
+                        RevocationDecision::Terminate(status) => return Err(status),
+                        RevocationDecision::Shutdown => break,
                     }
                 }
             }
@@ -384,6 +416,7 @@ impl ExternalProcessor for LearningCaptureService {
         &self,
         request: Request<Streaming<ProcessingRequest>>,
     ) -> Result<Response<Self::ProcessStream>, Status> {
+        let revocations = self.revocations.subscribe();
         if is_ai_processor(request.metadata()) {
             let peer_certificate = crate::server::presented_certificate_identity(&request);
             let identity = self
@@ -403,41 +436,60 @@ impl ExternalProcessor for LearningCaptureService {
                 }
                 None => None,
             };
-            return Ok(Response::new(ReceiverStream::new(ai_process_stream(
-                self.pool.clone(),
-                request.into_inner(),
-                context,
-                Some(identity),
-            ))));
+            return Ok(Response::new(ReceiverStream::new(
+                ai_process_stream_with_revocations(
+                    self.pool.clone(),
+                    request.into_inner(),
+                    context,
+                    Some(identity),
+                    Some(revocations),
+                ),
+            )));
         }
         let ctx = capture_context(&request, &self.resolver).await?;
+        let certificate_id = ctx.peer_identity().certificate_id;
         let mut stream = request.into_inner();
+        let mut revocations = revocations;
         let service = self.clone();
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<ProcessingResponse, Status>>(16);
         tokio::spawn(async move {
             let mut state = ExtProcState::default();
             loop {
-                match stream.message().await {
-                    Ok(Some(message)) => {
-                        if tx.send(Ok(continue_response(&message))).await.is_err() {
-                            break;
-                        }
-                        if let Some(input) = observation_from_ext_proc(&mut state, message) {
-                            if let Err(status) = service.ingest(ctx.clone(), input).await {
-                                metrics::counter!(
-                                    "fp_capture_dropped_total",
-                                    "source" => "ext_proc",
-                                    "reason" => status.code().to_string()
-                                )
-                                .increment(1);
-                                tracing::warn!(code = ?status.code(), message = %status.message(), "dropped ExtProc learning observation");
+                tokio::select! {
+                    message = stream.message() => {
+                        match message {
+                            Ok(Some(message)) => {
+                                if tx.send(Ok(continue_response(&message))).await.is_err() {
+                                    break;
+                                }
+                                if let Some(input) = observation_from_ext_proc(&mut state, message) {
+                                    if let Err(status) = service.ingest(ctx.clone(), input).await {
+                                        metrics::counter!(
+                                            "fp_capture_dropped_total",
+                                            "source" => "ext_proc",
+                                            "reason" => status.code().to_string()
+                                        )
+                                        .increment(1);
+                                        tracing::warn!(code = ?status.code(), message = %status.message(), "dropped ExtProc learning observation");
+                                    }
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(status) => {
+                                tracing::debug!(code = ?status.code(), message = %status.message(), "ExtProc learning stream ended with error");
+                                break;
                             }
                         }
                     }
-                    Ok(None) => break,
-                    Err(status) => {
-                        tracing::debug!(code = ?status.code(), message = %status.message(), "ExtProc learning stream ended with error");
-                        break;
+                    revoked = revocations.recv() => {
+                        match revocation_decision(certificate_id, revoked) {
+                            RevocationDecision::Continue => {}
+                            RevocationDecision::Terminate(status) => {
+                                let _ = tx.send(Err(status)).await;
+                                break;
+                            }
+                            RevocationDecision::Shutdown => break,
+                        }
                     }
                 }
             }
@@ -448,11 +500,25 @@ impl ExternalProcessor for LearningCaptureService {
 
 /// Generic over the message source so integration tests can drive the exact production
 /// loop with an in-memory stream (`tonic::Streaming` implements the same `Stream` shape).
+#[cfg(test)]
 fn ai_process_stream<S>(
+    pool: sqlx::PgPool,
+    stream: S,
+    context: Option<AiExtProcContext>,
+    peer_identity: Option<PeerIdentity>,
+) -> tokio::sync::mpsc::Receiver<Result<ProcessingResponse, Status>>
+where
+    S: tokio_stream::Stream<Item = Result<ProcessingRequest, Status>> + Send + Unpin + 'static,
+{
+    ai_process_stream_with_revocations(pool, stream, context, peer_identity, None)
+}
+
+fn ai_process_stream_with_revocations<S>(
     pool: sqlx::PgPool,
     mut stream: S,
     context: Option<AiExtProcContext>,
     peer_identity: Option<PeerIdentity>,
+    mut revocations: Option<tokio::sync::broadcast::Receiver<Uuid>>,
 ) -> tokio::sync::mpsc::Receiver<Result<ProcessingResponse, Status>>
 where
     S: tokio_stream::Stream<Item = Result<ProcessingRequest, Status>> + Send + Unpin + 'static,
@@ -466,32 +532,49 @@ where
             ..Default::default()
         };
         loop {
-            match stream.next().await {
-                Some(Ok(message)) => {
-                    let response = ai_response_with_pool(&pool, &mut state, message).await;
-                    let immediate = matches!(
-                        response.response,
-                        Some(processing_response::Response::ImmediateResponse(_))
-                    );
-                    if tx.send(Ok(response)).await.is_err() {
-                        break;
-                    }
-                    if immediate {
-                        // Immediate responses (budget reject, credential failure) end HTTP
-                        // processing for the request; persist the row best-effort off this
-                        // fast path (design Risk 1) — never awaited before the client sees
-                        // the response. The stream-end persist below merges idempotently.
-                        let pool = pool.clone();
-                        let snapshot = state.clone();
-                        tokio::spawn(async move {
-                            persist_ai_trace(&pool, &snapshot, None).await;
-                        });
+            tokio::select! {
+                message = stream.next() => {
+                    match message {
+                        Some(Ok(message)) => {
+                            let response = ai_response_with_pool(&pool, &mut state, message).await;
+                            let immediate = matches!(
+                                response.response,
+                                Some(processing_response::Response::ImmediateResponse(_))
+                            );
+                            if tx.send(Ok(response)).await.is_err() {
+                                break;
+                            }
+                            if immediate {
+                                // Immediate responses (budget reject, credential failure) end HTTP
+                                // processing for the request; persist the row best-effort off this
+                                // fast path (design Risk 1) — never awaited before the client sees
+                                // the response. The stream-end persist below merges idempotently.
+                                let pool = pool.clone();
+                                let snapshot = state.clone();
+                                tokio::spawn(async move {
+                                    persist_ai_trace(&pool, &snapshot, None).await;
+                                });
+                            }
+                        }
+                        None => break,
+                        Some(Err(status)) => {
+                            tracing::debug!(code = ?status.code(), message = %status.message(), "AI ExtProc stream ended with error");
+                            break;
+                        }
                     }
                 }
-                None => break,
-                Some(Err(status)) => {
-                    tracing::debug!(code = ?status.code(), message = %status.message(), "AI ExtProc stream ended with error");
-                    break;
+                revoked = receive_revocation(&mut revocations) => {
+                    match revocation_decision(
+                        state._peer_identity.and_then(|identity| identity.certificate_id),
+                        revoked,
+                    ) {
+                        RevocationDecision::Continue => {}
+                        RevocationDecision::Terminate(status) => {
+                            let _ = tx.send(Err(status)).await;
+                            break;
+                        }
+                        RevocationDecision::Shutdown => break,
+                    }
                 }
             }
         }
@@ -500,6 +583,15 @@ where
         persist_ai_trace(&pool, &state, settlement).await;
     });
     rx
+}
+
+async fn receive_revocation(
+    revocations: &mut Option<tokio::sync::broadcast::Receiver<Uuid>>,
+) -> Result<Uuid, tokio::sync::broadcast::error::RecvError> {
+    match revocations {
+        Some(revocations) => revocations.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// A client that disconnects mid-SSE tears both streams down before the response body
@@ -2383,7 +2475,8 @@ mod tests {
         let resolver = Arc::new(FixedTeamResolver {
             team_id: bound_team_id,
         }) as Arc<dyn TeamResolver>;
-        LearningCaptureService::new(pool, resolver)
+        let (revocations, _) = tokio::sync::broadcast::channel(16);
+        LearningCaptureService::new(pool, resolver, revocations)
     }
 
     fn capture_request(team_id: TeamId) -> Request<()> {
