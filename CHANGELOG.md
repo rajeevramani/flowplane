@@ -23,6 +23,7 @@ contains one intentional external-registration request change described under **
 
 ### Security
 
+- Lost sole-platform-administrator recovery now uses a supported offline `plan`/`apply` CLI seam with private subject input, exact digest confirmation, row-locked transactional recomputation, guarded owner transfers, and atomic redacted audit evidence. It adds no REST, MCP, or xDS recovery authority and never transfers grants or team memberships. (`fpv2-92f`)
 - Dataplane mTLS authorization now binds the verified leaf's SPIFFE URI and SHA-256 fingerprint to
   one exact active certificate row across every xDS-family service. Bounded two-certificate overlap
   supports connect-new-before-revoke-old rotation; exact revocation terminates only streams using

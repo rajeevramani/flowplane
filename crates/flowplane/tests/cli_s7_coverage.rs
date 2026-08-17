@@ -54,12 +54,13 @@ const SNAPSHOT_COVERED: &[&str] = &[
 /// Leaf paths that do NOT emit the resource-JSON envelope and so have no envelope to snapshot.
 /// Each carries a one-line reason for the exemption.
 const EXEMPT: &[&str] = &[
-    "serve",                          // long-running daemon, never returns an envelope
+    "serve",                           // long-running daemon, never returns an envelope
     "dashboard",    // long-running local presentation server (fpv2-03m), no envelope
     "completion",   // emits a shell completion script, not the envelope
     "db migrate",   // database migration runner
     "db preflight", // read-only local database upgrade guard
     "db recover-platform-admin plan", // read-only offline recovery plan JSON
+    "db recover-platform-admin apply", // offline audited recovery mutation JSON
     "auth login",   // interactive OIDC browser/device flow
     "auth logout",  // clears local credentials
     "auth token",   // prints the raw bearer token to stdout

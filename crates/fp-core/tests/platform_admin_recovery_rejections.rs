@@ -215,6 +215,65 @@ async fn plan_rejects_unsafe_identity_and_membership_states_without_mutation() {
         .await
         .expect("promote source fixture to tenant owner");
 
+    let mut guarded_tx = pool.begin().await.expect("begin guarded mismatch check");
+    let guarded_mismatch = fp_storage::repos::identity::transfer_recovery_membership_in_tx(
+        &mut guarded_tx,
+        platform_membership,
+        fp_domain::OrgId::from(platform_org),
+        fp_domain::UserId::from(replacement_user),
+        fp_domain::UserId::from(source_user),
+    )
+    .await;
+    guarded_tx
+        .rollback()
+        .await
+        .expect("rollback guarded mismatch check");
+    assert!(
+        guarded_mismatch.is_err(),
+        "guarded row mismatch must conflict"
+    );
+
+    let grant_team = Uuid::now_v7();
+    let source_grant = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO teams (id, org_id, name, display_name, status) \
+         VALUES ($1, $2, $3, $3, 'active')",
+    )
+    .bind(grant_team)
+    .bind(tenant_org)
+    .bind(format!("recovery-grant-team-{suffix}"))
+    .execute(&pool)
+    .await
+    .expect("insert grant team fixture");
+    sqlx::query(
+        "INSERT INTO user_grants (id, user_id, org_id, team_id, resource, action, created_by) \
+         VALUES ($1, $2, $3, $4, 'clusters', 'read', $2)",
+    )
+    .bind(source_grant)
+    .bind(source_user)
+    .bind(tenant_org)
+    .bind(grant_team)
+    .execute(&pool)
+    .await
+    .expect("insert source grant fixture");
+    let selected_tenant_with_source_grant = plan(
+        &pool,
+        &replacement_subject,
+        std::slice::from_ref(&tenant_name),
+    )
+    .await
+    .err();
+    sqlx::query("DELETE FROM user_grants WHERE id = $1")
+        .bind(source_grant)
+        .execute(&pool)
+        .await
+        .expect("remove source grant fixture");
+    sqlx::query("DELETE FROM teams WHERE id = $1")
+        .bind(grant_team)
+        .execute(&pool)
+        .await
+        .expect("remove grant team fixture");
+
     let replacement_tenant_membership = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO org_memberships (id, org_id, user_id, role) VALUES ($1, $2, $3, 'viewer')",
@@ -271,6 +330,10 @@ async fn plan_rejects_unsafe_identity_and_membership_states_without_mutation() {
         ("platform tenant selector", platform_tenant),
         ("ambiguous tenant selector", ambiguous_tenant),
         ("source not tenant owner", source_not_tenant_owner),
+        (
+            "selected tenant has source grants",
+            selected_tenant_with_source_grant,
+        ),
         ("existing tenant membership", existing_tenant_membership),
         ("duplicate tenant", duplicate_tenant),
     ];

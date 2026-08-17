@@ -159,6 +159,8 @@ Database operations.
 | Subcommand | Purpose |
 |------------|---------|
 | `db preflight` | Read-only `3.1.3` lifecycle migration check. Emits stable blocker codes plus dataplane/certificate UUIDs; never certificate material. Exits nonzero when blocked. |
+| `db recover-platform-admin plan --subject-stdin\|--subject-file <0600-FILE> [--transfer-owned-org <NAME-OR-UUID>]` | Validate a narrowly bounded offline lost-owner recovery and print a redacted digest-bound plan without mutation. Subject input is private and never accepted positionally. |
+| `db recover-platform-admin apply --subject-stdin\|--subject-file <0600-FILE> [--transfer-owned-org <NAME-OR-UUID>] --expected-plan <sha256:HEX> --yes` | Recompute and atomically apply exactly one reviewed platform-owner transfer plus explicit eligible tenant-owner transfers, with a fixed redacted audit row. Requires all control-plane replicas stopped and a verified backup. |
 | `db migrate` | Apply pending migrations (forward-only) and exit. |
 
 ### `openapi`

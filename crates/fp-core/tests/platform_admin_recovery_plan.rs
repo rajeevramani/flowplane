@@ -2,7 +2,9 @@
 
 #![allow(clippy::expect_used)]
 
-use fp_core::services::platform_admin_recovery::{plan, PlanDigest, RecoveryPlan, TenantTransfer};
+use fp_core::services::platform_admin_recovery::{
+    apply, plan, PlanDigest, RecoveryPlan, TenantTransfer,
+};
 use fp_domain::{EntityStatus, ErrorCode, OrgId, OrgRole, UserId};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::str::FromStr;
@@ -333,6 +335,27 @@ async fn plan_reads_one_sole_owner_and_one_explicit_tenant_owner_from_real_postg
         std::slice::from_ref(&tenant_name),
     )
     .await;
+    let reviewed_digest = result.as_ref().expect("eligible plan").digest.clone();
+    let mut apply_blocker = pool.begin().await.expect("begin apply blocker");
+    assert!(
+        fp_storage::repos::bootstrap::try_lock_platform_identity_in_tx(&mut apply_blocker)
+            .await
+            .expect("hold apply platform identity lock")
+    );
+    let busy_apply = tokio::time::timeout(
+        Duration::from_millis(250),
+        apply(
+            &pool,
+            &replacement_subject,
+            std::slice::from_ref(&tenant_name),
+            &reviewed_digest,
+        ),
+    )
+    .await;
+    apply_blocker
+        .rollback()
+        .await
+        .expect("release apply platform identity lock");
 
     if let Some(marker) = old_marker {
         sqlx::query(
@@ -370,6 +393,10 @@ async fn plan_reads_one_sole_owner_and_one_explicit_tenant_owner_from_real_postg
         .expect("busy plan must fail closed without waiting")
         .expect_err("busy plan must not return a stale plan");
     assert_eq!(busy.code, ErrorCode::Conflict);
+    let busy_apply = busy_apply
+        .expect("busy apply must fail closed without waiting")
+        .expect_err("busy apply must not mutate");
+    assert_eq!(busy_apply.code, ErrorCode::Conflict);
     assert_eq!(plan.platform_org_id, OrgId::from(platform_org));
     assert_eq!(plan.source_user_id, UserId::from(source_user));
     assert_eq!(plan.replacement_user_id, UserId::from(replacement_user));

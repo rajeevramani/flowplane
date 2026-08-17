@@ -185,6 +185,8 @@ enum DbCommand {
 enum PlatformAdminRecoveryCommand {
     /// Validate eligibility and print a redacted, digest-bound plan without mutation.
     Plan(RecoveryPlanArgs),
+    /// Apply an exact reviewed plan as one guarded, audited database transaction.
+    Apply(RecoveryApplyArgs),
 }
 
 #[derive(Args)]
@@ -208,6 +210,36 @@ pub(crate) struct RecoveryPlanArgs {
     pub(crate) transfer_owned_org: Vec<String>,
     /// Reject mistakenly supplied positional private input without echoing its value.
     // The runner rejects it generically; this is not an accepted identity-input form.
+    #[arg(hide = true, value_name = "PRIVATE-INPUT")]
+    pub(crate) forbidden_positional_input: Vec<std::ffi::OsString>,
+}
+
+#[derive(Args)]
+pub(crate) struct RecoveryApplyArgs {
+    /// Read the replacement immutable OIDC subject from standard input.
+    #[arg(
+        long,
+        required_unless_present = "subject_file",
+        conflicts_with = "subject_file"
+    )]
+    pub(crate) subject_stdin: bool,
+    /// Read the replacement immutable OIDC subject from an owner-only regular file.
+    #[arg(
+        long,
+        value_name = "0600-FILE",
+        required_unless_present = "subject_stdin"
+    )]
+    pub(crate) subject_file: Option<std::path::PathBuf>,
+    /// Transfer one source-owned tenant owner membership in addition to platform ownership.
+    #[arg(long, value_name = "NAME-OR-UUID")]
+    pub(crate) transfer_owned_org: Vec<String>,
+    /// Exact digest printed by the reviewed plan command.
+    #[arg(long, value_name = "sha256:HEX", required = true)]
+    pub(crate) expected_plan: String,
+    /// Confirm the reviewed, stop-the-world recovery mutation.
+    #[arg(long, required = true)]
+    pub(crate) yes: bool,
+    /// Reject mistakenly supplied positional private input without echoing its value.
     #[arg(hide = true, value_name = "PRIVATE-INPUT")]
     pub(crate) forbidden_positional_input: Vec<std::ffi::OsString>,
 }
@@ -264,6 +296,12 @@ fn run() -> anyhow::Result<()> {
                     command: PlatformAdminRecoveryCommand::Plan(args),
                 },
         } => runtime.block_on(serve::platform_admin_recovery_plan(args)),
+        Command::Db {
+            command:
+                DbCommand::RecoverPlatformAdmin {
+                    command: PlatformAdminRecoveryCommand::Apply(args),
+                },
+        } => runtime.block_on(serve::platform_admin_recovery_apply(args)),
         Command::Openapi => {
             let doc = fp_api::routes::openapi_document();
             println!(
@@ -712,7 +750,7 @@ mod tests {
             "apply",
         ];
 
-        // 85 EXEMPT leaves (space-joined paths) — no example required.
+        // 86 EXEMPT leaves (space-joined paths) — no example required.
         const EXEMPT: &[&str] = &[
             "agent grants",
             "agent list",
@@ -749,6 +787,7 @@ mod tests {
             "dataplane list",
             "db migrate",
             "db preflight",
+            "db recover-platform-admin apply",
             "db recover-platform-admin plan",
             "learn cancel",
             "learn discover generate-spec",

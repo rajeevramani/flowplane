@@ -1,9 +1,10 @@
 //! Offline platform-admin recovery policy and redacted plan contracts.
 
-use fp_domain::{DomainError, DomainResult, EntityStatus, OrgId, OrgRole, UserId};
+use fp_domain::{DomainError, DomainResult, EntityStatus, OrgId, OrgRole, RequestId, UserId};
+use fp_storage::repos::audit::{ActorType, AuditEntry, Outcome, Surface};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use uuid::Uuid;
@@ -61,6 +62,18 @@ pub struct RecoveryPlan {
     pub tenant_transfers: Vec<TenantTransfer>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RecoveryApplyResult {
+    pub request_id: RequestId,
+    pub applied_plan: PlanDigest,
+    pub platform_org_id: OrgId,
+    pub source_user_id: UserId,
+    pub replacement_user_id: UserId,
+    pub transferred_memberships: usize,
+    pub tenant_org_ids: Vec<OrgId>,
+    pub rollback_available: bool,
+}
+
 #[derive(Serialize)]
 struct CanonicalPlan<'a> {
     platform_membership_id: Uuid,
@@ -100,21 +113,141 @@ pub async fn plan(
         ));
     }
 
-    let platform_org_id = fp_storage::repos::identity::recovery_platform_org_id(&mut tx)
-        .await?
-        .ok_or_else(|| DomainError::conflict("the database is not initialized"))?;
-    let replacement =
-        fp_storage::repos::identity::recovery_user_by_subject(&mut tx, replacement_subject)
+    let result = build_plan_in_tx(&mut tx, replacement_subject, transfer_owned_orgs, false).await;
+    tx.rollback()
+        .await
+        .map_err(|e| DomainError::internal(format!("recovery plan: rollback: {e}")))?;
+    result
+}
+
+pub async fn apply(
+    pool: &PgPool,
+    replacement_subject: &str,
+    transfer_owned_orgs: &[String],
+    expected_plan: &PlanDigest,
+) -> DomainResult<RecoveryApplyResult> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| DomainError::internal(format!("recovery apply: begin: {e}")))?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DomainError::internal(format!("recovery apply: isolation: {e}")))?;
+    if !fp_storage::repos::bootstrap::try_lock_platform_identity_in_tx(&mut tx).await? {
+        return Err(DomainError::conflict(
+            "another platform identity operation is in progress; retry recovery apply",
+        ));
+    }
+
+    let plan = build_plan_in_tx(&mut tx, replacement_subject, transfer_owned_orgs, true).await?;
+    if plan.digest != *expected_plan {
+        return Err(DomainError::conflict(
+            "the recovery plan is stale; run plan again and review the new digest",
+        ));
+    }
+
+    fp_storage::repos::identity::transfer_recovery_membership_in_tx(
+        &mut tx,
+        plan.platform_membership_id,
+        plan.platform_org_id,
+        plan.source_user_id,
+        plan.replacement_user_id,
+    )
+    .await?;
+    for tenant in &plan.tenant_transfers {
+        fp_storage::repos::identity::transfer_recovery_membership_in_tx(
+            &mut tx,
+            tenant.membership_id,
+            tenant.org_id,
+            plan.source_user_id,
+            plan.replacement_user_id,
+        )
+        .await?;
+    }
+
+    let request_id = RequestId::generate();
+    let rollback_available = plan.source_user_status == EntityStatus::Active;
+    let tenant_org_ids = plan
+        .tenant_transfers
+        .iter()
+        .map(|tenant| tenant.org_id)
+        .collect::<Vec<_>>();
+    let transferred_memberships = 1 + tenant_org_ids.len();
+    fp_storage::repos::audit::record_in_tx(
+        &mut tx,
+        &AuditEntry {
+            request_id: Some(request_id),
+            actor_type: ActorType::System,
+            actor_id: None,
+            actor_label: "offline-platform-admin-recovery".to_string(),
+            surface: Surface::Cli,
+            action: "platform_admin.recover".to_string(),
+            resource: format!("organizations/{}/platform-admin", plan.platform_org_id),
+            org_id: Some(plan.platform_org_id),
+            team_id: None,
+            outcome: Outcome::Success,
+            detail: serde_json::json!({
+                "source_user_id": plan.source_user_id,
+                "replacement_user_id": plan.replacement_user_id,
+                "platform_org_id": plan.platform_org_id,
+                "tenant_org_ids": tenant_org_ids.clone(),
+                "membership_count": transferred_memberships,
+                "request_id": request_id,
+                "expected_plan": expected_plan.as_str(),
+                "applied_plan": plan.digest.as_str(),
+                "rollback_available": rollback_available,
+            }),
+        },
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| DomainError::internal(format!("recovery apply: commit: {e}")))?;
+
+    Ok(RecoveryApplyResult {
+        request_id,
+        applied_plan: plan.digest,
+        platform_org_id: plan.platform_org_id,
+        source_user_id: plan.source_user_id,
+        replacement_user_id: plan.replacement_user_id,
+        transferred_memberships,
+        tenant_org_ids,
+        rollback_available,
+    })
+}
+
+async fn build_plan_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    replacement_subject: &str,
+    transfer_owned_orgs: &[String],
+    for_update: bool,
+) -> DomainResult<RecoveryPlan> {
+    let platform_org_id = if for_update {
+        fp_storage::repos::identity::recovery_platform_org_id_for_update(tx).await?
+    } else {
+        fp_storage::repos::identity::recovery_platform_org_id(tx).await?
+    }
+    .ok_or_else(|| DomainError::conflict("the database is not initialized"))?;
+    let replacement = if for_update {
+        fp_storage::repos::identity::recovery_user_by_subject_for_update(tx, replacement_subject)
             .await?
-            .ok_or_else(|| DomainError::conflict("the replacement identity is not provisioned"))?;
+    } else {
+        fp_storage::repos::identity::recovery_user_by_subject(tx, replacement_subject).await?
+    }
+    .ok_or_else(|| DomainError::conflict("the replacement identity is not provisioned"))?;
     if replacement.status != EntityStatus::Active {
         return Err(DomainError::conflict(
             "the replacement identity is not active",
         ));
     }
 
-    let owners =
-        fp_storage::repos::identity::recovery_owner_memberships(&mut tx, platform_org_id).await?;
+    let owners = if for_update {
+        fp_storage::repos::identity::recovery_owner_memberships_for_update(tx, platform_org_id)
+            .await?
+    } else {
+        fp_storage::repos::identity::recovery_owner_memberships(tx, platform_org_id).await?
+    };
     if owners.len() != 1 {
         return Err(DomainError::conflict(format!(
             "platform ownership is not recoverable: expected exactly one current owner, found {}",
@@ -122,10 +255,18 @@ pub async fn plan(
         )));
     }
     let source = &owners[0];
-    if fp_storage::repos::identity::recovery_membership(&mut tx, platform_org_id, replacement.id)
+    let replacement_platform_membership = if for_update {
+        fp_storage::repos::identity::recovery_membership_for_update(
+            tx,
+            platform_org_id,
+            replacement.id,
+        )
         .await?
-        .is_some()
-    {
+    } else {
+        fp_storage::repos::identity::recovery_membership(tx, platform_org_id, replacement.id)
+            .await?
+    };
+    if replacement_platform_membership.is_some() {
         return Err(DomainError::conflict(
             "the replacement identity already has a platform membership",
         ));
@@ -134,11 +275,12 @@ pub async fn plan(
     let mut seen_orgs = BTreeSet::new();
     let mut tenant_transfers = Vec::with_capacity(transfer_owned_orgs.len());
     for org_ref in transfer_owned_orgs {
-        let org = fp_storage::repos::identity::recovery_org_by_ref(&mut tx, org_ref)
-            .await?
-            .ok_or_else(|| {
-                DomainError::conflict("a requested tenant organization was not found")
-            })?;
+        let org = if for_update {
+            fp_storage::repos::identity::recovery_org_by_ref_for_update(tx, org_ref).await?
+        } else {
+            fp_storage::repos::identity::recovery_org_by_ref(tx, org_ref).await?
+        }
+        .ok_or_else(|| DomainError::conflict("a requested tenant organization was not found"))?;
         if org.id == platform_org_id {
             return Err(DomainError::conflict(
                 "the platform organization cannot be selected as a tenant transfer",
@@ -149,23 +291,45 @@ pub async fn plan(
                 "a tenant organization was requested more than once",
             ));
         }
-        let source_membership =
-            fp_storage::repos::identity::recovery_membership(&mut tx, org.id, source.user_id)
+        let source_membership = if for_update {
+            fp_storage::repos::identity::recovery_membership_for_update(tx, org.id, source.user_id)
                 .await?
-                .ok_or_else(|| {
-                    DomainError::conflict(
+        } else {
+            fp_storage::repos::identity::recovery_membership(tx, org.id, source.user_id).await?
+        }
+        .ok_or_else(|| {
+            DomainError::conflict(
                 "the source platform owner is not a member of a requested tenant organization",
             )
-                })?;
+        })?;
         if source_membership.role != OrgRole::Owner {
             return Err(DomainError::conflict(
                 "the source platform owner does not own a requested tenant organization",
             ));
         }
-        if fp_storage::repos::identity::recovery_membership(&mut tx, org.id, replacement.id)
+        let source_has_grants = if for_update {
+            fp_storage::repos::identity::recovery_user_grants_exist_for_update(
+                tx,
+                org.id,
+                source.user_id,
+            )
             .await?
-            .is_some()
-        {
+        } else {
+            fp_storage::repos::identity::recovery_user_grants_exist(tx, org.id, source.user_id)
+                .await?
+        };
+        if source_has_grants {
+            return Err(DomainError::conflict(
+                "a requested tenant organization has source user grants; recovery never transfers or deletes grants",
+            ));
+        }
+        let replacement_tenant_membership = if for_update {
+            fp_storage::repos::identity::recovery_membership_for_update(tx, org.id, replacement.id)
+                .await?
+        } else {
+            fp_storage::repos::identity::recovery_membership(tx, org.id, replacement.id).await?
+        };
+        if replacement_tenant_membership.is_some() {
             return Err(DomainError::conflict(
                 "the replacement identity already has a requested tenant membership",
             ));
@@ -178,7 +342,7 @@ pub async fn plan(
         });
     }
 
-    let result = RecoveryPlan::new(
+    RecoveryPlan::new(
         platform_org_id,
         source.user_id,
         source.user_status,
@@ -187,11 +351,7 @@ pub async fn plan(
         source.id,
         source.role,
         tenant_transfers,
-    );
-    tx.rollback()
-        .await
-        .map_err(|e| DomainError::internal(format!("recovery plan: rollback: {e}")))?;
-    result
+    )
 }
 
 impl RecoveryPlan {

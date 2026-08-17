@@ -1431,6 +1431,185 @@ pub async fn recovery_org_by_ref(
     }))
 }
 
+pub async fn recovery_platform_org_id_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+) -> DomainResult<Option<OrgId>> {
+    let marker: Option<String> = sqlx::query_scalar(
+        "SELECT value FROM instance_meta WHERE key = 'platform_org_id' FOR UPDATE",
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: lock platform marker: {e}")))?;
+    marker
+        .map(|raw| {
+            Uuid::parse_str(&raw).map(OrgId::from).map_err(|e| {
+                DomainError::internal(format!("recovery: invalid platform marker: {e}"))
+            })
+        })
+        .transpose()
+}
+
+pub async fn recovery_user_by_subject_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    subject: &str,
+) -> DomainResult<Option<RecoveryUserRow>> {
+    let row = sqlx::query("SELECT id, status FROM users WHERE subject = $1 FOR UPDATE")
+        .bind(subject)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| DomainError::internal(format!("recovery: lock replacement: {e}")))?;
+    row.map(|row| {
+        Ok(RecoveryUserRow {
+            id: UserId::from(row.get::<Uuid, _>("id")),
+            status: parse_status(row.get("status"))?,
+        })
+    })
+    .transpose()
+}
+
+pub async fn recovery_owner_memberships_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: OrgId,
+) -> DomainResult<Vec<RecoveryMembershipRow>> {
+    let rows = sqlx::query(
+        "SELECT om.id, om.org_id, om.user_id, om.role, u.status AS user_status \
+         FROM org_memberships om JOIN users u ON u.id = om.user_id \
+         WHERE om.org_id = $1 AND om.role = 'owner' ORDER BY om.id FOR UPDATE OF om, u",
+    )
+    .bind(org_id.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: lock platform owners: {e}")))?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(RecoveryMembershipRow {
+                id: row.get("id"),
+                org_id: OrgId::from(row.get::<Uuid, _>("org_id")),
+                user_id: UserId::from(row.get::<Uuid, _>("user_id")),
+                role: OrgRole::parse(row.get("role"))?,
+                user_status: parse_status(row.get("user_status"))?,
+            })
+        })
+        .collect()
+}
+
+pub async fn recovery_membership_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: OrgId,
+    user_id: UserId,
+) -> DomainResult<Option<RecoveryMembershipRow>> {
+    let row = sqlx::query(
+        "SELECT om.id, om.org_id, om.user_id, om.role, u.status AS user_status \
+         FROM org_memberships om JOIN users u ON u.id = om.user_id \
+         WHERE om.org_id = $1 AND om.user_id = $2 FOR UPDATE OF om, u",
+    )
+    .bind(org_id.as_uuid())
+    .bind(user_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: lock membership: {e}")))?;
+    row.map(|row| {
+        Ok(RecoveryMembershipRow {
+            id: row.get("id"),
+            org_id: OrgId::from(row.get::<Uuid, _>("org_id")),
+            user_id: UserId::from(row.get::<Uuid, _>("user_id")),
+            role: OrgRole::parse(row.get("role"))?,
+            user_status: parse_status(row.get("user_status"))?,
+        })
+    })
+    .transpose()
+}
+
+pub async fn recovery_org_by_ref_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    org_ref: &str,
+) -> DomainResult<Option<RecoveryOrgRow>> {
+    let rows = if let Ok(id) = Uuid::parse_str(org_ref) {
+        sqlx::query(
+            "SELECT id, name FROM organizations \
+             WHERE (id = $1 OR name = $2) AND status = 'active' ORDER BY id LIMIT 2 FOR UPDATE",
+        )
+        .bind(id)
+        .bind(org_ref)
+        .fetch_all(&mut **tx)
+        .await
+    } else {
+        sqlx::query(
+            "SELECT id, name FROM organizations WHERE name = $1 AND status = 'active' FOR UPDATE",
+        )
+        .bind(org_ref)
+        .fetch_all(&mut **tx)
+        .await
+    }
+    .map_err(|e| DomainError::internal(format!("recovery: lock tenant organization: {e}")))?;
+    if rows.len() > 1 {
+        return Err(DomainError::conflict(
+            "a requested tenant organization selector is ambiguous",
+        ));
+    }
+    Ok(rows.into_iter().next().map(|row| RecoveryOrgRow {
+        id: OrgId::from(row.get::<Uuid, _>("id")),
+        name: row.get("name"),
+    }))
+}
+
+pub async fn transfer_recovery_membership_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    membership_id: Uuid,
+    org_id: OrgId,
+    source_user_id: UserId,
+    replacement_user_id: UserId,
+) -> DomainResult<()> {
+    let updated = sqlx::query(
+        "UPDATE org_memberships SET user_id = $1 \
+         WHERE id = $2 AND org_id = $3 AND user_id = $4 AND role = 'owner'",
+    )
+    .bind(replacement_user_id.as_uuid())
+    .bind(membership_id)
+    .bind(org_id.as_uuid())
+    .bind(source_user_id.as_uuid())
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: transfer owner membership: {e}")))?;
+    if updated.rows_affected() != 1 {
+        return Err(DomainError::conflict(
+            "recovery state changed before an owner membership could be transferred",
+        ));
+    }
+    Ok(())
+}
+
+pub async fn recovery_user_grants_exist(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: OrgId,
+    user_id: UserId,
+) -> DomainResult<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM user_grants WHERE org_id = $1 AND user_id = $2)",
+    )
+    .bind(org_id.as_uuid())
+    .bind(user_id.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: inspect source grants: {e}")))
+}
+
+pub async fn recovery_user_grants_exist_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: OrgId,
+    user_id: UserId,
+) -> DomainResult<bool> {
+    let id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM user_grants WHERE org_id = $1 AND user_id = $2 LIMIT 1 FOR UPDATE",
+    )
+    .bind(org_id.as_uuid())
+    .bind(user_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: lock source grants: {e}")))?;
+    Ok(id.is_some())
+}
+
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
