@@ -3,9 +3,10 @@
 mod cli;
 mod paths;
 mod qualification;
+mod recovery_input;
 mod serve;
 
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_complete::Shell;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -171,8 +172,44 @@ enum Command {
 enum DbCommand {
     /// Check credential-lifecycle migration blockers without changing the database.
     Preflight,
+    /// Recover an unavailable sole platform administrator through an offline workflow.
+    RecoverPlatformAdmin {
+        #[command(subcommand)]
+        command: PlatformAdminRecoveryCommand,
+    },
     /// Apply pending migrations (forward-only) and exit.
     Migrate,
+}
+
+#[derive(Subcommand)]
+enum PlatformAdminRecoveryCommand {
+    /// Validate eligibility and print a redacted, digest-bound plan without mutation.
+    Plan(RecoveryPlanArgs),
+}
+
+#[derive(Args)]
+pub(crate) struct RecoveryPlanArgs {
+    /// Read the replacement immutable OIDC subject from standard input.
+    #[arg(
+        long,
+        required_unless_present = "subject_file",
+        conflicts_with = "subject_file"
+    )]
+    pub(crate) subject_stdin: bool,
+    /// Read the replacement immutable OIDC subject from an owner-only regular file.
+    #[arg(
+        long,
+        value_name = "0600-FILE",
+        required_unless_present = "subject_stdin"
+    )]
+    pub(crate) subject_file: Option<std::path::PathBuf>,
+    /// Transfer one source-owned tenant organization membership in addition to platform ownership.
+    #[arg(long, value_name = "NAME-OR-UUID")]
+    pub(crate) transfer_owned_org: Vec<String>,
+    /// Reject mistakenly supplied positional private input without echoing its value.
+    // The runner rejects it generically; this is not an accepted identity-input form.
+    #[arg(hide = true, value_name = "PRIVATE-INPUT")]
+    pub(crate) forbidden_positional_input: Vec<std::ffi::OsString>,
 }
 
 fn main() {
@@ -221,6 +258,12 @@ fn run() -> anyhow::Result<()> {
         Command::Db {
             command: DbCommand::Preflight,
         } => runtime.block_on(serve::credential_preflight()),
+        Command::Db {
+            command:
+                DbCommand::RecoverPlatformAdmin {
+                    command: PlatformAdminRecoveryCommand::Plan(args),
+                },
+        } => runtime.block_on(serve::platform_admin_recovery_plan(args)),
         Command::Openapi => {
             let doc = fp_api::routes::openapi_document();
             println!(
@@ -706,6 +749,7 @@ mod tests {
             "dataplane list",
             "db migrate",
             "db preflight",
+            "db recover-platform-admin plan",
             "learn cancel",
             "learn discover generate-spec",
             "learn discover list",

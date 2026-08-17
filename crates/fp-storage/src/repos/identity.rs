@@ -1291,6 +1291,146 @@ pub async fn count_org_owners(pool: &PgPool, org_id: OrgId) -> DomainResult<i64>
         .map_err(|e| DomainError::internal(format!("count owners: {e}")))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryUserRow {
+    pub id: UserId,
+    pub status: EntityStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryMembershipRow {
+    pub id: Uuid,
+    pub org_id: OrgId,
+    pub user_id: UserId,
+    pub role: OrgRole,
+    pub user_status: EntityStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryOrgRow {
+    pub id: OrgId,
+    pub name: String,
+}
+
+pub async fn recovery_platform_org_id(
+    tx: &mut Transaction<'_, Postgres>,
+) -> DomainResult<Option<OrgId>> {
+    let marker: Option<String> =
+        sqlx::query_scalar("SELECT value FROM instance_meta WHERE key = 'platform_org_id'")
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| DomainError::internal(format!("recovery: read platform marker: {e}")))?;
+    marker
+        .map(|raw| {
+            Uuid::parse_str(&raw).map(OrgId::from).map_err(|e| {
+                DomainError::internal(format!("recovery: invalid platform marker: {e}"))
+            })
+        })
+        .transpose()
+}
+
+pub async fn recovery_user_by_subject(
+    tx: &mut Transaction<'_, Postgres>,
+    subject: &str,
+) -> DomainResult<Option<RecoveryUserRow>> {
+    let row = sqlx::query("SELECT id, status FROM users WHERE subject = $1")
+        .bind(subject)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| DomainError::internal(format!("recovery: resolve replacement: {e}")))?;
+    row.map(|row| {
+        Ok(RecoveryUserRow {
+            id: UserId::from(row.get::<Uuid, _>("id")),
+            status: parse_status(row.get("status"))?,
+        })
+    })
+    .transpose()
+}
+
+pub async fn recovery_owner_memberships(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: OrgId,
+) -> DomainResult<Vec<RecoveryMembershipRow>> {
+    let rows = sqlx::query(
+        "SELECT om.id, om.org_id, om.user_id, om.role, u.status AS user_status \
+         FROM org_memberships om JOIN users u ON u.id = om.user_id \
+         WHERE om.org_id = $1 AND om.role = 'owner' ORDER BY om.id",
+    )
+    .bind(org_id.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: read platform owners: {e}")))?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(RecoveryMembershipRow {
+                id: row.get("id"),
+                org_id: OrgId::from(row.get::<Uuid, _>("org_id")),
+                user_id: UserId::from(row.get::<Uuid, _>("user_id")),
+                role: OrgRole::parse(row.get("role"))?,
+                user_status: parse_status(row.get("user_status"))?,
+            })
+        })
+        .collect()
+}
+
+pub async fn recovery_membership(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: OrgId,
+    user_id: UserId,
+) -> DomainResult<Option<RecoveryMembershipRow>> {
+    let row = sqlx::query(
+        "SELECT om.id, om.org_id, om.user_id, om.role, u.status AS user_status \
+         FROM org_memberships om JOIN users u ON u.id = om.user_id \
+         WHERE om.org_id = $1 AND om.user_id = $2",
+    )
+    .bind(org_id.as_uuid())
+    .bind(user_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: read membership: {e}")))?;
+    row.map(|row| {
+        Ok(RecoveryMembershipRow {
+            id: row.get("id"),
+            org_id: OrgId::from(row.get::<Uuid, _>("org_id")),
+            user_id: UserId::from(row.get::<Uuid, _>("user_id")),
+            role: OrgRole::parse(row.get("role"))?,
+            user_status: parse_status(row.get("user_status"))?,
+        })
+    })
+    .transpose()
+}
+
+pub async fn recovery_org_by_ref(
+    tx: &mut Transaction<'_, Postgres>,
+    org_ref: &str,
+) -> DomainResult<Option<RecoveryOrgRow>> {
+    let rows = if let Ok(id) = Uuid::parse_str(org_ref) {
+        sqlx::query(
+            "SELECT id, name FROM organizations \
+             WHERE (id = $1 OR name = $2) AND status = 'active' ORDER BY id LIMIT 2",
+        )
+        .bind(id)
+        .bind(org_ref)
+        .fetch_all(&mut **tx)
+        .await
+    } else {
+        sqlx::query("SELECT id, name FROM organizations WHERE name = $1 AND status = 'active'")
+            .bind(org_ref)
+            .fetch_all(&mut **tx)
+            .await
+    }
+    .map_err(|e| DomainError::internal(format!("recovery: resolve tenant organization: {e}")))?;
+    if rows.len() > 1 {
+        return Err(DomainError::conflict(
+            "a requested tenant organization selector is ambiguous",
+        ));
+    }
+    Ok(rows.into_iter().next().map(|row| RecoveryOrgRow {
+        id: OrgId::from(row.get::<Uuid, _>("id")),
+        name: row.get("name"),
+    }))
+}
+
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 mod tests {

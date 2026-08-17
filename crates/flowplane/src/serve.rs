@@ -586,6 +586,28 @@ pub async fn credential_preflight() -> anyhow::Result<()> {
     }
 }
 
+pub async fn platform_admin_recovery_plan(args: crate::RecoveryPlanArgs) -> anyhow::Result<()> {
+    if !args.forbidden_positional_input.is_empty() {
+        anyhow::bail!(
+            "the replacement subject must be supplied privately with --subject-stdin or --subject-file"
+        );
+    }
+    let subject = crate::recovery_input::resolve_subject(args.subject_stdin, args.subject_file)?;
+    let config = load_config()?;
+    let pool = fp_storage::connect(&config.database_url, 2).await?;
+    let plan = fp_core::services::platform_admin_recovery::plan(
+        &pool,
+        subject.as_str(),
+        &args.transfer_owned_org,
+    )
+    .await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&plan).context("serialize platform-admin recovery plan")?
+    );
+    Ok(())
+}
+
 /// Dev-mode startup: triple-gated (config flag + build feature + release ack), then seeds
 /// dev resources and boots the in-process issuer (spec/10 §4a).
 #[cfg(feature = "dev-oidc")]
