@@ -170,7 +170,7 @@ Build and validate release-qualification evidence contracts without contacting a
 | Subcommand | Purpose |
 |------------|---------|
 | `qualification inventory --input <PATH> --output-path <PATH>` | Reconcile explicit classifications with the exact union of captured OpenAPI, CLI schema/help, stable-doc, dashboard-route, configuration, and binary surfaces. Output is deterministic for byte-identical input. |
-| `qualification validate --input <PATH>` | Reject blank classifications, code/OpenAPI-only support promotion, missing scenario origin/cleanup/rerun/evidence dimensions, incomplete six-class triage, or incorrect pinned GitHub/Beads linkage. |
+| `qualification validate --input <PATH>` | Reject blank classifications, code/OpenAPI-only support promotion, missing scenario origin/cleanup/rerun/evidence dimensions, incomplete six-class triage, or incorrect pinned issue linkage. |
 | `qualification assemble --input <PATH> --output-path <PATH>` | Redact defined credential markers and synthetic canaries before publication. This is a contract guard, not a general secret scanner. Structured nonzero results require an explicit failure class; successful results use `none`. |
 
 `scripts/qualification-inventory.py` is the capture adapter for repository and candidate-binary surfaces. Pass exact candidate binary paths and `--release`; it fails when the binary-reported version differs. Final release qualification must use published candidate artifacts, not locally rebuilt substitutes.
@@ -366,9 +366,10 @@ Dataplane registration and certificates.
 
 | Subcommand | Args / Flags |
 |------------|--------------|
-| `dataplane list` | `--team <TEAM>` |
+| `dataplane list` | `--team <TEAM>`, `--include-retired` to include lifecycle tombstones (default: active only) |
 | `dataplane get <NAME>` | `--team <TEAM>`, positional `name` |
 | `dataplane create <NAME>` | `--team <TEAM>`, positional `name`, `--description <TEXT>` (default empty) |
+| `dataplane delete <NAME>` | Retire the dataplane and revoke its active credentials. `--team <TEAM>`, positional `name`, `--reason <TEXT>` (required), global `--revision <N>` (explicit If-Match; omitted uses read-modify-write), and global `--yes` / `-y` for non-interactive confirmation. The lifecycle tombstone remains available through retired-inclusive listing. |
 | `dataplane telemetry <NAME>` | `--team <TEAM>`, positional `name`, `--file <PATH>` / `-f` (required) |
 | `dataplane bootstrap <NAME>` | (alias `dataplane envoy-config`) `--team <TEAM>`, positional `name`, `--mode <MODE>` (`dev`\|`mtls`, default `dev`), `--xds-host <HOST>` (default `127.0.0.1`), `--xds-port <PORT>` (u16, default 18000), `--admin-port <PORT>` (u16, default 9901), `--cert-path <PATH>`, `--key-path <PATH>`, `--ca-path <PATH>`. Writes Envoy bootstrap YAML to stdout or `--out`; it is not wrapped in a JSON/YAML CLI envelope. |
 | `dataplane cert <CERT_CMD>` | nested certificate subcommands (below) |

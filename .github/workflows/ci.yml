@@ -157,5 +157,7 @@ jobs:
         run: python3 scripts/ci/check-agent-recovery-contract.py
       - name: Eval PKI issuer contract
         run: python3 scripts/ci/check-eval-pki-contract.py
+      - name: Fly packaging and provider-boundary contract
+        run: python3 scripts/ci/check-fly-packaging-contract.py
       - name: Release manifest and published SBOM naming contract
         run: python3 scripts/ci/check-release-manifest-contract.py
