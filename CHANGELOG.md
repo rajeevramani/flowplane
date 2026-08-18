@@ -50,6 +50,12 @@ contains one intentional external-registration request change described under **
 
 ### Changed
 
+- Team membership and team-grant creation now accept exactly one of the existing positional email,
+  an immutable OIDC subject, or a Flowplane user ID. Subject and user-ID resolution is restricted
+  to active users already belonging to the selected organization; provider email remains only a
+  backward-compatible convenience. Successful team audit targets now use the resolved Flowplane
+  user ID instead of email. This is a backward-compatible pre-customer request-body expansion for
+  provider-neutral OIDC onboarding. (`fpv2-ppo`)
 - External dataplane certificate registration intentionally changes from caller-asserted identity
   metadata to `{dataplane, certificate_chain_pem}`. Flowplane now verifies the chain and derives
   SPIFFE URI, canonical serial, validity, and leaf fingerprint from the certificate itself; the old

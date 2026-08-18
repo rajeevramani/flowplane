@@ -14,6 +14,48 @@ use fp_domain::{DomainError, DomainResult, ErrorCode, OrgId, RequestId, Team, Te
 use fp_storage::repos::{audit, identity};
 use sqlx::PgPool;
 
+/// One caller-supplied identity selector. Surfaces construct exactly one variant before crossing
+/// the service boundary.
+#[derive(Clone, Debug)]
+pub enum UserSelector {
+    Email(String),
+    Subject(String),
+    UserId(UserId),
+}
+
+async fn resolve_org_user(
+    pool: &PgPool,
+    org_id: OrgId,
+    selector: &UserSelector,
+    hint: &'static str,
+) -> DomainResult<UserId> {
+    match selector {
+        UserSelector::Email(email) => {
+            if email.trim().is_empty() {
+                return Err(DomainError::validation("email selector must not be empty"));
+            }
+            identity::find_org_user_by_email(pool, org_id, email)
+                .await?
+                .ok_or_else(|| DomainError::not_found("user", email).with_hint(hint))
+        }
+        UserSelector::Subject(subject) => {
+            if subject.trim().is_empty() {
+                return Err(DomainError::validation(
+                    "subject selector must not be empty",
+                ));
+            }
+            identity::find_org_user_by_subject(pool, org_id, subject)
+                .await?
+                .ok_or_else(|| {
+                    DomainError::new(ErrorCode::NotFound, "user not found").with_hint(hint)
+                })
+        }
+        UserSelector::UserId(user_id) => identity::find_org_user_by_id(pool, org_id, *user_id)
+            .await?
+            .ok_or_else(|| DomainError::new(ErrorCode::NotFound, "user not found").with_hint(hint)),
+    }
+}
+
 /// The caller's org id when (and only when) they hold an org-admin role there. When the
 /// active org is unresolved because a selector is needed (D-014), fail closed with
 /// `org_selector_required` rather than a generic forbidden.
@@ -188,17 +230,18 @@ pub async fn add_member(
     pool: &PgPool,
     ctx: &PrincipalCtx,
     team: TeamRef,
-    email: &str,
+    selector: &UserSelector,
     request_id: RequestId,
 ) -> DomainResult<()> {
     let org_id = require_org_admin(ctx)?;
     require_same_org(team, org_id)?;
-    let user = identity::find_org_user_by_email(pool, org_id, email)
-        .await?
-        .ok_or_else(|| {
-            DomainError::not_found("user", email)
-                .with_hint("add the user to this organization before adding them to a team")
-        })?;
+    let user = resolve_org_user(
+        pool,
+        org_id,
+        selector,
+        "add the user to this organization before adding them to a team",
+    )
+    .await?;
     let mut tx = pool
         .begin()
         .await
@@ -212,7 +255,7 @@ pub async fn add_member(
             org_id,
             Some(team.id),
             "team.member.add",
-            format!("users/{email}"),
+            format!("users/{user}"),
         ),
     )
     .await?;
@@ -273,7 +316,7 @@ pub async fn add_grant(
     pool: &PgPool,
     ctx: &PrincipalCtx,
     team: TeamRef,
-    email: &str,
+    selector: &UserSelector,
     resource: Resource,
     action: Action,
     request_id: RequestId,
@@ -285,12 +328,13 @@ pub async fn add_grant(
             "governance resources cannot be granted at team scope",
         ));
     }
-    let user = identity::find_org_user_by_email(pool, org_id, email)
-        .await?
-        .ok_or_else(|| {
-            DomainError::not_found("user", email)
-                .with_hint("add the user to this organization before granting team access")
-        })?;
+    let user = resolve_org_user(
+        pool,
+        org_id,
+        selector,
+        "add the user to this organization before granting team access",
+    )
+    .await?;
     let granter = match ctx {
         PrincipalCtx::User { user_id, .. } => Some(*user_id),
         PrincipalCtx::Agent { .. } => None,
@@ -308,7 +352,7 @@ pub async fn add_grant(
             org_id,
             Some(team.id),
             "grant.add",
-            format!("users/{email}:{}:{}", resource.as_str(), action.as_str()),
+            format!("users/{user}:{}:{}", resource.as_str(), action.as_str()),
         ),
     )
     .await?;

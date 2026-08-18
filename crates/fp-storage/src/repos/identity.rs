@@ -1099,6 +1099,44 @@ pub async fn find_org_user_by_email(
     }
 }
 
+/// Resolve an active user by immutable OIDC subject, scoped to membership in `org_id`.
+pub async fn find_org_user_by_subject(
+    pool: &PgPool,
+    org_id: OrgId,
+    subject: &str,
+) -> DomainResult<Option<UserId>> {
+    let id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT u.id FROM users u \
+         JOIN org_memberships m ON m.user_id = u.id \
+         WHERE m.org_id = $1 AND u.subject = $2 AND u.status = 'active'",
+    )
+    .bind(org_id.as_uuid())
+    .bind(subject)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("find org user by subject: {e}")))?;
+    Ok(id.map(UserId::from))
+}
+
+/// Resolve an active user by Flowplane id, scoped to membership in `org_id`.
+pub async fn find_org_user_by_id(
+    pool: &PgPool,
+    org_id: OrgId,
+    user_id: UserId,
+) -> DomainResult<Option<UserId>> {
+    let id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT u.id FROM users u \
+         JOIN org_memberships m ON m.user_id = u.id \
+         WHERE m.org_id = $1 AND u.id = $2 AND u.status = 'active'",
+    )
+    .bind(org_id.as_uuid())
+    .bind(user_id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("find org user by id: {e}")))?;
+    Ok(id.map(UserId::from))
+}
+
 pub async fn active_user_exists(pool: &PgPool, user_id: UserId) -> DomainResult<bool> {
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND status = 'active')",

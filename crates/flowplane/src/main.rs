@@ -672,6 +672,68 @@ mod tests {
     }
 
     #[test]
+    fn team_member_and_grant_accept_immutable_user_selectors() {
+        Cli::try_parse_from([
+            "flowplane",
+            "team",
+            "member",
+            "add",
+            "user@example.test",
+            "--team",
+            "payments",
+        ])
+        .expect("backward-compatible positional email must still parse");
+        Cli::try_parse_from([
+            "flowplane",
+            "team",
+            "member",
+            "add",
+            "--team",
+            "payments",
+            "--subject",
+            "provider-neutral-subject",
+        ])
+        .expect("team member add must accept an immutable OIDC subject");
+        Cli::try_parse_from([
+            "flowplane",
+            "team",
+            "grant",
+            "add",
+            "--team",
+            "payments",
+            "--user-id",
+            "018ff2ef-bfc6-7000-8000-000000000001",
+            "--resource",
+            "clusters",
+            "--action",
+            "read",
+        ])
+        .expect("team grant add must accept a Flowplane user id");
+        let missing =
+            Cli::try_parse_from(["flowplane", "team", "member", "add", "--team", "payments"])
+                .err()
+                .expect("one selector is required");
+        assert_eq!(
+            missing.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        let multiple = Cli::try_parse_from([
+            "flowplane",
+            "team",
+            "member",
+            "add",
+            "user@example.test",
+            "--subject",
+            "provider-neutral-subject",
+            "--team",
+            "payments",
+        ])
+        .err()
+        .expect("selectors are mutually exclusive");
+        assert_eq!(multiple.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
     fn cli_help_contains_workflow_examples() {
         let help = Cli::command().render_long_help().to_string();
         assert!(help.contains("flowplane auth login --device-code"));

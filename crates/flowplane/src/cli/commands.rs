@@ -192,8 +192,15 @@ pub enum TeamMemberCommand {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
         team: Option<String>,
-        /// Email address of the user to add.
-        email: String,
+        /// Email address of the user to add (backward-compatible positional selector).
+        #[arg(required_unless_present_any = ["subject", "user_id"], conflicts_with_all = ["subject", "user_id"])]
+        email: Option<String>,
+        /// Immutable OIDC subject identifying the user to add.
+        #[arg(long, required_unless_present_any = ["email", "user_id"], conflicts_with_all = ["email", "user_id"])]
+        subject: Option<String>,
+        /// Flowplane user ID identifying the user to add.
+        #[arg(long, required_unless_present_any = ["email", "subject"], conflicts_with_all = ["email", "subject"])]
+        user_id: Option<String>,
     },
     /// Remove a member from a team.
     Remove {
@@ -253,8 +260,15 @@ pub enum GrantCommand {
         /// Team scope; defaults to the active context's team.
         #[arg(long)]
         team: Option<String>,
-        /// Email address of the member to grant access to.
-        email: String,
+        /// Email address of the member (backward-compatible positional selector).
+        #[arg(required_unless_present_any = ["subject", "user_id"], conflicts_with_all = ["subject", "user_id"])]
+        email: Option<String>,
+        /// Immutable OIDC subject identifying the member.
+        #[arg(long, required_unless_present_any = ["email", "user_id"], conflicts_with_all = ["email", "user_id"])]
+        subject: Option<String>,
+        /// Flowplane user ID identifying the member.
+        #[arg(long, required_unless_present_any = ["email", "subject"], conflicts_with_all = ["email", "subject"])]
+        user_id: Option<String>,
         /// Resource type the grant applies to.
         #[arg(long)]
         resource: String,
