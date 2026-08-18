@@ -118,3 +118,34 @@ async fn replayed_diagnostics_report_does_not_advance_counters_or_liveness() {
         "a newly accepted report must advance dataplane liveness"
     );
 }
+
+#[tokio::test]
+async fn liveness_boundary_uses_database_clock_authority() {
+    let Some(w) = world().await else { return };
+    let dataplane_name = unique("database-clock-dataplane");
+    let mut tx = w.pool.begin().await.expect("create dataplane transaction");
+    let dataplane = dataplanes::create_dataplane(&mut tx, w.team, &dataplane_name, "")
+        .await
+        .expect("dataplane");
+    tx.commit().await.expect("commit dataplane");
+
+    sqlx::query("UPDATE dataplanes SET last_heartbeat_at = clock_timestamp() - interval '59 seconds' WHERE id = $1")
+        .bind(dataplane.id.as_uuid())
+        .execute(&w.pool)
+        .await
+        .expect("set live heartbeat boundary");
+    let live = dataplanes::stats_overview(&w.pool, w.team.id)
+        .await
+        .expect("live overview");
+    assert_eq!(live.live_dataplanes, 1, "59-second heartbeat is live");
+
+    sqlx::query("UPDATE dataplanes SET last_heartbeat_at = clock_timestamp() - interval '61 seconds' WHERE id = $1")
+        .bind(dataplane.id.as_uuid())
+        .execute(&w.pool)
+        .await
+        .expect("set stale heartbeat boundary");
+    let stale = dataplanes::stats_overview(&w.pool, w.team.id)
+        .await
+        .expect("stale overview");
+    assert_eq!(stale.live_dataplanes, 0, "61-second heartbeat is stale");
+}
