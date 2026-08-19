@@ -21,6 +21,7 @@ from typing import Any, Callable, NoReturn
 DEFAULT_EVIDENCE = Path(".artifacts/qualification/fpv2-d23.4/auth0-tenancy.json")
 SCHEMA = "flowplane.qualification.auth0-tenancy/v1"
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
+FLOWPLANE_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[47][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 REQUEST_REF = re.compile(r"^req-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
 AUDIT_REF = re.compile(r"^audit-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
@@ -109,6 +110,13 @@ def require_uuid(value: Any, name: str) -> str:
     return candidate
 
 
+def require_flowplane_uuid(value: Any, name: str) -> str:
+    candidate = text(value, name)
+    if not FLOWPLANE_UUID.fullmatch(candidate):
+        fail(f"{name}: Flowplane UUIDv4 or UUIDv7 required")
+    return candidate
+
+
 def require_sha(value: Any, name: str) -> str:
     candidate = text(value, name)
     if not SHA256.fullmatch(candidate):
@@ -138,7 +146,7 @@ def check_run_and_fixtures(e: dict[str, Any]) -> None:
     names_by_org: dict[str, set[str]] = {}
     resources_by_team: list[set[str]] = []
     for org_key, org in orgs.items():
-        all_ids.append(require_uuid(org.get("id"), f"fixtures.organizations[{org_key}].id"))
+        all_ids.append(require_flowplane_uuid(org.get("id"), f"fixtures.organizations[{org_key}].id"))
         teams = indexed(org.get("teams"), f"fixtures.organizations[{org_key}].teams", "key")
         if set(teams) != {"payments", "shared"}:
             fail(f"fixtures.organizations[{org_key}].teams: exactly payments and shared required")
@@ -146,7 +154,7 @@ def check_run_and_fixtures(e: dict[str, Any]) -> None:
         for team_key, team in teams.items():
             name = text(team.get("name"), f"fixtures.{org_key}.{team_key}.name")
             names_by_org[org_key].add(name)
-            all_ids.append(require_uuid(team.get("id"), f"fixtures.{org_key}.{team_key}.id"))
+            all_ids.append(require_flowplane_uuid(team.get("id"), f"fixtures.{org_key}.{team_key}.id"))
             port = team.get("listener_port")
             if not isinstance(port, int) or isinstance(port, bool) or not (1024 <= port <= 65535):
                 fail(f"fixtures.{org_key}.{team_key}.listener_port: unique non-privileged port required")
@@ -159,7 +167,7 @@ def check_run_and_fixtures(e: dict[str, Any]) -> None:
             if not resources:
                 fail(f"fixtures.{org_key}.{team_key}.resources: overlapping resource fixture required")
             resources_by_team.append({text(item.get("name"), "resource.name") for item in resources.values()})
-            all_ids.extend(require_uuid(item.get("id"), "resource.id") for item in resources.values())
+            all_ids.extend(require_flowplane_uuid(item.get("id"), "resource.id") for item in resources.values())
     if names_by_org["alpha"] != names_by_org["beta"] or len(names_by_org["alpha"]) != 2:
         fail("fixtures: team names must deliberately overlap across organizations")
     if not set.intersection(*resources_by_team):
@@ -242,8 +250,8 @@ def assert_case(case: dict[str, Any], case_id: str, expected: dict[str, Any]) ->
     for key, value in expected.items():
         if case.get(key) != value:
             fail(f"authorization.cases[{case_id}].{key}: expected {value!r}, observed {case.get(key)!r}")
-    require_uuid(case.get("target_org_id"), f"authorization.cases[{case_id}].target_org_id")
-    require_uuid(case.get("target_team_id"), f"authorization.cases[{case_id}].target_team_id")
+    require_flowplane_uuid(case.get("target_org_id"), f"authorization.cases[{case_id}].target_org_id")
+    require_flowplane_uuid(case.get("target_team_id"), f"authorization.cases[{case_id}].target_team_id")
 
 
 def check_same_team(e: dict[str, Any]) -> None:
@@ -508,6 +516,10 @@ def uid(number: int) -> str:
     return f"00000000-0000-4000-8000-{number:012x}"
 
 
+def uuidv7(number: int) -> str:
+    return f"00000000-0000-7000-8000-{number:012x}"
+
+
 def fingerprint(number: int) -> str:
     return f"sha256:{number:064x}"
 
@@ -696,9 +708,36 @@ def run_self_tests() -> int:
             check(fixture)
         except ContractFailure as error:
             failures.append(f"valid fixture rejected by {scenario_id}: {error}")
+    uuidv7_fixture = copy.deepcopy(fixture)
+    uuidv7_counter = 1
+
+    def next_uuidv7() -> str:
+        nonlocal uuidv7_counter
+        value = uuidv7(uuidv7_counter)
+        uuidv7_counter += 1
+        return value
+
+    for organization in uuidv7_fixture["fixtures"]["organizations"]:
+        organization["id"] = next_uuidv7()
+        for team in organization["teams"]:
+            team["id"] = next_uuidv7()
+            for resource in team["resources"]:
+                resource["id"] = next_uuidv7()
+    for case in uuidv7_fixture["authorization"]["cases"]:
+        case["target_org_id"] = next_uuidv7()
+        case["target_team_id"] = next_uuidv7()
+    try:
+        check_run_and_fixtures(uuidv7_fixture)
+        for case in uuidv7_fixture["authorization"]["cases"]:
+            assert_case(case, case["id"], {})
+    except ContractFailure as error:
+        failures.append(f"UUIDv7 Flowplane fixtures rejected: {error}")
     mutations: list[tuple[str, Callable[[dict[str, Any]], None], str]] = [
         ("missing evidence", lambda value: value.pop("fixtures"), "FPV2-D23.4-FIXTURES"),
+        ("UUIDv7 synthetic run ID", lambda value: value["run"].__setitem__("run_id", uuidv7(1)), "FPV2-D23.4-FIXTURES"),
         ("duplicate team port", lambda value: value["fixtures"]["organizations"][1]["teams"][0].__setitem__("listener_port", 21000), "FPV2-D23.4-FIXTURES"),
+        ("malformed Flowplane fixture ID", lambda value: value["fixtures"]["organizations"][0].__setitem__("id", "not-a-uuid"), "FPV2-D23.4-FIXTURES"),
+        ("unsupported authorization target ID version", lambda value: next(case for case in value["authorization"]["cases"] if case["id"] == "api_alpha_same_team").__setitem__("target_org_id", "00000000-0000-1000-8000-000000000001"), "FPV2-D23.4-SAME-TEAM"),
         ("PKCE signature absent", lambda value: value["identity"]["pkce_sessions"][0]["claim_assertions"].__setitem__("signature_verified", False), "FPV2-D23.4-PKCE"),
         ("foreign mutation effect", lambda value: value["authorization"]["cases"][4].__setitem__("foreign_mutation_effect_count", 1), "FPV2-D23.4-ISOLATION"),
         ("stale grant allowed", lambda value: next(case for case in value["authorization"]["cases"] if case["id"] == "api_stale_grant_denied").__setitem__("authorized", True), "FPV2-D23.4-STALE"),
