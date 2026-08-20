@@ -132,7 +132,18 @@ def check_run_and_fixtures(e: dict[str, Any]) -> None:
     text(field(e, "run.finished_at_utc"), "run.finished_at_utc")
     equal(e, "run.synthetic_only", True)
     equal(e, "run.rerunnable", True)
-    equal(e, "run.prior_run_cleanup_verified", True)
+    prior_cleanup = field(e, "run.prior_run_cleanup_verified")
+    reused = field(e, "run.reused_preserved_fixtures")
+    if reused is True:
+        if prior_cleanup is not False:
+            fail("run: preserved-fixture rerun cannot claim prior cleanup")
+        text(field(e, "run.fixture_provenance_ref"), "run.fixture_provenance_ref")
+        text(field(e, "run.preservation_owner"), "run.preservation_owner")
+    elif reused is False:
+        if prior_cleanup is not True:
+            fail("run.prior_run_cleanup_verified: fresh run cleanup proof required")
+    else:
+        fail("run.reused_preserved_fixtures: boolean required")
     prefix = text(field(e, "run.fixture_prefix"), "run.fixture_prefix")
     if not re.fullmatch(r"fpv2-d23-4-[a-z0-9]{8,32}", prefix):
         fail("run.fixture_prefix: unique run-scoped synthetic prefix required")
@@ -311,14 +322,18 @@ def check_selectors(e: dict[str, Any]) -> None:
         if case_id not in cases:
             fail(f"authorization.cases: missing {case_id!r}")
         case = cases[case_id]
+        target_org = "beta" if selector_kind == "uuid" else "alpha"
         expected = {
             "channel": channel, "persona": "cross_org_user", "selector_kind": selector_kind,
+            "target_org": target_org,
             "authenticated": True, "authorized": allowed, "outcome": outcome,
-            "resource_visible": allowed, "foreign_mutation_effect_count": 0,
+            "selector_resolved": allowed, "foreign_mutation_effect_count": 0,
         }
         if not allowed:
             expected.update({"intended_mutation_effect_count": 0, "state_fingerprint_unchanged": True})
         assert_case(case, case_id, expected)
+        if allowed and ("resource_visible" in case or "intended_mutation_effect_count" in case):
+            fail(f"authorization.cases[{case_id}]: selector-only evidence cannot claim resource visibility or mutation")
 
 
 def check_no_implicit_tenant_access(e: dict[str, Any]) -> None:
@@ -370,21 +385,64 @@ def check_invalid_tokens(e: dict[str, Any]) -> None:
             case = cases[case_id]
             expected = {
                 "channel": channel, "defect": defect, "authenticated": False, "authorized": False,
-                "outcome": "rejected_before_authorization", "http_status": 401,
+                "outcome": "rejected_before_authorization",
                 "mutation_effect_count": 0, "state_fingerprint_unchanged": True,
                 "raw_token_recorded": False,
             }
             for key, value in expected.items():
                 if case.get(key) != value:
                     fail(f"invalid_token_cases[{case_id}].{key}: expected {value!r}")
-            require_request_audit(case, f"invalid_token_cases[{case_id}]")
+            if defect == "wrong_signature":
+                if case.get("http_status") != 401:
+                    fail(f"invalid_token_cases[{case_id}].http_status: live request must return 401")
+                if case.get("evidence_source") != "live_request" or case.get("decision_stage") != "authentication":
+                    fail(f"invalid_token_cases[{case_id}]: live authentication evidence required")
+                require_request_audit(case, f"invalid_token_cases[{case_id}]")
+            else:
+                if case.get("evidence_source") != "automated_validator_test" or case.get("decision_stage") != "validator":
+                    fail(f"invalid_token_cases[{case_id}]: validator-test evidence required")
+                text(case.get("test_ref"), f"invalid_token_cases[{case_id}].test_ref")
+                if case.get("test_passed") is not True:
+                    fail(f"invalid_token_cases[{case_id}].test_passed: passing test evidence required")
+                if "request_id_ref" in case or "audit" in case:
+                    fail(f"invalid_token_cases[{case_id}]: validator-test evidence cannot claim a live request/audit")
+                if "http_status" in case:
+                    fail(f"invalid_token_cases[{case_id}]: validator-test evidence cannot claim an HTTP status")
 
 
 def require_request_audit(case: dict[str, Any], name: str) -> None:
     request_ref = text(case.get("request_id_ref"), f"{name}.request_id_ref")
     if not REQUEST_REF.fullmatch(request_ref):
         fail(f"{name}.request_id_ref: sanitized request reference required")
+    stage = case.get("decision_stage")
+    if stage not in {"authentication", "pre_authorization", "authorization"}:
+        fail(f"{name}.decision_stage: authentication, pre_authorization, or authorization required")
     audit = obj(case.get("audit"), f"{name}.audit")
+    if stage == "pre_authorization":
+        if audit.get("expected") is not False or audit.get("event_count") != 0:
+            fail(f"{name}.audit: pre-authorization failure requires explicit zero audit rows")
+        if audit.get("decision_recorded") is not False:
+            fail(f"{name}.audit: pre-authorization failure cannot claim an authorization decision")
+        if "event_ref" in audit or "request_id_matched" in audit:
+            fail(f"{name}.audit: zero-audit evidence cannot carry event linkage")
+        if audit.get("raw_subject_recorded") is not False or audit.get("token_recorded") is not False:
+            fail(f"{name}.audit: raw subject/token must be absent")
+        return
+    if stage == "authentication" and audit.get("expected") is False:
+        if audit.get("event_count") != 0 or audit.get("decision_recorded") is not False:
+            fail(f"{name}.audit: unobservable authentication audit requires explicit zero visible rows")
+        if audit.get("observability") != "not_exposed_by_supported_surface":
+            fail(f"{name}.audit.observability: supported-surface limitation required")
+        text(audit.get("linked_defect"), f"{name}.audit.linked_defect")
+        if audit.get("write_path_verified_by_code") is not True:
+            fail(f"{name}.audit.write_path_verified_by_code: source verification required")
+        if "event_ref" in audit or "request_id_matched" in audit:
+            fail(f"{name}.audit: unobservable audit cannot claim event linkage")
+        if audit.get("raw_subject_recorded") is not False or audit.get("token_recorded") is not False:
+            fail(f"{name}.audit: raw subject/token must be absent")
+        return
+    if audit.get("expected", True) is not True:
+        fail(f"{name}.audit: {stage} failure requires a linked audit row")
     if not AUDIT_REF.fullmatch(str(audit.get("event_ref", ""))):
         fail(f"{name}.audit.event_ref: sanitized audit reference required")
     if audit.get("request_id_matched") is not True or audit.get("actor_fingerprint_only") is not True:
@@ -404,17 +462,26 @@ def check_api_cli_and_audit(e: dict[str, Any]) -> None:
     equal(e, "interfaces.cli.context_org_selector_exercised", True)
     equal(e, "interfaces.cli.raw_output_sanitized", True)
     equal(e, "interfaces.cli.direct_database_calls", False)
-    all_cases = list(auth_cases(e).items()) + list(indexed(field(e, "invalid_token_cases"), "invalid_token_cases").items())
+    authorization_cases = list(auth_cases(e).items())
+    invalid_cases = list(indexed(field(e, "invalid_token_cases"), "invalid_token_cases").items())
+    all_cases = authorization_cases + invalid_cases
     channels = {case.get("channel") for _, case in all_cases}
     if channels != {"api", "cli"}:
         fail("interfaces: both API and CLI evidence required")
-    audited = 0
-    for case_id, case in all_cases:
+    denied = 0
+    for case_id, case in authorization_cases:
         if case.get("authorized") is False:
+            if "evidence_source" in case:
+                fail(f"case[{case_id}].evidence_source: authorization cases require live request evidence")
             require_request_audit(case, f"case[{case_id}]")
-            audited += 1
-    if audited < 24:
-        fail("audit: complete negative matrix with request-linked audit evidence required")
+            denied += 1
+    for case_id, case in invalid_cases:
+        if case.get("authorized") is False:
+            if case.get("evidence_source") != "automated_validator_test":
+                require_request_audit(case, f"case[{case_id}]")
+            denied += 1
+    if denied < 24:
+        fail("audit: complete negative matrix with request evidence required")
 
 
 def walk(value: Any, path: str = "$") -> None:
@@ -465,11 +532,31 @@ def check_cleanup(e: dict[str, Any]) -> None:
     if set(inventories) != expected:
         fail(f"cleanup.absence_inventories: expected exactly {sorted(expected)!r}")
     for item_id, item in inventories.items():
-        if item.get("run_owned_remaining_count") != 0:
-            fail(f"cleanup.absence_inventories[{item_id}]: run-owned residue remains")
+        disposition = item.get("disposition", "absent")
+        remaining = item.get("run_owned_remaining_count")
+        if disposition == "absent":
+            if remaining != 0:
+                fail(f"cleanup.absence_inventories[{item_id}]: absent inventory has residue")
+        elif disposition == "preserved_for_downstream":
+            if not isinstance(remaining, int) or isinstance(remaining, bool) or remaining <= 0:
+                fail(f"cleanup.absence_inventories[{item_id}]: preserved inventory needs a positive exact count")
+            text(item.get("owner"), f"cleanup.absence_inventories[{item_id}].owner")
+            text(item.get("reason"), f"cleanup.absence_inventories[{item_id}].reason")
+        else:
+            fail(f"cleanup.absence_inventories[{item_id}].disposition: unsupported value")
         if item.get("exact_registered_objects_checked") is not True:
             fail(f"cleanup.absence_inventories[{item_id}]: exact-object absence check required")
         text(item.get("observed_at_utc"), f"cleanup.absence_inventories[{item_id}].observed_at_utc")
+    if inventories["product_grants"].get("disposition", "absent") != "absent":
+        fail("cleanup.absence_inventories[product_grants]: grant residue must be absent")
+    resources = inventories["product_resources"]
+    if resources.get("disposition") == "preserved_for_downstream":
+        removed = set(seq(resources.get("removed_resource_types"), "product_resources.removed_resource_types"))
+        preserved = set(seq(resources.get("preserved_resource_types"), "product_resources.preserved_resource_types"))
+        if "clusters" not in removed or not {"organizations", "teams"}.issubset(preserved):
+            fail("cleanup.absence_inventories[product_resources]: clusters removed and org/team preservation required")
+        if removed & preserved:
+            fail("cleanup.absence_inventories[product_resources]: a resource type cannot be removed and preserved")
     if cleanup.get("default_audience_restored_or_safe_drift_verified") is not True:
         fail("cleanup.default_audience_restored_or_safe_drift_verified: shared Auth0 state disposition required")
     if cleanup.get("provider_retained_logs_reported") is not True:
@@ -535,6 +622,16 @@ def audit(number: int) -> dict[str, Any]:
     }
 
 
+def no_audit(number: int) -> dict[str, Any]:
+    return {
+        "request_id_ref": f"req-{uid(number)}",
+        "audit": {
+            "expected": False, "event_count": 0, "decision_recorded": False,
+            "raw_subject_recorded": False, "token_recorded": False,
+        },
+    }
+
+
 def self_test_evidence() -> dict[str, Any]:
     next_id = 1
 
@@ -582,7 +679,11 @@ def self_test_evidence() -> dict[str, Any]:
         nonlocal case_number
         base = {"id": case_id, "target_org_id": new_id(), "target_team_id": new_id(), **values}
         if values.get("authorized") is False:
-            base.update(audit(case_number))
+            base.update(
+                audit(case_number)
+                if values.get("decision_stage") in {"authentication", "authorization"}
+                else no_audit(case_number)
+            )
             case_number += 1
         cases.append(base)
 
@@ -606,6 +707,7 @@ def self_test_evidence() -> dict[str, Any]:
         ("cli_beta_to_alpha_denied", "cli", "beta_member", "alpha", "cross_org"),
     ):
         add(case_id, channel=channel, persona=persona, target_org=org, relationship=relation,
+            decision_stage="authorization" if relation == "sibling_team" else "pre_authorization",
             authenticated=True, authorized=False, outcome="hidden_or_documented_denial", resource_visible=False,
             intended_mutation_effect_count=0, foreign_mutation_effect_count=0, state_fingerprint_unchanged=True)
     for case_id, channel, selector, allowed, outcome in (
@@ -620,11 +722,13 @@ def self_test_evidence() -> dict[str, Any]:
     ):
         values: dict[str, Any] = {
             "channel": channel, "persona": "cross_org_user", "selector_kind": selector,
+            "target_org": "beta" if selector == "uuid" else "alpha",
             "authenticated": True, "authorized": allowed, "outcome": outcome,
-            "resource_visible": allowed, "foreign_mutation_effect_count": 0,
+            "selector_resolved": allowed, "foreign_mutation_effect_count": 0,
         }
         if not allowed:
-            values.update(intended_mutation_effect_count=0, state_fingerprint_unchanged=True)
+            values.update(decision_stage="pre_authorization", intended_mutation_effect_count=0,
+                          state_fingerprint_unchanged=True)
         add(case_id, **values)
     for case_id, channel, persona in (
         ("api_non_member_denied", "api", "authenticated_non_member"),
@@ -632,7 +736,8 @@ def self_test_evidence() -> dict[str, Any]:
         ("api_platform_admin_no_membership_denied", "api", "platform_operator"),
         ("cli_platform_admin_no_membership_denied", "cli", "platform_operator"),
     ):
-        add(case_id, channel=channel, persona=persona, authenticated=True, authorized=False,
+        add(case_id, channel=channel, persona=persona, decision_stage="pre_authorization",
+            authenticated=True, authorized=False,
             outcome="tenant_membership_required", resource_visible=False, intended_mutation_effect_count=0,
             foreign_mutation_effect_count=0, state_fingerprint_unchanged=True)
     for case_id, channel, removal in (
@@ -641,7 +746,9 @@ def self_test_evidence() -> dict[str, Any]:
         ("api_stale_grant_denied", "api", "grant_removed"),
         ("cli_stale_grant_denied", "cli", "grant_removed"),
     ):
-        add(case_id, channel=channel, revocation_kind=removal, authenticated=True,
+        add(case_id, channel=channel, revocation_kind=removal,
+            decision_stage="pre_authorization" if removal == "membership_removed" else "authorization",
+            authenticated=True,
             session_token_still_cryptographically_valid=True, revocation_committed_before_request=True,
             authorized=False, outcome="stale_authorization_denied", resource_visible=False,
             intended_mutation_effect_count=0, foreign_mutation_effect_count=0, state_fingerprint_unchanged=True)
@@ -650,11 +757,23 @@ def self_test_evidence() -> dict[str, Any]:
         for defect in ("wrong_issuer", "wrong_audience", "wrong_signature", "expired"):
             item = {
                 "id": f"{channel}_{defect}", "channel": channel, "defect": defect,
+                "decision_stage": "authentication" if defect == "wrong_signature" else "validator",
+                "evidence_source": "live_request" if defect == "wrong_signature" else "automated_validator_test",
                 "authenticated": False, "authorized": False, "outcome": "rejected_before_authorization",
-                "http_status": 401, "mutation_effect_count": 0, "state_fingerprint_unchanged": True,
+                "mutation_effect_count": 0, "state_fingerprint_unchanged": True,
                 "raw_token_recorded": False,
             }
-            item.update(audit(case_number))
+            if defect == "wrong_signature":
+                item["http_status"] = 401
+                item.update(no_audit(case_number))
+                item["audit"].update({
+                    "observability": "not_exposed_by_supported_surface",
+                    "linked_defect": "fpv2-g8d",
+                    "write_path_verified_by_code": True,
+                })
+            else:
+                item.update({"test_ref": "fp-core::oidc::tests::adversarial_tokens_rejected",
+                             "test_passed": True})
             case_number += 1
             invalid.append(item)
     cleanup_ids = {
@@ -665,7 +784,9 @@ def self_test_evidence() -> dict[str, Any]:
         "schema": SCHEMA,
         "run": {"release": "3.1.3", "run_id": new_id(), "started_at_utc": "2026-08-18T00:00:00Z",
                 "finished_at_utc": "2026-08-18T00:10:00Z", "synthetic_only": True, "rerunnable": True,
-                "prior_run_cleanup_verified": True, "fixture_prefix": "fpv2-d23-4-selftest01"},
+                "prior_run_cleanup_verified": False, "reused_preserved_fixtures": True,
+                "fixture_provenance_ref": "evidence:fpv2-d23.4/fixture-baseline",
+                "preservation_owner": "fpv2-d23", "fixture_prefix": "fpv2-d23-4-selftest01"},
         "fixtures": {"organizations": organizations}, "personas": personas,
         "identity": {"provider": "auth0", "flow": "authorization_code_pkce", "public_native_client": True,
                      "client_secret_used": False, "password_grant_used": False, "browser_profiles_isolated": True,
@@ -691,10 +812,23 @@ def self_test_evidence() -> dict[str, Any]:
                                           "provider_credentials", "oauth_transactions"]},
         "cleanup": {"fixture_names_run_scoped": True, "safe_to_rerun": True,
                     "evidence_frozen_before_cleanup": True, "completed_at_utc": "2026-08-18T00:11:00Z",
-                    "absence_inventories": [{"id": item_id, "run_owned_remaining_count": 0,
-                                             "exact_registered_objects_checked": True,
-                                             "observed_at_utc": "2026-08-18T00:11:00Z"}
-                                            for item_id in sorted(cleanup_ids)],
+                    "absence_inventories": [
+                        ({"id": item_id, "disposition": "absent", "run_owned_remaining_count": 0,
+                          "exact_registered_objects_checked": True,
+                          "observed_at_utc": "2026-08-18T00:11:00Z"}
+                         if item_id == "product_grants"
+                         else {"id": item_id, "disposition": "preserved_for_downstream",
+                               "run_owned_remaining_count": (8 if item_id in {"auth0_users", "auth0_sessions", "cli_credentials", "browser_profiles"}
+                                                             else 6 if item_id == "product_resources" else 1),
+                               "exact_registered_objects_checked": True,
+                               "observed_at_utc": "2026-08-18T00:11:00Z",
+                               "owner": "fpv2-d23",
+                               "reason": "required by fpv2-d23.5 or fpv2-d23.9",
+                               **({"removed_resource_types": ["clusters"],
+                                   "preserved_resource_types": ["organizations", "teams"]}
+                                  if item_id == "product_resources" else {})}
+                        ) for item_id in sorted(cleanup_ids)
+                    ],
                     "default_audience_restored_or_safe_drift_verified": True,
                     "provider_retained_logs_reported": True},
     }
@@ -734,6 +868,7 @@ def run_self_tests() -> int:
         failures.append(f"UUIDv7 Flowplane fixtures rejected: {error}")
     mutations: list[tuple[str, Callable[[dict[str, Any]], None], str]] = [
         ("missing evidence", lambda value: value.pop("fixtures"), "FPV2-D23.4-FIXTURES"),
+        ("preserved fixture omits provenance", lambda value: value["run"].pop("fixture_provenance_ref"), "FPV2-D23.4-FIXTURES"),
         ("UUIDv7 synthetic run ID", lambda value: value["run"].__setitem__("run_id", uuidv7(1)), "FPV2-D23.4-FIXTURES"),
         ("duplicate team port", lambda value: value["fixtures"]["organizations"][1]["teams"][0].__setitem__("listener_port", 21000), "FPV2-D23.4-FIXTURES"),
         ("malformed Flowplane fixture ID", lambda value: value["fixtures"]["organizations"][0].__setitem__("id", "not-a-uuid"), "FPV2-D23.4-FIXTURES"),
@@ -741,6 +876,17 @@ def run_self_tests() -> int:
         ("PKCE signature absent", lambda value: value["identity"]["pkce_sessions"][0]["claim_assertions"].__setitem__("signature_verified", False), "FPV2-D23.4-PKCE"),
         ("foreign mutation effect", lambda value: value["authorization"]["cases"][4].__setitem__("foreign_mutation_effect_count", 1), "FPV2-D23.4-ISOLATION"),
         ("stale grant allowed", lambda value: next(case for case in value["authorization"]["cases"] if case["id"] == "api_stale_grant_denied").__setitem__("authorized", True), "FPV2-D23.4-STALE"),
+        ("pre-authorization case invents audit linkage", lambda value: next(case for case in value["authorization"]["cases"] if case["id"] == "api_multi_org_without_selector")["audit"].__setitem__("event_ref", f"audit-{uid(999)}"), "FPV2-D23.4-API-CLI-AUDIT"),
+        ("authorization denial claims zero audit", lambda value: next(case for case in value["authorization"]["cases"] if case["id"] == "api_alpha_sibling_denied")["audit"].update({"expected": False, "event_count": 0}), "FPV2-D23.4-API-CLI-AUDIT"),
+        ("authorization denial bypasses evidence as validator test", lambda value: next(case for case in value["authorization"]["cases"] if case["id"] == "api_alpha_sibling_denied").update({"evidence_source": "automated_validator_test"}), "FPV2-D23.4-API-CLI-AUDIT"),
+        ("selector-only case overclaims resource visibility", lambda value: next(case for case in value["authorization"]["cases"] if case["id"] == "api_valid_selector_uuid").update({"resource_visible": True, "intended_mutation_effect_count": 1}), "FPV2-D23.4-SELECTORS"),
+        ("UUID selector claims wrong target org", lambda value: next(case for case in value["authorization"]["cases"] if case["id"] == "api_valid_selector_uuid").__setitem__("target_org", "alpha"), "FPV2-D23.4-SELECTORS"),
+        ("validator-test evidence omits test ref", lambda value: next(case for case in value["invalid_token_cases"] if case["id"] == "api_wrong_issuer").pop("test_ref"), "FPV2-D23.4-BAD-TOKENS"),
+        ("validator-test evidence invents live audit", lambda value: next(case for case in value["invalid_token_cases"] if case["id"] == "api_expired").update(audit(998)), "FPV2-D23.4-BAD-TOKENS"),
+        ("validator-test evidence claims HTTP status", lambda value: next(case for case in value["invalid_token_cases"] if case["id"] == "api_wrong_audience").__setitem__("http_status", 401), "FPV2-D23.4-BAD-TOKENS"),
+        ("unobservable authn audit omits linked defect", lambda value: next(case for case in value["invalid_token_cases"] if case["id"] == "api_wrong_signature")["audit"].pop("linked_defect"), "FPV2-D23.4-BAD-TOKENS"),
+        ("preserved inventory omits owner", lambda value: next(item for item in value["cleanup"]["absence_inventories"] if item["id"] == "browser_profiles").pop("owner"), "FPV2-D23.4-CLEANUP"),
+        ("product resource preservation omits removed types", lambda value: next(item for item in value["cleanup"]["absence_inventories"] if item["id"] == "product_resources").pop("removed_resource_types"), "FPV2-D23.4-CLEANUP"),
         ("raw email leak", lambda value: value["leak"].__setitem__("value", "person@example.invalid"), "FPV2-D23.4-REDACTION"),
     ]
     for name, mutate, scenario_id in mutations:
