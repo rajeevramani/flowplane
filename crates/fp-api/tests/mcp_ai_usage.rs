@@ -185,6 +185,9 @@ async fn cp_ai_usage_windowed_parity_with_rest() {
         .expect("team");
     let token = org_admin(&env, org.id).await;
     seed_usage_event(&env, team.id, 42).await;
+    let usage_now = fp_storage::repos::ai::usage_clock_now(&env.pool)
+        .await
+        .expect("database usage clock");
 
     // REST read (all-time + windowed) — the parity baseline.
     let rest = |uri: String| {
@@ -210,8 +213,8 @@ async fn cp_ai_usage_windowed_parity_with_rest() {
     assert_eq!(rest_all["total"], 1);
     assert_eq!(rest_all["items"][0]["total_tokens"], 42);
 
-    let since = (chrono::Utc::now() - chrono::Duration::hours(1))
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let since =
+        (usage_now - chrono::Duration::hours(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let rest_windowed = rest(format!(
         "/api/v1/teams/{}/ai/usage?since={since}",
         team.name
@@ -327,6 +330,9 @@ async fn cp_ai_usage_rejects_malformed_and_over_cap_windows() {
         .expect("team");
     let token = org_admin(&env, org.id).await;
     let session = initialize(&env, &token).await;
+    let usage_now = fp_storage::repos::ai::usage_clock_now(&env.pool)
+        .await
+        .expect("database usage clock");
 
     // Malformed since: present-but-unparseable is an error, never silently ignored.
     let call = call_ai_usage(
@@ -367,8 +373,8 @@ async fn cp_ai_usage_rejects_malformed_and_over_cap_windows() {
     );
 
     // Over the 92-day span cap with since present: same validation as REST.
-    let since = (chrono::Utc::now() - chrono::Duration::days(93))
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let since =
+        (usage_now - chrono::Duration::days(93)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let call = call_ai_usage(
         &env,
         &token,

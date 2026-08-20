@@ -160,18 +160,30 @@ pub async fn rotate_secret(
     .await?;
     rotate.spec.validate()?;
     validate_expiry(rotate.expires_at)?;
-    let encrypted = encrypt_spec(&rotate.spec)?;
 
     let mut tx = pool
         .begin()
         .await
         .map_err(crate::services::db_err("rotate secret: begin"))?;
+    let current = secrets::get_secret_for_update(&mut tx, team.id, rotate.name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("secret", rotate.name))?;
+    let requested_type = rotate.spec.secret_type();
+    if current.secret_type != requested_type {
+        return Err(DomainError::validation(format!(
+            "secret \"{}\" has immutable type {}; rotation requested {}",
+            rotate.name,
+            current.secret_type.as_str(),
+            requested_type.as_str()
+        ))
+        .with_hint("create a new secret and repoint dependants before removing the old secret"));
+    }
+    let encrypted = encrypt_spec(&rotate.spec)?;
     let secret = secrets::rotate_secret(
         &mut tx,
         team.id,
         rotate.name,
         rotate.expected_version,
-        rotate.spec.secret_type(),
         &encrypted.ciphertext,
         &encrypted.nonce,
         &encrypted.key_id,

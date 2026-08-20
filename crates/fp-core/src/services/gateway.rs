@@ -339,6 +339,9 @@ pub async fn create_listener(
     .await?;
     validate_user_listener_name(name)?;
     spec.validate()?;
+    if !spec.secret_references().is_empty() {
+        authorize(pool, ctx, Resource::Secrets, Action::Read, team, request_id).await?;
+    }
     resolve_global_rate_limit_filters(pool, team, &mut spec, rls_grpc_configured).await?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::Listeners).await?;
     let mut tx = pool
@@ -441,6 +444,9 @@ pub async fn update_listener(
     )
     .await?;
     spec.validate()?;
+    if !spec.secret_references().is_empty() {
+        authorize(pool, ctx, Resource::Secrets, Action::Read, team, request_id).await?;
+    }
     resolve_global_rate_limit_filters(pool, team, &mut spec, rls_grpc_configured).await?;
     let mut tx = pool
         .begin()

@@ -102,20 +102,6 @@ pub async fn count_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64>
         .map_err(|e| DomainError::internal(format!("count secrets: {e}")))
 }
 
-pub async fn delete_expired_for_team(
-    pool: &PgPool,
-    team_id: TeamId,
-    as_of: chrono::DateTime<chrono::Utc>,
-) -> DomainResult<u64> {
-    let result = sqlx::query("DELETE FROM secrets WHERE team_id = $1 AND expires_at <= $2")
-        .bind(team_id.as_uuid())
-        .bind(as_of)
-        .execute(pool)
-        .await
-        .map_err(|e| DomainError::internal(format!("delete expired secrets: {e}")))?;
-    Ok(result.rows_affected())
-}
-
 pub async fn get_secret(
     pool: &PgPool,
     team_id: TeamId,
@@ -129,6 +115,22 @@ pub async fn get_secret(
     .fetch_optional(pool)
     .await
     .map_err(|e| DomainError::internal(format!("get secret: {e}")))?;
+    row.as_ref().map(secret_from_row).transpose()
+}
+
+pub async fn get_secret_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+) -> DomainResult<Option<Secret>> {
+    let row = sqlx::query(&format!(
+        "SELECT {COLUMNS} FROM secrets WHERE team_id = $1 AND name = $2 FOR UPDATE"
+    ))
+    .bind(team_id.as_uuid())
+    .bind(name)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("lock secret metadata: {e}")))?;
     row.as_ref().map(secret_from_row).transpose()
 }
 
@@ -178,7 +180,6 @@ pub async fn rotate_secret(
     team_id: TeamId,
     name: &str,
     expected_version: i64,
-    secret_type: SecretType,
     ciphertext: &[u8],
     nonce: &[u8],
     encryption_key_id: &str,
@@ -186,13 +187,12 @@ pub async fn rotate_secret(
 ) -> DomainResult<Secret> {
     let row = sqlx::query(&format!(
         "UPDATE secrets SET configuration_encrypted = $1, nonce = $2, encryption_key_id = $3, \
-            secret_type = $4, expires_at = $5, version = version + 1, updated_at = now() \
-         WHERE team_id = $6 AND name = $7 AND version = $8 RETURNING {COLUMNS}"
+            expires_at = $4, version = version + 1, updated_at = now() \
+         WHERE team_id = $5 AND name = $6 AND version = $7 RETURNING {COLUMNS}"
     ))
     .bind(ciphertext)
     .bind(nonce)
     .bind(encryption_key_id)
-    .bind(secret_type.as_str())
     .bind(expires_at)
     .bind(team_id.as_uuid())
     .bind(name)

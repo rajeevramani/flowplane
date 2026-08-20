@@ -492,11 +492,15 @@ async fn delete_retires_with_if_match_and_reason_while_cross_org_caller_learns_n
             "each credential changed by retirement emits exactly one revocation event"
         );
     }
+    let race_certificate_id_strings: Vec<String> = race_certificate_ids
+        .iter()
+        .map(uuid::Uuid::to_string)
+        .collect();
     let race_revocation_events: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM events WHERE event_type = 'proxy_certificate.revoked' \
-         AND payload->>'dataplane_id' = $1",
+         AND payload->>'certificate_id' = ANY($1)",
     )
-    .bind(race_dataplane_id.to_string())
+    .bind(&race_certificate_id_strings)
     .fetch_one(&pool)
     .await
     .expect("issue-race scoped revocation evidence");

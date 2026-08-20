@@ -30,6 +30,15 @@ pub enum SecretType {
     SessionTicketKeys,
 }
 
+/// A typed SDS reference extracted from a gateway resource spec. Secret material is never part
+/// of this value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecretReference<'a> {
+    pub name: &'a str,
+    pub required_type: SecretType,
+    pub usage: &'static str,
+}
+
 impl SecretType {
     pub fn as_str(self) -> &'static str {
         match self {

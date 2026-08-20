@@ -154,7 +154,7 @@ async fn create_route(
     port: u16,
     backends: Vec<AiRouteBackend>,
 ) -> AiRoute {
-    ai_svc::create_route(
+    let route = ai_svc::create_route(
         &w.pool,
         &w.admin,
         w.team,
@@ -163,7 +163,24 @@ async fn create_route(
         RequestId::generate(),
     )
     .await
-    .expect("create route")
+    .expect("create route");
+    let secret_refs: i64 = sqlx::query_scalar(
+        "SELECT \
+           (SELECT count(*) FROM cluster_secret_refs r \
+              JOIN clusters c ON c.id = r.cluster_id \
+             WHERE c.team_id = $1 AND c.name = ANY($2)) + \
+           (SELECT count(*) FROM listener_secret_refs r \
+              JOIN listeners l ON l.id = r.listener_id \
+             WHERE l.team_id = $1 AND l.name = $3)",
+    )
+    .bind(w.team.id.as_uuid())
+    .bind(&route.materialized.cluster_names)
+    .bind(&route.materialized.listener_name)
+    .fetch_one(&w.pool)
+    .await
+    .expect("AI materialization secret refs");
+    assert_eq!(secret_refs, 0, "generated AI resources stay SDS-free");
+    route
 }
 
 async fn get_route(w: &World, name: &str) -> AiRoute {

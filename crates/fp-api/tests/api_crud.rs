@@ -566,6 +566,7 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
         .await
         .expect("member");
 
+    let query_pool = pool.clone();
     let app = fp_api::build_router(fp_api::AppState {
         pool,
         prometheus: PrometheusBuilder::new().build_recorder().handle(),
@@ -724,6 +725,25 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
     assert_eq!(
         body["listener"]["spec"]["public_base_url"],
         "https://gateway.example"
+    );
+    let expose_secret_refs: i64 = sqlx::query_scalar(
+        "SELECT \
+           (SELECT count(*) FROM cluster_secret_refs r \
+              JOIN clusters c ON c.id = r.cluster_id \
+             WHERE c.team_id = $1 AND c.name = $2) + \
+           (SELECT count(*) FROM listener_secret_refs r \
+              JOIN listeners l ON l.id = r.listener_id \
+             WHERE l.team_id = $1 AND l.name = $3)",
+    )
+    .bind(team.id.as_uuid())
+    .bind(format!("{expose_name}-upstream"))
+    .bind(&expose_name)
+    .fetch_one(&query_pool)
+    .await
+    .expect("expose secret refs");
+    assert_eq!(
+        expose_secret_refs, 0,
+        "generated expose resources stay SDS-free"
     );
 
     let no_endpoint_name = unique("local");
@@ -1947,6 +1967,9 @@ async fn secret_values_are_write_only_over_http() {
     assert_eq!(body["total"], 1);
 
     // Windowed read spanning now still sees the row; the window is half-open [since, until).
+    let usage_now = fp_storage::repos::ai::usage_clock_now(&query_pool)
+        .await
+        .expect("database usage clock");
     let response = app
         .clone()
         .oneshot(request(
@@ -1954,15 +1977,16 @@ async fn secret_values_are_write_only_over_http() {
             &format!(
                 "/api/v1/teams/{}/ai/usage?since={}",
                 team.name,
-                (chrono::Utc::now() - chrono::Duration::hours(1))
+                (usage_now - chrono::Duration::hours(1))
                     .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
             ),
             None,
         ))
         .await
         .expect("get windowed AI usage");
-    assert_eq!(response.status(), StatusCode::OK);
+    let status = response.status();
     let body = json_of(response).await;
+    assert_eq!(status, StatusCode::OK, "windowed usage response: {body}");
     assert_eq!(body["items"][0]["total_tokens"], 7);
     assert_eq!(body["total"], 1);
 
@@ -1974,7 +1998,7 @@ async fn secret_values_are_write_only_over_http() {
             &format!(
                 "/api/v1/teams/{}/ai/usage?since={}",
                 team.name,
-                (chrono::Utc::now() - chrono::Duration::days(93))
+                (usage_now - chrono::Duration::days(93))
                     .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
             ),
             None,
