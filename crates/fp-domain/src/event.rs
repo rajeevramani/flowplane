@@ -61,6 +61,8 @@ pub enum DomainEvent {
     },
     #[serde(rename = "secret.upserted", alias = "secret_upserted")]
     SecretUpserted { secret_id: Uuid, name: String },
+    #[serde(rename = "secret.deleted", alias = "secret_deleted")]
+    SecretDeleted { secret_id: Uuid, name: String },
     // API lifecycle / learning config-first spine (S8)
     #[serde(rename = "api_definition.created", alias = "api_definition_created")]
     ApiDefinitionCreated {
@@ -137,6 +139,7 @@ impl DomainEvent {
             }
             Self::ProxyCertificateRevoked { .. } => "proxy_certificate.revoked",
             Self::SecretUpserted { .. } => "secret.upserted",
+            Self::SecretDeleted { .. } => "secret.deleted",
             Self::ApiDefinitionCreated { .. } => "api_definition.created",
             Self::ApiDefinitionDeleted { .. } => "api_definition.deleted",
             Self::SpecVersionCreated { .. } => "spec_version.created",
@@ -215,6 +218,10 @@ mod tests {
                 spiffe_uri: "spiffe://flowplane.local/org/o/team/t/dataplane/d".into(),
             },
             DomainEvent::SecretUpserted {
+                secret_id: uuid,
+                name: "x".into(),
+            },
+            DomainEvent::SecretDeleted {
                 secret_id: uuid,
                 name: "x".into(),
             },

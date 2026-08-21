@@ -23,6 +23,20 @@ const BUDGET_COLUMNS: &str = "id, team_id, name, mode, limit_units, window_secon
                               route_config_id, prompt_token_weight, completion_token_weight, \
                               version, created_at, updated_at";
 
+fn credential_secret_fk_error(error: &sqlx::Error, secret_id: SecretId) -> Option<DomainError> {
+    let sqlx::Error::Database(db) = error else {
+        return None;
+    };
+    if db.code().as_deref() == Some("23503")
+        && db
+            .constraint()
+            .is_some_and(|constraint| constraint.contains("credential_secret_id"))
+    {
+        return Some(DomainError::not_found("secret", &secret_id.to_string()));
+    }
+    None
+}
+
 #[derive(Debug, Clone)]
 pub struct SelectedAiBackend {
     pub provider: AiProvider,
@@ -350,12 +364,19 @@ pub async fn create(
     .bind(&spec.auth_scheme)
     .fetch_one(&mut **tx)
     .await
-    .map_err(|e| match &e {
-        sqlx::Error::Database(db) if db.code().as_deref() == Some("23505") => {
-            DomainError::conflict(format!("AI provider \"{name}\" already exists in this team"))
-                .with_hint("choose a different name or update the existing provider")
+    .map_err(|e| {
+        if let Some(mapped) = credential_secret_fk_error(&e, spec.credential_secret_id) {
+            return mapped;
         }
-        _ => DomainError::internal(format!("create AI provider: {e}")),
+        match &e {
+            sqlx::Error::Database(db) if db.code().as_deref() == Some("23505") => {
+                DomainError::conflict(format!(
+                    "AI provider \"{name}\" already exists in this team"
+                ))
+                .with_hint("choose a different name or update the existing provider")
+            }
+            _ => DomainError::internal(format!("create AI provider: {e}")),
+        }
     })?;
     provider_from_row(&row)
 }
@@ -424,7 +445,10 @@ pub async fn update(
     .bind(expected_version)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(|e| DomainError::internal(format!("update AI provider: {e}")))?;
+    .map_err(|e| {
+        credential_secret_fk_error(&e, spec.credential_secret_id)
+            .unwrap_or_else(|| DomainError::internal(format!("update AI provider: {e}")))
+    })?;
     match row {
         Some(row) => provider_from_row(&row),
         None => revision_error(tx, team_id, name, expected_version, "update AI provider").await,

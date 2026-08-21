@@ -11,6 +11,32 @@ use uuid::Uuid;
 
 const COLUMNS: &str = "id, team_id, name, description, secret_type, version, encryption_key_id, \
                        expires_at, created_at, updated_at";
+const DEPENDENCY_NAME_LIMIT: i64 = 10;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecretDependencyGroup {
+    pub names: Vec<String>,
+    pub total: i64,
+}
+
+impl SecretDependencyGroup {
+    pub fn truncated(&self) -> bool {
+        self.total > self.names.len() as i64
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecretDependencies {
+    pub listeners: SecretDependencyGroup,
+    pub clusters: SecretDependencyGroup,
+    pub ai_providers: SecretDependencyGroup,
+}
+
+impl SecretDependencies {
+    pub fn is_empty(&self) -> bool {
+        self.listeners.total == 0 && self.clusters.total == 0 && self.ai_providers.total == 0
+    }
+}
 
 fn secret_from_row(row: &PgRow) -> DomainResult<Secret> {
     Ok(Secret {
@@ -134,6 +160,63 @@ pub async fn get_secret_for_update(
     row.as_ref().map(secret_from_row).transpose()
 }
 
+fn dependency_group(rows: &[PgRow]) -> SecretDependencyGroup {
+    SecretDependencyGroup {
+        names: rows.iter().map(|row| row.get("name")).collect(),
+        total: rows.first().map_or(0, |row| row.get("total")),
+    }
+}
+
+pub async fn dependencies_for_secret(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    secret_id: SecretId,
+) -> DomainResult<SecretDependencies> {
+    let listener_rows = sqlx::query(
+        "SELECT name, count(*) OVER() AS total FROM ( \
+           SELECT DISTINCT l.name FROM listener_secret_refs r \
+           JOIN listeners l ON l.id = r.listener_id AND l.team_id = r.team_id \
+           WHERE r.team_id = $1 AND r.secret_id = $2 \
+         ) dependencies ORDER BY name LIMIT $3",
+    )
+    .bind(team_id.as_uuid())
+    .bind(secret_id.as_uuid())
+    .bind(DEPENDENCY_NAME_LIMIT)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("read listener secret dependants: {e}")))?;
+    let cluster_rows = sqlx::query(
+        "SELECT name, count(*) OVER() AS total FROM ( \
+           SELECT DISTINCT c.name FROM cluster_secret_refs r \
+           JOIN clusters c ON c.id = r.cluster_id AND c.team_id = r.team_id \
+           WHERE r.team_id = $1 AND r.secret_id = $2 \
+         ) dependencies ORDER BY name LIMIT $3",
+    )
+    .bind(team_id.as_uuid())
+    .bind(secret_id.as_uuid())
+    .bind(DEPENDENCY_NAME_LIMIT)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("read cluster secret dependants: {e}")))?;
+    let ai_provider_rows = sqlx::query(
+        "SELECT name, count(*) OVER() AS total FROM ( \
+           SELECT name FROM ai_providers \
+           WHERE team_id = $1 AND credential_secret_id = $2 \
+         ) dependencies ORDER BY name LIMIT $3",
+    )
+    .bind(team_id.as_uuid())
+    .bind(secret_id.as_uuid())
+    .bind(DEPENDENCY_NAME_LIMIT)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("read AI provider secret dependants: {e}")))?;
+    Ok(SecretDependencies {
+        listeners: dependency_group(&listener_rows),
+        clusters: dependency_group(&cluster_rows),
+        ai_providers: dependency_group(&ai_provider_rows),
+    })
+}
+
 pub async fn get_secret_by_id(
     pool: &PgPool,
     team_id: TeamId,
@@ -210,6 +293,51 @@ pub async fn rotate_secret(
                     .fetch_optional(&mut **tx)
                     .await
                     .map_err(|e| DomainError::internal(format!("rotate secret: recheck: {e}")))?;
+            Err(match current {
+                Some(version) => DomainError::new(
+                    ErrorCode::RevisionMismatch,
+                    format!(
+                        "secret \"{name}\" is at revision {version}, you supplied {expected_version}"
+                    ),
+                )
+                .with_hint("re-read the secret metadata and retry with the current revision"),
+                None => DomainError::not_found("secret", name),
+            })
+        }
+    }
+}
+
+pub async fn delete_secret(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+    expected_version: i64,
+) -> DomainResult<SecretId> {
+    let row = sqlx::query(
+        "DELETE FROM secrets WHERE team_id = $1 AND name = $2 AND version = $3 RETURNING id",
+    )
+    .bind(team_id.as_uuid())
+    .bind(name)
+    .bind(expected_version)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db) if db.code().as_deref() == Some("23503") => {
+            DomainError::conflict(format!("secret \"{name}\" is still referenced"))
+                .with_hint("update or delete the dependent resources first")
+        }
+        _ => DomainError::internal(format!("delete secret: {e}")),
+    })?;
+    match row {
+        Some(row) => Ok(SecretId::from(row.get::<Uuid, _>("id"))),
+        None => {
+            let current: Option<i64> =
+                sqlx::query_scalar("SELECT version FROM secrets WHERE team_id = $1 AND name = $2")
+                    .bind(team_id.as_uuid())
+                    .bind(name)
+                    .fetch_optional(&mut **tx)
+                    .await
+                    .map_err(|e| DomainError::internal(format!("delete secret: recheck: {e}")))?;
             Err(match current {
                 Some(version) => DomainError::new(
                     ErrorCode::RevisionMismatch,

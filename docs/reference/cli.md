@@ -362,6 +362,10 @@ Write-only secrets.
 | `secret get <NAME>` | `--team <TEAM>`, positional `name` |
 | `secret create` | `--team <TEAM>`, `--file <PATH>` / `-f` (required) |
 | `secret rotate <NAME>` | `--team <TEAM>`, positional `name`, `--revision <N>` (i64, required), `--file <PATH>` / `-f` (required) |
+| `secret delete <NAME>` | `--team <TEAM>`, positional `name`; destructive confirmation (`--yes`) and global `--revision <N>` conventions apply |
+
+`secret delete` removes only an unreferenced same-team secret. It never cascades into listeners,
+clusters, or AI providers and has no force mode. Remove or repoint dependants before retrying.
 
 ### `dataplane`
 Dataplane registration and certificates.

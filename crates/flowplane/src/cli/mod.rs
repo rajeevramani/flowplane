@@ -2115,6 +2115,16 @@ pub async fn run_secret(global: GlobalOptions, command: SecretCommand) -> Result
                 )
                 .await?
         }
+        SecretCommand::Delete { team, name } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::DELETE,
+                    &format!("/api/v1/teams/{team}/secrets/{}", query_component(&name)),
+                    None,
+                )
+                .await?
+        }
     };
     Ok(())
 }

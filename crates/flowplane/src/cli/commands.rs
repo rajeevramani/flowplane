@@ -1097,6 +1097,17 @@ pub enum SecretCommand {
         #[arg(short, long)]
         file: PathBuf,
     },
+    /// Delete an unreferenced secret.
+    #[command(
+        after_help = "Example:\n  flowplane secret delete db-password --team payments --revision 2 --yes"
+    )]
+    Delete {
+        /// Team scope; defaults to the active context's team.
+        #[arg(long)]
+        team: Option<String>,
+        /// Name of the secret to delete.
+        name: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

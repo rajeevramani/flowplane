@@ -199,6 +199,7 @@ const SHARED_LAYER_COVERED: &[&str] = &[
     "secret get",
     "secret create",
     "secret rotate",
+    "secret delete",
     // agent (read-only: list agents, show one, view an agent's grants)
     "agent list",
     "agent show",

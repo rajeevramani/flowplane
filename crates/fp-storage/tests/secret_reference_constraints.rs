@@ -2,7 +2,8 @@
 
 use fp_domain::authz::TeamRef;
 use fp_domain::secret::{SecretReference, SecretType};
-use fp_storage::repos::{identity, secret_refs};
+use fp_domain::{AiProviderKind, AiProviderSpec, ErrorCode, SecretId};
+use fp_storage::repos::{ai, identity, secret_refs};
 use sqlx::{PgPool, Row};
 use std::time::Duration;
 use uuid::Uuid;
@@ -373,6 +374,83 @@ async fn cluster_and_ai_writers_serialize_delete_and_delete_first_fails_closed()
         .rollback()
         .await
         .expect("rollback after-delete");
+}
+
+#[tokio::test]
+async fn ai_provider_fk_loser_maps_to_secret_not_found_on_create_and_update() {
+    let Some(pool) = pool().await else { return };
+    let team = team(&pool, "ai-fk-map").await;
+    let deleted = SecretId::from(
+        secret(
+            &pool,
+            team,
+            &unique("deleted-ai-key"),
+            SecretType::GenericSecret,
+        )
+        .await,
+    );
+    sqlx::query("DELETE FROM secrets WHERE id = $1")
+        .bind(deleted.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("delete credential before writer");
+    let spec = |secret_id| AiProviderSpec {
+        kind: AiProviderKind::OpenaiCompatible,
+        base_url: "https://example.test".into(),
+        path_prefix: Some("/v1".into()),
+        credential_secret_id: secret_id,
+        models: vec!["model".into()],
+        auth_header: "authorization".into(),
+        auth_scheme: None,
+    };
+    let mut create_tx = pool.begin().await.expect("create tx");
+    let err = ai::create(&mut create_tx, team, &unique("provider"), &spec(deleted))
+        .await
+        .expect_err("deleted credential create must fail");
+    assert_eq!(err.code, ErrorCode::NotFound);
+    create_tx.rollback().await.expect("rollback failed create");
+
+    let original = SecretId::from(
+        secret(
+            &pool,
+            team,
+            &unique("original-ai-key"),
+            SecretType::GenericSecret,
+        )
+        .await,
+    );
+    let replacement = SecretId::from(
+        secret(
+            &pool,
+            team,
+            &unique("replacement-ai-key"),
+            SecretType::GenericSecret,
+        )
+        .await,
+    );
+    let provider_name = unique("provider-update");
+    let mut create_tx = pool.begin().await.expect("provider create tx");
+    let provider = ai::create(&mut create_tx, team, &provider_name, &spec(original))
+        .await
+        .expect("provider create");
+    create_tx.commit().await.expect("provider create commit");
+    sqlx::query("DELETE FROM secrets WHERE id = $1")
+        .bind(replacement.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("delete replacement before update");
+    let mut update_tx = pool.begin().await.expect("update tx");
+    let err = ai::update(
+        &mut update_tx,
+        team.id,
+        &provider_name,
+        &spec(replacement),
+        provider.version,
+    )
+    .await
+    .expect_err("deleted replacement update must fail");
+    assert_eq!(err.code, ErrorCode::NotFound);
+    update_tx.rollback().await.expect("rollback failed update");
 }
 
 #[tokio::test]

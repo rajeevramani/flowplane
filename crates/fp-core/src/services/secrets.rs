@@ -49,6 +49,29 @@ pub struct SecretRotate<'a> {
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+fn dependency_group_json(group: &secrets::SecretDependencyGroup) -> serde_json::Value {
+    serde_json::json!({
+        "names": group.names,
+        "total": group.total,
+        "truncated": group.truncated(),
+    })
+}
+
+fn dependency_conflict(name: &str, dependencies: &secrets::SecretDependencies) -> DomainError {
+    DomainError::conflict(format!(
+        "secret \"{name}\" is referenced by {} listener(s), {} cluster(s), and {} AI provider(s)",
+        dependencies.listeners.total, dependencies.clusters.total, dependencies.ai_providers.total,
+    ))
+    .with_hint("update or delete the dependent resources, then retry secret deletion")
+    .with_details(serde_json::json!({
+        "dependencies": {
+            "listeners": dependency_group_json(&dependencies.listeners),
+            "clusters": dependency_group_json(&dependencies.clusters),
+            "ai_providers": dependency_group_json(&dependencies.ai_providers),
+        }
+    }))
+}
+
 pub async fn create_secret(
     pool: &PgPool,
     ctx: &PrincipalCtx,
@@ -218,6 +241,76 @@ pub async fn rotate_secret(
         .await
         .map_err(crate::services::db_err("rotate secret: commit"))?;
     Ok(secret)
+}
+
+pub async fn delete_secret(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    expected_version: i64,
+    request_id: RequestId,
+) -> DomainResult<()> {
+    authorize(
+        pool,
+        ctx,
+        Resource::Secrets,
+        Action::Delete,
+        team,
+        request_id,
+    )
+    .await?;
+    validate_name(name)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::services::db_err("delete secret: begin"))?;
+    let current = secrets::get_secret_for_update(&mut tx, team.id, name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("secret", name))?;
+    if current.version != expected_version {
+        return Err(DomainError::new(
+            fp_domain::ErrorCode::RevisionMismatch,
+            format!(
+                "secret \"{name}\" is at revision {}, you supplied {expected_version}",
+                current.version
+            ),
+        )
+        .with_hint("re-read the secret metadata and retry with the current revision"));
+    }
+    let dependencies = secrets::dependencies_for_secret(&mut tx, team.id, current.id).await?;
+    if !dependencies.is_empty() {
+        return Err(dependency_conflict(name, &dependencies));
+    }
+    let secret_id = secrets::delete_secret(&mut tx, team.id, name, expected_version).await?;
+    fp_storage::outbox::append(
+        &mut tx,
+        &DomainEvent::SecretDeleted {
+            secret_id: secret_id.as_uuid(),
+            name: name.into(),
+        },
+        EventScope {
+            org_id: Some(team.org_id),
+            team_id: Some(team.id),
+        },
+        trace_context_json(),
+    )
+    .await?;
+    audit::record_in_tx(
+        &mut tx,
+        &mutation_audit(
+            ctx,
+            request_id,
+            team,
+            "secret.delete",
+            &format!("secrets/{name}"),
+        ),
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("delete secret: commit"))?;
+    Ok(())
 }
 
 struct EncryptedSpec {

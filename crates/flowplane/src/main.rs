@@ -756,7 +756,7 @@ mod tests {
         // from `--help`. The union guard forces every FUTURE leaf to be classified one way or the
         // other. Pure in-process (no temp dir / network) so it is inherently parallel-safe.
 
-        // 52 SPINE leaves (space-joined paths) — each must expose a parseable example.
+        // 53 SPINE leaves (space-joined paths) — each must expose a parseable example.
         const SPINE: &[&str] = &[
             "auth login",
             "config set-context",
@@ -800,6 +800,7 @@ mod tests {
             "learn discover start",
             "secret create",
             "secret rotate",
+            "secret delete",
             "dataplane create",
             "dataplane delete",
             "dataplane telemetry",

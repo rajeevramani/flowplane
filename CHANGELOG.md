@@ -39,6 +39,10 @@ contains one intentional external-registration request change described under **
 
 ### Added
 
+- Team secrets now have a supported, revision-guarded REST and CLI deletion lifecycle. Deletion
+  refuses same-team listener, cluster, and AI-provider dependants, emits redacted audit/outbox
+  evidence, and withdraws the deleted SDS resource without cascading dependent resources. (#254,
+  `fpv2-a09`)
 - `flowplane db preflight` reports `3.1.2` credential migration blockers using stable
   codes and resource UUIDs without exposing certificate material. Authorized dataplane reads and
   CLI listing can explicitly include retired history. (`fpv2-7f3`)
@@ -50,6 +54,9 @@ contains one intentional external-registration request change described under **
 
 ### Changed
 
+- Secret rotation can no longer change a secret's type. Create a correctly typed replacement and
+  repoint dependants before deleting the old secret. This fail-closed pre-customer change preserves
+  normalized listener/cluster and AI-provider type invariants. (#254, `fpv2-a09`)
 - Team membership and team-grant creation now accept exactly one of the existing positional email,
   an immutable OIDC subject, or a Flowplane user ID. Subject and user-ID resolution is restricted
   to active users already belonging to the selected organization; provider email remains only a
