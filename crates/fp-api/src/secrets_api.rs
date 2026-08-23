@@ -156,6 +156,39 @@ pub async fn get_secret(
         .map_err(|e| ApiError::new(e, rid))
 }
 
+#[utoipa::path(delete, path = "/api/v1/teams/{team}/secrets/{name}",
+    tag = "Secrets",
+    params(
+        ("team" = String, Path, description = "Team name or UUID"),
+        ("name" = String, Path, description = "Secret name"),
+        ("If-Match" = i64, Header, description = "Current secret revision"),
+    ),
+    responses(
+        (status = 204, description = "Secret deleted"),
+        (status = 400, body = ErrorBody),
+        (status = 401, body = ErrorBody),
+        (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody),
+        (status = 409, body = ErrorBody),
+        (status = 503, body = ErrorBody),
+    ))]
+pub async fn delete_secret(
+    State(state): State<AppState>,
+    Path((team, name)): Path<(String, String)>,
+    headers: HeaderMap,
+    Extension(ctx): Extension<PrincipalCtx>,
+    Extension(rid): Extension<RequestId>,
+) -> Result<StatusCode, ApiError> {
+    let run = async {
+        let revision = revision_from(&headers)?;
+        let team = resolve_team(&state, &ctx, &team).await?;
+        svc::delete_secret(&state.pool, &ctx, team, &name, revision, rid).await
+    };
+    run.await
+        .map(|()| StatusCode::NO_CONTENT)
+        .map_err(|e| ApiError::new(e, rid))
+}
+
 #[utoipa::path(post, path = "/api/v1/teams/{team}/secrets/{name}/rotate",
     tag = "Secrets",
     params(

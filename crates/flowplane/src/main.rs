@@ -3,9 +3,10 @@
 mod cli;
 mod paths;
 mod qualification;
+mod recovery_input;
 mod serve;
 
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_complete::Shell;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -171,8 +172,76 @@ enum Command {
 enum DbCommand {
     /// Check credential-lifecycle migration blockers without changing the database.
     Preflight,
+    /// Recover an unavailable sole platform administrator through an offline workflow.
+    RecoverPlatformAdmin {
+        #[command(subcommand)]
+        command: PlatformAdminRecoveryCommand,
+    },
     /// Apply pending migrations (forward-only) and exit.
     Migrate,
+}
+
+#[derive(Subcommand)]
+enum PlatformAdminRecoveryCommand {
+    /// Validate eligibility and print a redacted, digest-bound plan without mutation.
+    Plan(RecoveryPlanArgs),
+    /// Apply an exact reviewed plan as one guarded, audited database transaction.
+    Apply(RecoveryApplyArgs),
+}
+
+#[derive(Args)]
+pub(crate) struct RecoveryPlanArgs {
+    /// Read the replacement immutable OIDC subject from standard input.
+    #[arg(
+        long,
+        required_unless_present = "subject_file",
+        conflicts_with = "subject_file"
+    )]
+    pub(crate) subject_stdin: bool,
+    /// Read the replacement immutable OIDC subject from an owner-only regular file.
+    #[arg(
+        long,
+        value_name = "0600-FILE",
+        required_unless_present = "subject_stdin"
+    )]
+    pub(crate) subject_file: Option<std::path::PathBuf>,
+    /// Transfer one source-owned tenant organization membership in addition to platform ownership.
+    #[arg(long, value_name = "NAME-OR-UUID")]
+    pub(crate) transfer_owned_org: Vec<String>,
+    /// Reject mistakenly supplied positional private input without echoing its value.
+    // The runner rejects it generically; this is not an accepted identity-input form.
+    #[arg(hide = true, value_name = "PRIVATE-INPUT")]
+    pub(crate) forbidden_positional_input: Vec<std::ffi::OsString>,
+}
+
+#[derive(Args)]
+pub(crate) struct RecoveryApplyArgs {
+    /// Read the replacement immutable OIDC subject from standard input.
+    #[arg(
+        long,
+        required_unless_present = "subject_file",
+        conflicts_with = "subject_file"
+    )]
+    pub(crate) subject_stdin: bool,
+    /// Read the replacement immutable OIDC subject from an owner-only regular file.
+    #[arg(
+        long,
+        value_name = "0600-FILE",
+        required_unless_present = "subject_stdin"
+    )]
+    pub(crate) subject_file: Option<std::path::PathBuf>,
+    /// Transfer one source-owned tenant owner membership in addition to platform ownership.
+    #[arg(long, value_name = "NAME-OR-UUID")]
+    pub(crate) transfer_owned_org: Vec<String>,
+    /// Exact digest printed by the reviewed plan command.
+    #[arg(long, value_name = "sha256:HEX", required = true)]
+    pub(crate) expected_plan: String,
+    /// Confirm the reviewed, stop-the-world recovery mutation.
+    #[arg(long, required = true)]
+    pub(crate) yes: bool,
+    /// Reject mistakenly supplied positional private input without echoing its value.
+    #[arg(hide = true, value_name = "PRIVATE-INPUT")]
+    pub(crate) forbidden_positional_input: Vec<std::ffi::OsString>,
 }
 
 fn main() {
@@ -221,6 +290,18 @@ fn run() -> anyhow::Result<()> {
         Command::Db {
             command: DbCommand::Preflight,
         } => runtime.block_on(serve::credential_preflight()),
+        Command::Db {
+            command:
+                DbCommand::RecoverPlatformAdmin {
+                    command: PlatformAdminRecoveryCommand::Plan(args),
+                },
+        } => runtime.block_on(serve::platform_admin_recovery_plan(args)),
+        Command::Db {
+            command:
+                DbCommand::RecoverPlatformAdmin {
+                    command: PlatformAdminRecoveryCommand::Apply(args),
+                },
+        } => runtime.block_on(serve::platform_admin_recovery_apply(args)),
         Command::Openapi => {
             let doc = fp_api::routes::openapi_document();
             println!(
@@ -591,6 +672,68 @@ mod tests {
     }
 
     #[test]
+    fn team_member_and_grant_accept_immutable_user_selectors() {
+        Cli::try_parse_from([
+            "flowplane",
+            "team",
+            "member",
+            "add",
+            "user@example.test",
+            "--team",
+            "payments",
+        ])
+        .expect("backward-compatible positional email must still parse");
+        Cli::try_parse_from([
+            "flowplane",
+            "team",
+            "member",
+            "add",
+            "--team",
+            "payments",
+            "--subject",
+            "provider-neutral-subject",
+        ])
+        .expect("team member add must accept an immutable OIDC subject");
+        Cli::try_parse_from([
+            "flowplane",
+            "team",
+            "grant",
+            "add",
+            "--team",
+            "payments",
+            "--user-id",
+            "018ff2ef-bfc6-7000-8000-000000000001",
+            "--resource",
+            "clusters",
+            "--action",
+            "read",
+        ])
+        .expect("team grant add must accept a Flowplane user id");
+        let missing =
+            Cli::try_parse_from(["flowplane", "team", "member", "add", "--team", "payments"])
+                .err()
+                .expect("one selector is required");
+        assert_eq!(
+            missing.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        let multiple = Cli::try_parse_from([
+            "flowplane",
+            "team",
+            "member",
+            "add",
+            "user@example.test",
+            "--subject",
+            "provider-neutral-subject",
+            "--team",
+            "payments",
+        ])
+        .err()
+        .expect("selectors are mutually exclusive");
+        assert_eq!(multiple.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
     fn cli_help_contains_workflow_examples() {
         let help = Cli::command().render_long_help().to_string();
         assert!(help.contains("flowplane auth login --device-code"));
@@ -613,7 +756,7 @@ mod tests {
         // from `--help`. The union guard forces every FUTURE leaf to be classified one way or the
         // other. Pure in-process (no temp dir / network) so it is inherently parallel-safe.
 
-        // 52 SPINE leaves (space-joined paths) — each must expose a parseable example.
+        // 53 SPINE leaves (space-joined paths) — each must expose a parseable example.
         const SPINE: &[&str] = &[
             "auth login",
             "config set-context",
@@ -657,6 +800,7 @@ mod tests {
             "learn discover start",
             "secret create",
             "secret rotate",
+            "secret delete",
             "dataplane create",
             "dataplane delete",
             "dataplane telemetry",
@@ -669,7 +813,7 @@ mod tests {
             "apply",
         ];
 
-        // 85 EXEMPT leaves (space-joined paths) — no example required.
+        // 86 EXEMPT leaves (space-joined paths) — no example required.
         const EXEMPT: &[&str] = &[
             "agent grants",
             "agent list",
@@ -706,6 +850,8 @@ mod tests {
             "dataplane list",
             "db migrate",
             "db preflight",
+            "db recover-platform-admin apply",
+            "db recover-platform-admin plan",
             "learn cancel",
             "learn discover generate-spec",
             "learn discover list",

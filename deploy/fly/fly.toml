@@ -32,6 +32,7 @@ kill_timeout = 30
   FLOWPLANE_RLS_ADMIN_TOKEN_FILE = "/run/secrets/rls-admin-token"
   TAILSCALE_AUTHKEY_FILE = "/run/secrets/tailscale-authkey"
   TAILSCALE_HOSTNAME = "fpq-flowplane-cp"
+  TAILSCALE_SERVICE_NAME = "svc:fpq-flowplane-cp-g2"
   FLOWPLANE_LOG_FORMAT = "json"
 
 [[files]]

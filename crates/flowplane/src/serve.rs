@@ -586,6 +586,57 @@ pub async fn credential_preflight() -> anyhow::Result<()> {
     }
 }
 
+pub async fn platform_admin_recovery_plan(args: crate::RecoveryPlanArgs) -> anyhow::Result<()> {
+    if !args.forbidden_positional_input.is_empty() {
+        anyhow::bail!(
+            "the replacement subject must be supplied privately with --subject-stdin or --subject-file"
+        );
+    }
+    let subject = crate::recovery_input::resolve_subject(args.subject_stdin, args.subject_file)?;
+    let config = load_config()?;
+    let pool = fp_storage::connect(&config.database_url, 2).await?;
+    let plan = fp_core::services::platform_admin_recovery::plan(
+        &pool,
+        subject.as_str(),
+        &args.transfer_owned_org,
+    )
+    .await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&plan).context("serialize platform-admin recovery plan")?
+    );
+    Ok(())
+}
+
+pub async fn platform_admin_recovery_apply(args: crate::RecoveryApplyArgs) -> anyhow::Result<()> {
+    if !args.yes {
+        anyhow::bail!("recovery apply requires explicit --yes confirmation");
+    }
+    if !args.forbidden_positional_input.is_empty() {
+        anyhow::bail!(
+            "the replacement subject must be supplied privately with --subject-stdin or --subject-file"
+        );
+    }
+    let expected_plan =
+        fp_core::services::platform_admin_recovery::PlanDigest::parse(&args.expected_plan)?;
+    let subject = crate::recovery_input::resolve_subject(args.subject_stdin, args.subject_file)?;
+    let config = load_config()?;
+    let pool = fp_storage::connect(&config.database_url, 2).await?;
+    let result = fp_core::services::platform_admin_recovery::apply(
+        &pool,
+        subject.as_str(),
+        &args.transfer_owned_org,
+        &expected_plan,
+    )
+    .await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&result)
+            .context("serialize platform-admin recovery result")?
+    );
+    Ok(())
+}
+
 /// Dev-mode startup: triple-gated (config flag + build feature + release ack), then seeds
 /// dev resources and boots the in-process issuer (spec/10 §4a).
 #[cfg(feature = "dev-oidc")]

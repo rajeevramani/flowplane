@@ -326,7 +326,7 @@ class FlyPackagingContract(unittest.TestCase):
             "the RLS admin listener must remain private and unpublished",
         )
 
-    def test_rls_uses_stable_raw_tcp_tailscale_service(self) -> None:
+    def test_private_runtime_roles_use_stable_raw_tcp_tailscale_services(self) -> None:
         path = FLY_ROOT / "rls.fly.toml"
         manifest = parse_manifest(read_text(path), path)
         env = manifest.get("env", {})
@@ -346,10 +346,15 @@ class FlyPackagingContract(unittest.TestCase):
         _, cp_manifest = load_manifest()
         cp_env = cp_manifest.get("env", {})
         self.assertIsInstance(cp_env, dict)
-        self.assertNotIn(
-            "TAILSCALE_SERVICE_NAME",
-            cp_env,
-            "the RLS Service must not replace the control plane's node-specific xDS endpoint",
+        self.assertEqual(
+            cp_env.get("TAILSCALE_SERVICE_NAME"),
+            "svc:fpq-flowplane-cp-g2",
+            "xDS must use a stable Service identity across ephemeral Fly node replacement",
+        )
+        self.assertEqual(
+            cp_env.get("FLOWPLANE_XDS_ADDR"),
+            "127.0.0.1:18000",
+            "the Service proxy must preserve Flowplane as the loopback xDS mTLS terminator",
         )
         self.assertEqual(
             cp_env.get("FLOWPLANE_RLS_GRPC_URL"),

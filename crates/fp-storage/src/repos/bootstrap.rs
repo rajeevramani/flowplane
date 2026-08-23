@@ -14,11 +14,34 @@
 use crate::repos::audit::{ActorType, AuditEntry, Outcome, Surface};
 use fp_domain::{DomainError, DomainResult, ErrorCode, OrgId, RequestId, UserId};
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
 /// Fixed advisory-lock key serializing concurrent `initialize` calls (see below).
 const BOOTSTRAP_LOCK_KEY: i64 = 0x666c_6f77_626f_6f74; // "flowboot"
+
+/// Acquire the shared transaction-scoped lock protecting platform identity authority.
+///
+/// Offline recovery must serialize with one-shot bootstrap across every process and replica.
+pub async fn lock_platform_identity_in_tx(tx: &mut Transaction<'_, Postgres>) -> DomainResult<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(BOOTSTRAP_LOCK_KEY)
+        .execute(&mut **tx)
+        .await
+        .map(|_| ())
+        .map_err(|e| DomainError::internal(format!("platform identity lock: {e}")))
+}
+
+/// Try to acquire the shared platform-identity lock without waiting on a stale snapshot.
+pub async fn try_lock_platform_identity_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+) -> DomainResult<bool> {
+    sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+        .bind(BOOTSTRAP_LOCK_KEY)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| DomainError::internal(format!("platform identity try-lock: {e}")))
+}
 
 fn hash_token(token: &str) -> String {
     let mut hasher = Sha256::new();
@@ -98,11 +121,7 @@ pub async fn seed_token_hash_if_uninitialized(
 
     // Same advisory lock as `initialize`: seed and initialize mutate the same trust boundary, so
     // they must serialize across all connections/replicas.
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(BOOTSTRAP_LOCK_KEY)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| DomainError::internal(format!("bootstrap seed: lock: {e}")))?;
+    lock_platform_identity_in_tx(&mut tx).await?;
 
     let initialized: Option<String> =
         sqlx::query_scalar("SELECT value FROM instance_meta WHERE key = 'platform_org_id'")
@@ -206,12 +225,8 @@ pub async fn initialize(
     // callers with two different valid tokens both pass the "already initialized?" check
     // (the FOR UPDATE below locks nothing when the marker row does not yet exist) and both
     // commit — producing two orgs and a silently-lost platform marker. The lock is released
-    // automatically on commit/rollback. Key is an arbitrary fixed constant for this purpose.
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(BOOTSTRAP_LOCK_KEY)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| DomainError::internal(format!("bootstrap: lock: {e}")))?;
+    // automatically on commit/rollback. Recovery uses this same storage-owned helper.
+    lock_platform_identity_in_tx(&mut tx).await?;
 
     // Idempotency guard inside the (now serialized) transaction: only one initialize wins.
     let already: Option<String> =

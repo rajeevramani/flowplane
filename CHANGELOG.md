@@ -23,6 +23,7 @@ contains one intentional external-registration request change described under **
 
 ### Security
 
+- Lost sole-platform-administrator recovery now uses a supported offline `plan`/`apply` CLI seam with private subject input, exact digest confirmation, row-locked transactional recomputation, guarded owner transfers, and atomic redacted audit evidence. It adds no REST, MCP, or xDS recovery authority and never transfers grants or team memberships. (`fpv2-92f`)
 - Dataplane mTLS authorization now binds the verified leaf's SPIFFE URI and SHA-256 fingerprint to
   one exact active certificate row across every xDS-family service. Bounded two-certificate overlap
   supports connect-new-before-revoke-old rotation; exact revocation terminates only streams using
@@ -38,6 +39,10 @@ contains one intentional external-registration request change described under **
 
 ### Added
 
+- Team secrets now have a supported, revision-guarded REST and CLI deletion lifecycle. Deletion
+  refuses same-team listener, cluster, and AI-provider dependants, emits redacted audit/outbox
+  evidence, and withdraws the deleted SDS resource without cascading dependent resources. (#254,
+  `fpv2-a09`)
 - `flowplane db preflight` reports `3.1.2` credential migration blockers using stable
   codes and resource UUIDs without exposing certificate material. Authorized dataplane reads and
   CLI listing can explicitly include retired history. (`fpv2-7f3`)
@@ -49,6 +54,15 @@ contains one intentional external-registration request change described under **
 
 ### Changed
 
+- Secret rotation can no longer change a secret's type. Create a correctly typed replacement and
+  repoint dependants before deleting the old secret. This fail-closed pre-customer change preserves
+  normalized listener/cluster and AI-provider type invariants. (#254, `fpv2-a09`)
+- Team membership and team-grant creation now accept exactly one of the existing positional email,
+  an immutable OIDC subject, or a Flowplane user ID. Subject and user-ID resolution is restricted
+  to active users already belonging to the selected organization; provider email remains only a
+  backward-compatible convenience. Successful team audit targets now use the resolved Flowplane
+  user ID instead of email. This is a backward-compatible pre-customer request-body expansion for
+  provider-neutral OIDC onboarding. (`fpv2-ppo`)
 - External dataplane certificate registration intentionally changes from caller-asserted identity
   metadata to `{dataplane, certificate_chain_pem}`. Flowplane now verifies the chain and derives
   SPIFFE URI, canonical serial, validity, and leaf fingerprint from the certificate itself; the old

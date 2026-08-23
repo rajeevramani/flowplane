@@ -2,6 +2,7 @@
 //! Updates and deletes require the expected revision — optimistic concurrency on every
 //! mutable resource (spec/10 §3.4.4), the fix for v1's lost-update class.
 
+use crate::repos::secret_refs;
 use crate::scope::TeamScope;
 use fp_domain::gateway::cluster::{Cluster, ClusterSpec};
 use fp_domain::{ClusterId, DomainError, DomainResult, ErrorCode, TeamId};
@@ -65,6 +66,8 @@ async fn create_with_owner(
     owner_kind: &str,
     owner_id: Option<Uuid>,
 ) -> DomainResult<Cluster> {
+    let references = spec.secret_references();
+    let resolved_secret_refs = secret_refs::resolve(tx, team.id, &references).await?;
     let spec_json = serde_json::to_value(spec)
         .map_err(|e| DomainError::internal(format!("serialize cluster spec: {e}")))?;
     let row = sqlx::query(&format!(
@@ -87,7 +90,9 @@ async fn create_with_owner(
         }
         _ => DomainError::internal(format!("create cluster: {e}")),
     })?;
-    from_row(&row)
+    let cluster = from_row(&row)?;
+    secret_refs::replace_cluster(tx, team.id, cluster.id.as_uuid(), &resolved_secret_refs).await?;
+    Ok(cluster)
 }
 
 pub async fn get(pool: &PgPool, scope: TeamScope, name: &str) -> DomainResult<Option<Cluster>> {
@@ -148,6 +153,8 @@ pub async fn update(
     spec: &ClusterSpec,
     expected_version: i64,
 ) -> DomainResult<Cluster> {
+    let references = spec.secret_references();
+    let resolved_secret_refs = secret_refs::resolve(tx, team_id, &references).await?;
     let spec_json = serde_json::to_value(spec)
         .map_err(|e| DomainError::internal(format!("serialize cluster spec: {e}")))?;
     let row = sqlx::query(&format!(
@@ -163,7 +170,12 @@ pub async fn update(
     .map_err(|e| DomainError::internal(format!("update cluster: {e}")))?;
 
     match row {
-        Some(row) => from_row(&row),
+        Some(row) => {
+            let cluster = from_row(&row)?;
+            secret_refs::replace_cluster(tx, team_id, cluster.id.as_uuid(), &resolved_secret_refs)
+                .await?;
+            Ok(cluster)
+        }
         None => {
             // Disambiguate: gone vs revision raced.
             let current: Option<i64> =
@@ -199,6 +211,8 @@ pub async fn update_ai_owned_spec(
     name: &str,
     spec: &ClusterSpec,
 ) -> DomainResult<Cluster> {
+    let references = spec.secret_references();
+    let resolved_secret_refs = secret_refs::resolve(tx, team_id, &references).await?;
     let spec_json = serde_json::to_value(spec)
         .map_err(|e| DomainError::internal(format!("serialize cluster spec: {e}")))?;
     let row = sqlx::query(&format!(
@@ -211,10 +225,13 @@ pub async fn update_ai_owned_spec(
     .fetch_optional(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("update AI-owned cluster: {e}")))?;
-    row.as_ref()
+    let cluster = row
+        .as_ref()
         .map(from_row)
         .transpose()?
-        .ok_or_else(|| DomainError::not_found("AI-owned cluster", name))
+        .ok_or_else(|| DomainError::not_found("AI-owned cluster", name))?;
+    secret_refs::replace_cluster(tx, team_id, cluster.id.as_uuid(), &resolved_secret_refs).await?;
+    Ok(cluster)
 }
 
 /// Delete with the same revision contract. Returns the deleted cluster's id.

@@ -51,6 +51,15 @@ flowplane team member add api-dev@example.com --org edgeco --team payments
 flowplane team member list --org edgeco --team payments
 ```
 
+Email is a convenience, not the identity boundary. If the configured OIDC provider does not
+place a usable email on the Flowplane user, select the existing org member by immutable OIDC
+subject or Flowplane user ID instead:
+
+```bash
+flowplane team member add --subject '<oidc-sub>' --org edgeco --team payments
+flowplane team member add --user-id '<flowplane-user-uuid>' --org edgeco --team payments
+```
+
 Team membership lets the team roster be managed and inspected. Resource access still comes from org-admin status or explicit grants.
 
 ## 4. Grant the API-team workflow
@@ -64,6 +73,16 @@ flowplane team grant add api-dev@example.com --org edgeco --team payments --reso
 flowplane team grant add api-dev@example.com --org edgeco --team payments --resource mcp-tools --action read
 flowplane team grant add api-dev@example.com --org edgeco --team payments --resource mcp-tools --action update
 ```
+
+The grant command accepts the same mutually exclusive identity selectors:
+
+```bash
+flowplane team grant add --subject '<oidc-sub>' --org edgeco --team payments --resource clusters --action read
+flowplane team grant add --user-id '<flowplane-user-uuid>' --org edgeco --team payments --resource clusters --action read
+```
+
+Exactly one of positional email, `--subject`, or `--user-id` is required. Subject resolution is
+within the control plane's single configured OIDC issuer; org membership remains authoritative.
 
 Add gateway modeling grants only if the API team will create or update the route/listener resources themselves:
 

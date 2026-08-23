@@ -586,11 +586,14 @@ async fn windowed_grouped_query_uses_team_scoped_index() {
     // window covers the 59 most recent seeded events (offsets 1..=59 seconds;
     // the `now()` upper bound is re-evaluated slightly after seeding, and the
     // half-open bound excludes nothing seeded at exactly now()).
+    let database_now = ai::usage_clock_now(&w.pool)
+        .await
+        .expect("database usage clock");
     let (items, total) = ai::usage_summary(
         &w.pool,
         w.team_a.id,
         AiUsageQuery {
-            since: Some(Utc::now() - Duration::seconds(60)),
+            since: Some(database_now - Duration::seconds(60)),
             ..all_time()
         },
     )

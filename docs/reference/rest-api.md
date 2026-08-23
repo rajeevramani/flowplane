@@ -488,7 +488,12 @@ The spec-content endpoint supports conditional reads: it returns `ETag`, accepts
 | GET  | `/api/v1/teams/{team}/secrets` |
 | POST | `/api/v1/teams/{team}/secrets` |
 | GET  | `/api/v1/teams/{team}/secrets/{name}` |
+| DELETE | `/api/v1/teams/{team}/secrets/{name}` |
 | POST | `/api/v1/teams/{team}/secrets/{name}/rotate` |
+
+Secret deletion requires `If-Match` and returns `204 No Content`. It refuses while a same-team
+listener, cluster, or AI provider references the secret; update or remove those dependants first.
+Delete responses, errors, audit rows, and events never contain secret values.
 
 ### xDS status & ops
 

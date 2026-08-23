@@ -218,7 +218,7 @@ fn secured_api() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             secrets_api::list_secrets,
             secrets_api::create_secret
         ))
-        .routes(routes!(secrets_api::get_secret))
+        .routes(routes!(secrets_api::get_secret, secrets_api::delete_secret))
         .routes(routes!(secrets_api::rotate_secret))
         .routes(routes!(crate::xds_api::list_nacks))
         .routes(routes!(crate::xds_api::status))

@@ -13,6 +13,7 @@ pub mod gateway;
 pub mod learning;
 pub mod mcp;
 pub mod orgs;
+pub mod platform_admin_recovery;
 pub mod quota;
 pub mod rate_limit;
 pub mod rls_sync;

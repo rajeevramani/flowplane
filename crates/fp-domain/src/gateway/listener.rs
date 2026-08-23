@@ -112,6 +112,28 @@ fn valid_ipv6(address: &str) -> bool {
 }
 
 impl ListenerSpec {
+    pub fn secret_references(&self) -> Vec<crate::secret::SecretReference<'_>> {
+        let Some(tls) = &self.tls_context else {
+            return Vec::new();
+        };
+        let mut refs = Vec::with_capacity(2);
+        if let Some(name) = &tls.tls_certificate_sds_secret_name {
+            refs.push(crate::secret::SecretReference {
+                name,
+                required_type: crate::secret::SecretType::TlsCertificate,
+                usage: "tls_certificate",
+            });
+        }
+        if let Some(name) = &tls.validation_context_sds_secret_name {
+            refs.push(crate::secret::SecretReference {
+                name,
+                required_type: crate::secret::SecretType::CertificateValidationContext,
+                usage: "validation_context",
+            });
+        }
+        refs
+    }
+
     pub fn validate(&self) -> DomainResult<()> {
         let looks_numeric_v4 = self
             .address
@@ -302,6 +324,35 @@ mod tests {
             access_logs: Vec::new(),
             tls_context: None,
         }
+    }
+
+    #[test]
+    fn extracts_every_typed_sds_reference_without_values() {
+        let mut listener = spec("127.0.0.1", 8443);
+        listener.protocol = ListenerProtocol::Https;
+        listener.tls_context = Some(ListenerTlsConfig {
+            cert_chain_file: None,
+            private_key_file: None,
+            ca_cert_file: None,
+            require_client_certificate: true,
+            tls_certificate_sds_secret_name: Some("server-cert".into()),
+            validation_context_sds_secret_name: Some("client-ca".into()),
+        });
+
+        let refs = listener.secret_references();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].name, "server-cert");
+        assert_eq!(
+            refs[0].required_type,
+            crate::secret::SecretType::TlsCertificate
+        );
+        assert_eq!(refs[0].usage, "tls_certificate");
+        assert_eq!(refs[1].name, "client-ca");
+        assert_eq!(
+            refs[1].required_type,
+            crate::secret::SecretType::CertificateValidationContext
+        );
+        assert_eq!(refs[1].usage, "validation_context");
     }
 
     #[test]

@@ -873,13 +873,28 @@ async fn run_team_member(client: RestClient, command: TeamMemberCommand) -> Resu
                 )
                 .await?
         }
-        TeamMemberCommand::Add { team, email } => {
+        TeamMemberCommand::Add {
+            team,
+            email,
+            subject,
+            user_id,
+        } => {
             let team = client.team(team)?;
+            let mut body = Map::new();
+            if let Some(email) = email {
+                body.insert("email".into(), Value::String(email));
+            }
+            if let Some(subject) = subject {
+                body.insert("subject".into(), Value::String(subject));
+            }
+            if let Some(user_id) = user_id {
+                body.insert("user_id".into(), Value::String(user_id));
+            }
             client
                 .request(
                     reqwest::Method::POST,
                     &format!("/api/v1/teams/{team}/members"),
-                    Some(json!({"email": email})),
+                    Some(Value::Object(body)),
                 )
                 .await?
         }
@@ -912,15 +927,29 @@ async fn run_grant(client: RestClient, command: GrantCommand) -> Result<()> {
         GrantCommand::Add {
             team,
             email,
+            subject,
+            user_id,
             resource,
             action,
         } => {
             let team = client.team(team)?;
+            let mut body = Map::new();
+            if let Some(email) = email {
+                body.insert("email".into(), Value::String(email));
+            }
+            if let Some(subject) = subject {
+                body.insert("subject".into(), Value::String(subject));
+            }
+            if let Some(user_id) = user_id {
+                body.insert("user_id".into(), Value::String(user_id));
+            }
+            body.insert("resource".into(), Value::String(resource));
+            body.insert("action".into(), Value::String(action));
             client
                 .request(
                     reqwest::Method::POST,
                     &format!("/api/v1/teams/{team}/grants"),
-                    Some(json!({"email": email, "resource": resource, "action": action})),
+                    Some(Value::Object(body)),
                 )
                 .await?
         }
@@ -2083,6 +2112,16 @@ pub async fn run_secret(global: GlobalOptions, command: SecretCommand) -> Result
                     &format!("/api/v1/teams/{team}/secrets/{name}/rotate"),
                     Some(body_from_file(&file)?),
                     Some(revision),
+                )
+                .await?
+        }
+        SecretCommand::Delete { team, name } => {
+            let team = client.team(team)?;
+            client
+                .request(
+                    reqwest::Method::DELETE,
+                    &format!("/api/v1/teams/{team}/secrets/{}", query_component(&name)),
+                    None,
                 )
                 .await?
         }
