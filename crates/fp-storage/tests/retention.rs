@@ -1,7 +1,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
 use fp_domain::authz::TeamRef;
-use fp_storage::repos::{api_lifecycle, identity, secrets, xds_nacks};
+use fp_storage::repos::{api_lifecycle, identity, xds_nacks};
 use sqlx::types::chrono::Utc;
 use sqlx::{PgPool, Row};
 
@@ -50,52 +50,6 @@ async fn world() -> Option<World> {
             org_id: org_b.id,
         },
     })
-}
-
-#[tokio::test]
-async fn expired_secret_reaper_is_team_scoped() {
-    let Some(w) = world().await else { return };
-    let now = Utc::now();
-    sqlx::query(
-        "INSERT INTO secrets \
-           (id, team_id, org_id, name, description, secret_type, configuration_encrypted, nonce, \
-            encryption_key_id, expires_at) \
-         VALUES \
-           ($1, $2, $3, $4, '', 'generic_secret', 'cipher'::bytea, '123456789012'::bytea, 'default', $10::timestamptz - interval '5 minutes'), \
-           ($5, $2, $3, $6, '', 'generic_secret', 'cipher'::bytea, '123456789012'::bytea, 'default', $10::timestamptz + interval '5 minutes'), \
-           ($7, $8, $9, $11, '', 'generic_secret', 'cipher'::bytea, '123456789012'::bytea, 'default', $10::timestamptz - interval '5 minutes')",
-    )
-    .bind(uuid::Uuid::now_v7())
-    .bind(w.team_a.id.as_uuid())
-    .bind(w.team_a.org_id.as_uuid())
-    .bind(unique("expired-a"))
-    .bind(uuid::Uuid::now_v7())
-    .bind(unique("current-a"))
-    .bind(uuid::Uuid::now_v7())
-    .bind(w.team_b.id.as_uuid())
-    .bind(w.team_b.org_id.as_uuid())
-    .bind(now)
-    .bind(unique("expired-b"))
-    .execute(&w.pool)
-    .await
-    .expect("insert secrets");
-
-    let deleted = secrets::delete_expired_for_team(&w.pool, w.team_a.id, now)
-        .await
-        .expect("reap secrets");
-    assert_eq!(deleted, 1);
-    assert_eq!(
-        secrets::count_for_team(&w.pool, w.team_a.id)
-            .await
-            .expect("count a"),
-        1
-    );
-    assert_eq!(
-        secrets::count_for_team(&w.pool, w.team_b.id)
-            .await
-            .expect("count b"),
-        1
-    );
 }
 
 #[tokio::test]

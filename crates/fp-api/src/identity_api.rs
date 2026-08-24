@@ -41,7 +41,15 @@ pub struct MemberView {
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AddMemberBody {
-    pub email: String,
+    /// Backward-compatible email selector. Exactly one selector is required.
+    #[serde(default)]
+    pub email: Option<String>,
+    /// Immutable OIDC subject in the configured issuer trust domain.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// Flowplane user id.
+    #[serde(default)]
+    pub user_id: Option<uuid::Uuid>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -55,11 +63,47 @@ pub struct GrantView {
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AddGrantBody {
-    pub email: String,
+    /// Backward-compatible email selector. Exactly one selector is required.
+    #[serde(default)]
+    pub email: Option<String>,
+    /// Immutable OIDC subject in the configured issuer trust domain.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// Flowplane user id.
+    #[serde(default)]
+    pub user_id: Option<uuid::Uuid>,
     /// Resource kind, e.g. "clusters".
     pub resource: String,
     /// One of: read, create, update, delete, execute.
     pub action: String,
+}
+
+fn user_selector(
+    email: Option<String>,
+    subject: Option<String>,
+    user_id: Option<uuid::Uuid>,
+) -> Result<svc::UserSelector, DomainError> {
+    let supplied = usize::from(email.is_some())
+        + usize::from(subject.is_some())
+        + usize::from(user_id.is_some());
+    if supplied != 1 {
+        return Err(
+            DomainError::validation("exactly one user selector is required")
+                .with_hint("send one of: email, subject, or user_id"),
+        );
+    }
+    if let Some(email) = email {
+        return Ok(svc::UserSelector::Email(email));
+    }
+    if let Some(subject) = subject {
+        return Ok(svc::UserSelector::Subject(subject));
+    }
+    if let Some(user_id) = user_id {
+        return Ok(svc::UserSelector::UserId(UserId::from(user_id)));
+    }
+    Err(DomainError::internal(
+        "user selector validation reached an impossible state",
+    ))
 }
 
 #[derive(Serialize, ToSchema)]
@@ -246,8 +290,9 @@ pub async fn add_member(
     ApiJson(body): ApiJson<AddMemberBody>,
 ) -> Result<StatusCode, ApiError> {
     let run = async {
+        let selector = user_selector(body.email, body.subject, body.user_id)?;
         let team = resolve_team(&state, &ctx, &team).await?;
-        svc::add_member(&state.pool, &ctx, team, &body.email, rid).await
+        svc::add_member(&state.pool, &ctx, team, &selector, rid).await
     };
     run.await
         .map(|_| StatusCode::NO_CONTENT)
@@ -313,10 +358,11 @@ pub async fn add_grant(
     ApiJson(body): ApiJson<AddGrantBody>,
 ) -> Result<StatusCode, ApiError> {
     let run = async {
+        let selector = user_selector(body.email, body.subject, body.user_id)?;
         let resource = Resource::parse(&body.resource)?;
         let action = Action::parse(&body.action)?;
         let team = resolve_team(&state, &ctx, &team).await?;
-        svc::add_grant(&state.pool, &ctx, team, &body.email, resource, action, rid).await
+        svc::add_grant(&state.pool, &ctx, team, &selector, resource, action, rid).await
     };
     run.await
         .map(|_| StatusCode::NO_CONTENT)

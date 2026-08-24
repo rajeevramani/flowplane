@@ -107,6 +107,25 @@ async fn discovery_lifecycle_hides_resources_from_user_paths_and_tears_down() {
         .expect("discovery resource row");
         assert_eq!(count, 1, "{table} row is present for xDS loading");
     }
+    let secret_refs: i64 = sqlx::query_scalar(
+        "SELECT \
+           (SELECT count(*) FROM cluster_secret_refs r \
+              JOIN clusters c ON c.id = r.cluster_id \
+             WHERE c.team_id = $1 AND c.name = $2) + \
+           (SELECT count(*) FROM listener_secret_refs r \
+              JOIN listeners l ON l.id = r.listener_id \
+             WHERE l.team_id = $1 AND l.name = $3)",
+    )
+    .bind(w.team.id.as_uuid())
+    .bind(&session.cluster_name)
+    .bind(&session.listener_name)
+    .fetch_one(&w.pool)
+    .await
+    .expect("discovery secret refs");
+    assert_eq!(
+        secret_refs, 0,
+        "generated discovery resources stay SDS-free"
+    );
 
     let err = cluster_svc::get_cluster(
         &w.pool,

@@ -77,20 +77,31 @@ services:
         set -e
         fail() { echo "$$1 — run: docker compose -f compose.eval.yml down -v" >&2; exit 1; }
         keymatch() { [ "$$(openssl x509 -noout -pubkey -in "$$1" | sha256sum)" = "$$(openssl pkey -in "$$2" -pubout | sha256sum)" ]; }
+        openssl_version="$$(openssl version)"
+        case "$$openssl_version" in
+          LibreSSL*) fail "LibreSSL is unsupported; OpenSSL >=3.0 is required" ;;
+          "OpenSSL 3."*) ;;
+          *) fail "OpenSSL >=3.0 is required (found $$openssl_version)" ;;
+        esac
         if [ -f /pki-cp/.pki-complete ]; then
           for f in /pki-cp/ca.crt /pki-cp/ca.key /pki-cp/server.crt /pki-cp/server.key /pki-dp/ca.crt; do
             [ -s "$$f" ] || fail "incomplete PKI ($$f missing)"
           done
-          openssl verify -CAfile /pki-cp/ca.crt -verify_hostname flowplane-eval /pki-cp/server.crt >/dev/null || fail "server certificate failed verification"
+          openssl verify -x509_strict -partial_chain -purpose sslserver -verify_hostname flowplane-eval -CAfile /pki-cp/ca.crt /pki-cp/server.crt >/dev/null || fail "server certificate failed strict server-purpose verification"
           keymatch /pki-cp/ca.crt /pki-cp/ca.key || fail "CA key does not match certificate"
           keymatch /pki-cp/server.crt /pki-cp/server.key || fail "server key does not match certificate"
           openssl x509 -checkend 0 -in /pki-cp/ca.crt >/dev/null || fail "eval CA expired"
+          openssl x509 -in /pki-cp/ca.crt -noout -ext subjectKeyIdentifier | grep -q "X509v3 Subject Key Identifier" || fail "eval CA missing Subject Key Identifier"
+          openssl x509 -in /pki-cp/ca.crt -noout -ext basicConstraints | grep -q "CA:TRUE" || fail "eval CA missing CA:TRUE — regenerate eval PKI"
+          openssl x509 -in /pki-cp/ca.crt -noout -ext keyUsage | grep -q "Certificate Sign" || fail "eval CA missing keyCertSign — regenerate eval PKI"
+          openssl verify -x509_strict -CAfile /pki-cp/ca.crt /pki-cp/ca.crt >/dev/null || fail "eval CA failed strict verification"
           openssl x509 -checkend 0 -in /pki-cp/server.crt >/dev/null || fail "server certificate expired"
           cmp -s /pki-cp/ca.crt /pki-dp/ca.crt || fail "trust anchor mismatch between volumes"
           if [ -e /pki-dp/client.crt ] || [ -e /pki-dp/client.key ]; then
             if [ -s /pki-dp/client.crt ] && [ -s /pki-dp/client.key ]; then :; else fail "client cert/key pair incomplete"; fi
             openssl x509 -checkend 0 -in /pki-dp/client.crt >/dev/null || fail "eval client certificate expired"
             keymatch /pki-dp/client.crt /pki-dp/client.key || fail "client key does not match certificate"
+            openssl verify -x509_strict -partial_chain -purpose sslclient -CAfile /pki-dp/ca.crt /pki-dp/client.crt >/dev/null || fail "client certificate failed strict client-purpose verification"
           fi
           echo "pki already complete"
           exit 0
@@ -102,14 +113,27 @@ services:
         mkdir /pki-cp/tmp
         cd /pki-cp/tmp
         openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-          -subj "/CN=flowplane-eval-ca" -keyout ca.key -out ca.crt
+          -subj "/CN=flowplane-eval-ca" \
+          -addext "basicConstraints=critical,CA:TRUE" \
+          -addext "keyUsage=critical,keyCertSign,cRLSign" \
+          -addext "subjectKeyIdentifier=hash" \
+          -addext "authorityKeyIdentifier=keyid:always" \
+          -keyout ca.key -out ca.crt
         openssl req -newkey rsa:2048 -nodes \
-          -subj "/CN=flowplane-eval" -addext "subjectAltName=DNS:flowplane-eval" \
+          -subj "/CN=flowplane-eval" \
           -keyout server.key -out server.csr
+        printf '%s\n' \
+          'basicConstraints=critical,CA:FALSE' \
+          'keyUsage=critical,digitalSignature,keyEncipherment' \
+          'extendedKeyUsage=serverAuth' \
+          'subjectKeyIdentifier=hash' \
+          'authorityKeyIdentifier=keyid:always' \
+          'subjectAltName=DNS:flowplane-eval' > server.ext
         openssl x509 -req -days 3650 -in server.csr \
-          -CA ca.crt -CAkey ca.key -CAcreateserial -copy_extensions copy -out server.crt
-        rm server.csr ca.srl
-        openssl verify -CAfile ca.crt -verify_hostname flowplane-eval server.crt
+          -CA ca.crt -CAkey ca.key -CAcreateserial -extfile server.ext -out server.crt
+        rm server.csr server.ext ca.srl
+        openssl verify -x509_strict -partial_chain -purpose sslserver -verify_hostname flowplane-eval -CAfile ca.crt server.crt
+        openssl verify -x509_strict -CAfile ca.crt ca.crt
         chmod 0600 ca.key server.key
         chown -R 65532:65532 /pki-cp/tmp
         mv /pki-cp/tmp/ca.crt /pki-cp/tmp/ca.key /pki-cp/tmp/server.crt /pki-cp/tmp/server.key /pki-cp/
@@ -182,9 +206,9 @@ services:
   # One-shot: read the dev token, then drive the same CLI flow the E2E harness uses
   # (scripts/e2e/lib.sh:192-228) — create a dataplane, issue its mTLS client certificate
   # (fpv2-81c; one cert shared by Envoy and the agent), expose the demo upstream, and render
-  # the mTLS Envoy bootstrap to the shared volume. The guard is versioned (.init-mtls-v1) and
-  # fails closed: a volume holding an older plaintext bootstrap or inconsistent cert state
-  # exits loudly instead of silently reusing it.
+  # the mTLS Envoy bootstrap to the shared volume. pki-client-verify writes the versioned
+  # completion guard only after strict client-purpose verification; an older plaintext bootstrap
+  # or inconsistent certificate state fails loudly instead of being reused.
   init:
     image: ${FLOWPLANE_EVAL_IMAGE:-flowplane:eval-local}
     entrypoint: ["/bin/sh", "-c"]
@@ -199,8 +223,12 @@ services:
           echo "inconsistent init state — run: docker compose -f compose.eval.yml down -v" >&2
           exit 1
         fi
-        if [ -s /shared/envoy.yaml ]; then
-          echo "stale (pre-mTLS) bootstrap present — run: docker compose -f compose.eval.yml down -v" >&2
+        if [ -s /pki-dp/client.crt ] && [ -s /pki-dp/client.key ] && [ -s /shared/envoy.yaml ] && grep -q "/pki-dp/client.crt" /shared/envoy.yaml; then
+          echo "init material already present; awaiting strict client verification"
+          exit 0
+        fi
+        if [ -e /pki-dp/client.crt ] || [ -e /pki-dp/client.key ] || [ -s /shared/envoy.yaml ]; then
+          echo "inconsistent partial init state — run: docker compose -f compose.eval.yml down -v" >&2
           exit 1
         fi
         echo "waiting for dev token..."
@@ -224,8 +252,7 @@ services:
         grep -Eq -- "-----BEGIN (RSA |EC )?PRIVATE KEY-----" /pki-dp/client.key || { echo "bad client.key" >&2; exit 1; }
         flowplane expose "http://demo-upstream:5678" --name demo --path / --port 10000 --public-base-url "http://127.0.0.1:10000"
         flowplane --out /shared/envoy.yaml dataplane bootstrap dp-eval --mode mtls --xds-host flowplane-eval --xds-port 18000 --cert-path /pki-dp/client.crt --key-path /pki-dp/client.key --ca-path /pki-dp/ca.crt --admin-port 9901
-        touch /pki-dp/.init-mtls-v1
-        echo "init complete: dataplane + cert + expose + mtls bootstrap done"
+        echo "init material ready: dataplane + cert + expose + mtls bootstrap"
     depends_on:
       flowplane-eval:
         condition: service_healthy
@@ -235,6 +262,32 @@ services:
         condition: service_completed_successfully
     volumes:
       - shared:/shared
+      - pki-dp:/pki-dp
+
+  # One-shot strict verification after product issuance. This service, not init, writes the
+  # completion sentinel, so Envoy cannot start with an incomplete or unsuitable client leaf.
+  pki-client-verify:
+    image: postgres:16
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        fail() { echo "$$1 — run: docker compose -f compose.eval.yml down -v" >&2; exit 1; }
+        keymatch() { [ "$$(openssl x509 -noout -pubkey -in "$$1" | sha256sum)" = "$$(openssl pkey -in "$$2" -pubout | sha256sum)" ]; }
+        for f in /pki-dp/ca.crt /pki-dp/client.crt /pki-dp/client.key /shared/envoy.yaml; do
+          [ -s "$$f" ] || fail "incomplete initialized PKI ($$f missing)"
+        done
+        keymatch /pki-dp/client.crt /pki-dp/client.key || fail "client key does not match certificate"
+        openssl verify -x509_strict -partial_chain -purpose sslclient -CAfile /pki-dp/ca.crt /pki-dp/client.crt >/dev/null || fail "client certificate failed strict client-purpose verification"
+        grep -q "/pki-dp/client.crt" /shared/envoy.yaml || fail "mTLS bootstrap does not reference client certificate"
+        touch /pki-dp/.init-mtls-v1
+        chown 65532:65532 /pki-dp/.init-mtls-v1
+        echo "client PKI strict verification complete"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    volumes:
+      - shared:/shared:ro
       - pki-dp:/pki-dp
 
   # Read-only dashboard for the eval stack (ui-f3 / fpv2-m4u.2). Same eval image; waits for
@@ -288,7 +341,7 @@ services:
     ports:
       - "127.0.0.1:${FLOWPLANE_EVAL_GATEWAY_PORT:-10000}:10000"   # the evaluator's gateway; loopback only.
     depends_on:
-      init:
+      pki-client-verify:
         condition: service_completed_successfully
     volumes:
       # Read-only: Envoy only reads the bootstrap and the dataplane cert material.
@@ -336,7 +389,7 @@ services:
     depends_on:
       envoy:
         condition: service_started
-      init:
+      pki-client-verify:
         condition: service_completed_successfully
     volumes:
       # Read-only: the agent only reads the dev token and the dataplane cert material.

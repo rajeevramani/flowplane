@@ -306,7 +306,14 @@ pub async fn create_team_tx(
     .bind(display_name)
     .fetch_one(&mut **tx)
     .await
-    .map_err(|e| map_unique_violation(e, "team", name))?;
+    .map_err(|e| {
+        if is_fk_violation(&e) {
+            DomainError::conflict("organization no longer exists")
+                .with_hint("refresh the organization and retry")
+        } else {
+            map_unique_violation(e, "team", name)
+        }
+    })?;
     team_from_row(&row)
 }
 
@@ -826,18 +833,30 @@ pub async fn delete_team_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     team_id: TeamId,
 ) -> DomainResult<()> {
-    let (clusters, listeners, rcs): (i64, i64, i64) = sqlx::query_as(
+    let locked: Option<Uuid> = sqlx::query_scalar("SELECT id FROM teams WHERE id = $1 FOR UPDATE")
+        .bind(team_id.as_uuid())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| DomainError::internal(format!("delete team: lock: {e}")))?;
+    if locked.is_none() {
+        return Err(DomainError::new(
+            fp_domain::ErrorCode::NotFound,
+            "team not found",
+        ));
+    }
+    let (clusters, listeners, rcs, dataplanes): (i64, i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM clusters WHERE team_id = $1), \
                 (SELECT count(*) FROM listeners WHERE team_id = $1), \
-                (SELECT count(*) FROM route_configs WHERE team_id = $1)",
+                (SELECT count(*) FROM route_configs WHERE team_id = $1), \
+                (SELECT count(*) FROM dataplanes WHERE team_id = $1)",
     )
     .bind(team_id.as_uuid())
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| DomainError::internal(format!("delete team: counts: {e}")))?;
-    if clusters + listeners + rcs > 0 {
+    if clusters + listeners + rcs + dataplanes > 0 {
         return Err(DomainError::conflict(format!(
-            "team still owns resources ({clusters} clusters, {listeners} listeners, {rcs} route configs)"
+            "team still owns resources ({clusters} clusters, {listeners} listeners, {rcs} route configs, {dataplanes} dataplanes)"
         ))
         .with_hint("delete the team's resources first"));
     }
@@ -845,7 +864,14 @@ pub async fn delete_team_tx(
         .bind(team_id.as_uuid())
         .execute(&mut **tx)
         .await
-        .map_err(|e| DomainError::internal(format!("delete team: {e}")))?;
+        .map_err(|e| {
+            if is_fk_violation(&e) {
+                DomainError::conflict("team still owns resources")
+                    .with_hint("delete the team's resources first")
+            } else {
+                DomainError::internal(format!("delete team: {e}"))
+            }
+        })?;
     if deleted.rows_affected() == 0 {
         return Err(DomainError::new(
             fp_domain::ErrorCode::NotFound,
@@ -1073,6 +1099,44 @@ pub async fn find_org_user_by_email(
     }
 }
 
+/// Resolve an active user by immutable OIDC subject, scoped to membership in `org_id`.
+pub async fn find_org_user_by_subject(
+    pool: &PgPool,
+    org_id: OrgId,
+    subject: &str,
+) -> DomainResult<Option<UserId>> {
+    let id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT u.id FROM users u \
+         JOIN org_memberships m ON m.user_id = u.id \
+         WHERE m.org_id = $1 AND u.subject = $2 AND u.status = 'active'",
+    )
+    .bind(org_id.as_uuid())
+    .bind(subject)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("find org user by subject: {e}")))?;
+    Ok(id.map(UserId::from))
+}
+
+/// Resolve an active user by Flowplane id, scoped to membership in `org_id`.
+pub async fn find_org_user_by_id(
+    pool: &PgPool,
+    org_id: OrgId,
+    user_id: UserId,
+) -> DomainResult<Option<UserId>> {
+    let id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT u.id FROM users u \
+         JOIN org_memberships m ON m.user_id = u.id \
+         WHERE m.org_id = $1 AND u.id = $2 AND u.status = 'active'",
+    )
+    .bind(org_id.as_uuid())
+    .bind(user_id.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| DomainError::internal(format!("find org user by id: {e}")))?;
+    Ok(id.map(UserId::from))
+}
+
 pub async fn active_user_exists(pool: &PgPool, user_id: UserId) -> DomainResult<bool> {
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND status = 'active')",
@@ -1161,30 +1225,59 @@ pub async fn resolve_org_by_name(pool: &PgPool, name: &str) -> DomainResult<Opti
     Ok(id.map(OrgId::from))
 }
 
-/// Delete an org. Refuses while teams exist (RESTRICT semantics with a helpful error).
+/// Delete an org. Refuses while teams or their retained dataplanes exist.
 pub async fn delete_org(pool: &PgPool, org_id: OrgId) -> DomainResult<()> {
-    let teams: i64 = sqlx::query_scalar("SELECT count(*) FROM teams WHERE org_id = $1")
-        .bind(org_id.as_uuid())
-        .fetch_one(pool)
+    let mut tx = pool
+        .begin()
         .await
-        .map_err(|e| DomainError::internal(format!("delete org: count: {e}")))?;
-    if teams > 0 {
-        return Err(
-            DomainError::conflict(format!("organization still has {teams} team(s)"))
-                .with_hint("delete the org's teams first"),
-        );
+        .map_err(|e| DomainError::internal(format!("delete org: begin: {e}")))?;
+    let locked: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM organizations WHERE id = $1 FOR UPDATE")
+            .bind(org_id.as_uuid())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| DomainError::internal(format!("delete org: lock: {e}")))?;
+    if locked.is_none() {
+        return Err(DomainError::new(
+            fp_domain::ErrorCode::NotFound,
+            "organization not found",
+        ));
+    }
+    let (teams, dataplanes): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM teams WHERE org_id = $1), \
+                (SELECT count(*) FROM dataplanes WHERE org_id = $1)",
+    )
+    .bind(org_id.as_uuid())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("delete org: count: {e}")))?;
+    if teams > 0 || dataplanes > 0 {
+        return Err(DomainError::conflict(format!(
+            "organization still owns resources ({teams} teams, {dataplanes} dataplanes)"
+        ))
+        .with_hint("delete the org's teams first"));
     }
     let deleted = sqlx::query("DELETE FROM organizations WHERE id = $1")
         .bind(org_id.as_uuid())
-        .execute(pool)
+        .execute(&mut *tx)
         .await
-        .map_err(|e| DomainError::internal(format!("delete org: {e}")))?;
+        .map_err(|e| {
+            if is_fk_violation(&e) {
+                DomainError::conflict("organization still owns resources")
+                    .with_hint("delete the org's teams first")
+            } else {
+                DomainError::internal(format!("delete org: {e}"))
+            }
+        })?;
     if deleted.rows_affected() == 0 {
         return Err(DomainError::new(
             fp_domain::ErrorCode::NotFound,
             "organization not found",
         ));
     }
+    tx.commit()
+        .await
+        .map_err(|e| DomainError::internal(format!("delete org: commit: {e}")))?;
     Ok(())
 }
 
@@ -1234,6 +1327,325 @@ pub async fn count_org_owners(pool: &PgPool, org_id: OrgId) -> DomainResult<i64>
         .fetch_one(pool)
         .await
         .map_err(|e| DomainError::internal(format!("count owners: {e}")))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryUserRow {
+    pub id: UserId,
+    pub status: EntityStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryMembershipRow {
+    pub id: Uuid,
+    pub org_id: OrgId,
+    pub user_id: UserId,
+    pub role: OrgRole,
+    pub user_status: EntityStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryOrgRow {
+    pub id: OrgId,
+    pub name: String,
+}
+
+pub async fn recovery_platform_org_id(
+    tx: &mut Transaction<'_, Postgres>,
+) -> DomainResult<Option<OrgId>> {
+    let marker: Option<String> =
+        sqlx::query_scalar("SELECT value FROM instance_meta WHERE key = 'platform_org_id'")
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| DomainError::internal(format!("recovery: read platform marker: {e}")))?;
+    marker
+        .map(|raw| {
+            Uuid::parse_str(&raw).map(OrgId::from).map_err(|e| {
+                DomainError::internal(format!("recovery: invalid platform marker: {e}"))
+            })
+        })
+        .transpose()
+}
+
+pub async fn recovery_user_by_subject(
+    tx: &mut Transaction<'_, Postgres>,
+    subject: &str,
+) -> DomainResult<Option<RecoveryUserRow>> {
+    let row = sqlx::query("SELECT id, status FROM users WHERE subject = $1")
+        .bind(subject)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| DomainError::internal(format!("recovery: resolve replacement: {e}")))?;
+    row.map(|row| {
+        Ok(RecoveryUserRow {
+            id: UserId::from(row.get::<Uuid, _>("id")),
+            status: parse_status(row.get("status"))?,
+        })
+    })
+    .transpose()
+}
+
+pub async fn recovery_owner_memberships(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: OrgId,
+) -> DomainResult<Vec<RecoveryMembershipRow>> {
+    let rows = sqlx::query(
+        "SELECT om.id, om.org_id, om.user_id, om.role, u.status AS user_status \
+         FROM org_memberships om JOIN users u ON u.id = om.user_id \
+         WHERE om.org_id = $1 AND om.role = 'owner' ORDER BY om.id",
+    )
+    .bind(org_id.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: read platform owners: {e}")))?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(RecoveryMembershipRow {
+                id: row.get("id"),
+                org_id: OrgId::from(row.get::<Uuid, _>("org_id")),
+                user_id: UserId::from(row.get::<Uuid, _>("user_id")),
+                role: OrgRole::parse(row.get("role"))?,
+                user_status: parse_status(row.get("user_status"))?,
+            })
+        })
+        .collect()
+}
+
+pub async fn recovery_membership(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: OrgId,
+    user_id: UserId,
+) -> DomainResult<Option<RecoveryMembershipRow>> {
+    let row = sqlx::query(
+        "SELECT om.id, om.org_id, om.user_id, om.role, u.status AS user_status \
+         FROM org_memberships om JOIN users u ON u.id = om.user_id \
+         WHERE om.org_id = $1 AND om.user_id = $2",
+    )
+    .bind(org_id.as_uuid())
+    .bind(user_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: read membership: {e}")))?;
+    row.map(|row| {
+        Ok(RecoveryMembershipRow {
+            id: row.get("id"),
+            org_id: OrgId::from(row.get::<Uuid, _>("org_id")),
+            user_id: UserId::from(row.get::<Uuid, _>("user_id")),
+            role: OrgRole::parse(row.get("role"))?,
+            user_status: parse_status(row.get("user_status"))?,
+        })
+    })
+    .transpose()
+}
+
+pub async fn recovery_org_by_ref(
+    tx: &mut Transaction<'_, Postgres>,
+    org_ref: &str,
+) -> DomainResult<Option<RecoveryOrgRow>> {
+    let rows = if let Ok(id) = Uuid::parse_str(org_ref) {
+        sqlx::query(
+            "SELECT id, name FROM organizations \
+             WHERE (id = $1 OR name = $2) AND status = 'active' ORDER BY id LIMIT 2",
+        )
+        .bind(id)
+        .bind(org_ref)
+        .fetch_all(&mut **tx)
+        .await
+    } else {
+        sqlx::query("SELECT id, name FROM organizations WHERE name = $1 AND status = 'active'")
+            .bind(org_ref)
+            .fetch_all(&mut **tx)
+            .await
+    }
+    .map_err(|e| DomainError::internal(format!("recovery: resolve tenant organization: {e}")))?;
+    if rows.len() > 1 {
+        return Err(DomainError::conflict(
+            "a requested tenant organization selector is ambiguous",
+        ));
+    }
+    Ok(rows.into_iter().next().map(|row| RecoveryOrgRow {
+        id: OrgId::from(row.get::<Uuid, _>("id")),
+        name: row.get("name"),
+    }))
+}
+
+pub async fn recovery_platform_org_id_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+) -> DomainResult<Option<OrgId>> {
+    let marker: Option<String> = sqlx::query_scalar(
+        "SELECT value FROM instance_meta WHERE key = 'platform_org_id' FOR UPDATE",
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: lock platform marker: {e}")))?;
+    marker
+        .map(|raw| {
+            Uuid::parse_str(&raw).map(OrgId::from).map_err(|e| {
+                DomainError::internal(format!("recovery: invalid platform marker: {e}"))
+            })
+        })
+        .transpose()
+}
+
+pub async fn recovery_user_by_subject_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    subject: &str,
+) -> DomainResult<Option<RecoveryUserRow>> {
+    let row = sqlx::query("SELECT id, status FROM users WHERE subject = $1 FOR UPDATE")
+        .bind(subject)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| DomainError::internal(format!("recovery: lock replacement: {e}")))?;
+    row.map(|row| {
+        Ok(RecoveryUserRow {
+            id: UserId::from(row.get::<Uuid, _>("id")),
+            status: parse_status(row.get("status"))?,
+        })
+    })
+    .transpose()
+}
+
+pub async fn recovery_owner_memberships_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: OrgId,
+) -> DomainResult<Vec<RecoveryMembershipRow>> {
+    let rows = sqlx::query(
+        "SELECT om.id, om.org_id, om.user_id, om.role, u.status AS user_status \
+         FROM org_memberships om JOIN users u ON u.id = om.user_id \
+         WHERE om.org_id = $1 AND om.role = 'owner' ORDER BY om.id FOR UPDATE OF om, u",
+    )
+    .bind(org_id.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: lock platform owners: {e}")))?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(RecoveryMembershipRow {
+                id: row.get("id"),
+                org_id: OrgId::from(row.get::<Uuid, _>("org_id")),
+                user_id: UserId::from(row.get::<Uuid, _>("user_id")),
+                role: OrgRole::parse(row.get("role"))?,
+                user_status: parse_status(row.get("user_status"))?,
+            })
+        })
+        .collect()
+}
+
+pub async fn recovery_membership_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: OrgId,
+    user_id: UserId,
+) -> DomainResult<Option<RecoveryMembershipRow>> {
+    let row = sqlx::query(
+        "SELECT om.id, om.org_id, om.user_id, om.role, u.status AS user_status \
+         FROM org_memberships om JOIN users u ON u.id = om.user_id \
+         WHERE om.org_id = $1 AND om.user_id = $2 FOR UPDATE OF om, u",
+    )
+    .bind(org_id.as_uuid())
+    .bind(user_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: lock membership: {e}")))?;
+    row.map(|row| {
+        Ok(RecoveryMembershipRow {
+            id: row.get("id"),
+            org_id: OrgId::from(row.get::<Uuid, _>("org_id")),
+            user_id: UserId::from(row.get::<Uuid, _>("user_id")),
+            role: OrgRole::parse(row.get("role"))?,
+            user_status: parse_status(row.get("user_status"))?,
+        })
+    })
+    .transpose()
+}
+
+pub async fn recovery_org_by_ref_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    org_ref: &str,
+) -> DomainResult<Option<RecoveryOrgRow>> {
+    let rows = if let Ok(id) = Uuid::parse_str(org_ref) {
+        sqlx::query(
+            "SELECT id, name FROM organizations \
+             WHERE (id = $1 OR name = $2) AND status = 'active' ORDER BY id LIMIT 2 FOR UPDATE",
+        )
+        .bind(id)
+        .bind(org_ref)
+        .fetch_all(&mut **tx)
+        .await
+    } else {
+        sqlx::query(
+            "SELECT id, name FROM organizations WHERE name = $1 AND status = 'active' FOR UPDATE",
+        )
+        .bind(org_ref)
+        .fetch_all(&mut **tx)
+        .await
+    }
+    .map_err(|e| DomainError::internal(format!("recovery: lock tenant organization: {e}")))?;
+    if rows.len() > 1 {
+        return Err(DomainError::conflict(
+            "a requested tenant organization selector is ambiguous",
+        ));
+    }
+    Ok(rows.into_iter().next().map(|row| RecoveryOrgRow {
+        id: OrgId::from(row.get::<Uuid, _>("id")),
+        name: row.get("name"),
+    }))
+}
+
+pub async fn transfer_recovery_membership_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    membership_id: Uuid,
+    org_id: OrgId,
+    source_user_id: UserId,
+    replacement_user_id: UserId,
+) -> DomainResult<()> {
+    let updated = sqlx::query(
+        "UPDATE org_memberships SET user_id = $1 \
+         WHERE id = $2 AND org_id = $3 AND user_id = $4 AND role = 'owner'",
+    )
+    .bind(replacement_user_id.as_uuid())
+    .bind(membership_id)
+    .bind(org_id.as_uuid())
+    .bind(source_user_id.as_uuid())
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: transfer owner membership: {e}")))?;
+    if updated.rows_affected() != 1 {
+        return Err(DomainError::conflict(
+            "recovery state changed before an owner membership could be transferred",
+        ));
+    }
+    Ok(())
+}
+
+pub async fn recovery_user_grants_exist(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: OrgId,
+    user_id: UserId,
+) -> DomainResult<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM user_grants WHERE org_id = $1 AND user_id = $2)",
+    )
+    .bind(org_id.as_uuid())
+    .bind(user_id.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: inspect source grants: {e}")))
+}
+
+pub async fn recovery_user_grants_exist_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: OrgId,
+    user_id: UserId,
+) -> DomainResult<bool> {
+    let id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM user_grants WHERE org_id = $1 AND user_id = $2 LIMIT 1 FOR UPDATE",
+    )
+    .bind(org_id.as_uuid())
+    .bind(user_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| DomainError::internal(format!("recovery: lock source grants: {e}")))?;
+    Ok(id.is_some())
 }
 
 #[cfg(test)]

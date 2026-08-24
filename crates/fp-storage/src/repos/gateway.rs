@@ -1,6 +1,7 @@
 //! Listener and route-config repositories — the clusters pattern (team predicate in SQL,
 //! revision-checked writes) plus normalized reference tracking.
 
+use crate::repos::secret_refs;
 use fp_domain::authz::TeamRef;
 use fp_domain::gateway::listener::{Listener, ListenerSpec};
 use fp_domain::gateway::route_config::{RouteConfig, RouteConfigSpec};
@@ -527,6 +528,8 @@ async fn create_listener_with_owner(
     owner_kind: &str,
     owner_id: Option<Uuid>,
 ) -> DomainResult<Listener> {
+    let references = spec.secret_references();
+    let resolved_secret_refs = secret_refs::resolve(tx, team.id, &references).await?;
     let rc_id = resolve_listener_rc_ref(tx, team.id, owner_kind, spec).await?;
     let spec_json = serde_json::to_value(spec)
         .map_err(|e| DomainError::internal(format!("serialize listener spec: {e}")))?;
@@ -546,6 +549,8 @@ async fn create_listener_with_owner(
     .map_err(|e| map_unique(e, "listener", name))?;
     let listener = listener_from_row(&row)?;
     replace_listener_rc_ref(tx, team.id, listener.id.as_uuid(), rc_id).await?;
+    secret_refs::replace_listener(tx, team.id, listener.id.as_uuid(), &resolved_secret_refs)
+        .await?;
     Ok(listener)
 }
 
@@ -616,6 +621,8 @@ pub async fn update_listener(
     spec: &ListenerSpec,
     expected_version: i64,
 ) -> DomainResult<Listener> {
+    let references = spec.secret_references();
+    let resolved_secret_refs = secret_refs::resolve(tx, team.id, &references).await?;
     let rc_id = resolve_listener_rc_ref(tx, team.id, "user", spec).await?;
     let spec_json = serde_json::to_value(spec)
         .map_err(|e| DomainError::internal(format!("serialize listener spec: {e}")))?;
@@ -634,6 +641,13 @@ pub async fn update_listener(
         Some(row) => {
             let listener = listener_from_row(&row)?;
             replace_listener_rc_ref(tx, team.id, listener.id.as_uuid(), rc_id).await?;
+            secret_refs::replace_listener(
+                tx,
+                team.id,
+                listener.id.as_uuid(),
+                &resolved_secret_refs,
+            )
+            .await?;
             Ok(listener)
         }
         None => {

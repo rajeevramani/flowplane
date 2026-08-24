@@ -22,6 +22,8 @@ pub struct Dataplane {
     pub total_requests: i64,
     pub total_errors: i64,
     pub warming_failures: i64,
+    pub retired_at: Option<DateTime<Utc>>,
+    pub retired_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -36,8 +38,8 @@ pub struct TeamStatsOverview {
     pub warming_failures: i64,
 }
 
-/// One issued client certificate. Private keys are never stored — this is the binding and
-/// revocation record, keyed by the globally-unique SPIFFE URI.
+/// One issued client certificate. Private keys are never stored. Exact leaf identity is the
+/// SHA-256 digest of its DER; legacy rows remain nullable until they reconnect and are pinned.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProxyCertificate {
     pub id: ProxyCertificateId,
@@ -45,11 +47,28 @@ pub struct ProxyCertificate {
     pub dataplane_id: DataplaneId,
     pub spiffe_uri: String,
     pub serial_number: String,
+    pub fingerprint_sha256: Option<String>,
     pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub revoked_reason: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+/// Canonical unsigned X.509 serial representation: lowercase hexadecimal without leading
+/// zeroes. DER integer encoding and historical textual storage can otherwise disagree.
+pub fn canonical_certificate_serial(serial: &str) -> DomainResult<String> {
+    if serial.is_empty()
+        || serial.len() > 128
+        || !serial.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(DomainError::validation(
+            "certificate serial number must be 1..=128 hexadecimal characters",
+        ));
+    }
+    let lowercase = serial.to_ascii_lowercase();
+    let canonical = lowercase.trim_start_matches('0');
+    Ok(if canonical.is_empty() { "0" } else { canonical }.to_owned())
 }
 
 /// Validate a SPIFFE URI for registration: scheme + non-empty trust domain + path. The
@@ -103,5 +122,28 @@ mod tests {
         );
         let long = format!("spiffe://x/{}", "a".repeat(3000));
         assert!(validate_spiffe_uri(&long).is_err());
+    }
+
+    #[test]
+    fn certificate_serials_are_canonical_unsigned_hexadecimal() {
+        assert_eq!(
+            canonical_certificate_serial("000A").expect("hex serial"),
+            "a"
+        );
+        assert_eq!(
+            canonical_certificate_serial("0000").expect("zero serial"),
+            "0"
+        );
+        assert_eq!(
+            canonical_certificate_serial("fF10").expect("mixed-case serial"),
+            "ff10"
+        );
+
+        for malformed in ["", "-1", "0x10", "serial-10", " 10"] {
+            assert!(
+                canonical_certificate_serial(malformed).is_err(),
+                "{malformed:?} must fail closed"
+            );
+        }
     }
 }

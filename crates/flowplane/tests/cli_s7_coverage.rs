@@ -54,25 +54,31 @@ const SNAPSHOT_COVERED: &[&str] = &[
 /// Leaf paths that do NOT emit the resource-JSON envelope and so have no envelope to snapshot.
 /// Each carries a one-line reason for the exemption.
 const EXEMPT: &[&str] = &[
-    "serve",                   // long-running daemon, never returns an envelope
-    "dashboard",               // long-running local presentation server (fpv2-03m), no envelope
-    "completion",              // emits a shell completion script, not the envelope
-    "db migrate",              // database migration runner
-    "auth login",              // interactive OIDC browser/device flow
-    "auth logout",             // clears local credentials
-    "auth token",              // prints the raw bearer token to stdout
-    "auth whoami",             // live-auth identity probe
-    "openapi",                 // emits an OpenAPI document, not the envelope
-    "dataplane bootstrap",     // emits Envoy bootstrap YAML
-    "dataplane cert list",     // PKI/cert material surface
+    "serve",                           // long-running daemon, never returns an envelope
+    "dashboard",    // long-running local presentation server (fpv2-03m), no envelope
+    "completion",   // emits a shell completion script, not the envelope
+    "db migrate",   // database migration runner
+    "db preflight", // read-only local database upgrade guard
+    "db recover-platform-admin plan", // read-only offline recovery plan JSON
+    "db recover-platform-admin apply", // offline audited recovery mutation JSON
+    "auth login",   // interactive OIDC browser/device flow
+    "auth logout",  // clears local credentials
+    "auth token",   // prints the raw bearer token to stdout
+    "auth whoami",  // live-auth identity probe
+    "openapi",      // emits an OpenAPI document, not the envelope
+    "qualification assemble", // local artifact/evidence utility with its own JSON files
+    "qualification inventory", // local artifact/evidence utility with its own JSON files
+    "qualification validate", // local artifact/evidence utility with its own JSON files
+    "dataplane bootstrap", // emits Envoy bootstrap YAML
+    "dataplane cert list", // PKI/cert material surface
     "dataplane cert register", // PKI/cert material surface
-    "dataplane cert issue",    // PKI/cert material surface
-    "dataplane cert revoke",   // PKI/cert material surface
-    "config path",             // prints a filesystem path
-    "config set-context",      // mutates local config (no server envelope)
-    "config use-context",      // mutates local config (no server envelope)
-    "config get-contexts",     // local-config introspection (covered by S3)
-    "config show",             // local-config introspection (covered by S3)
+    "dataplane cert issue", // PKI/cert material surface
+    "dataplane cert revoke", // PKI/cert material surface
+    "config path",  // prints a filesystem path
+    "config set-context", // mutates local config (no server envelope)
+    "config use-context", // mutates local config (no server envelope)
+    "config get-contexts", // local-config introspection (covered by S3)
+    "config show",  // local-config introspection (covered by S3)
 ];
 
 /// Resource readers/mutators that flow through the SAME `render()` + RestClient envelope path
@@ -193,6 +199,7 @@ const SHARED_LAYER_COVERED: &[&str] = &[
     "secret get",
     "secret create",
     "secret rotate",
+    "secret delete",
     // agent (read-only: list agents, show one, view an agent's grants)
     "agent list",
     "agent show",
@@ -201,6 +208,7 @@ const SHARED_LAYER_COVERED: &[&str] = &[
     "dataplane list",
     "dataplane get",
     "dataplane create",
+    "dataplane delete",
     "dataplane telemetry",
     // stats
     "stats overview",

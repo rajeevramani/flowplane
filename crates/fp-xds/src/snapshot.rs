@@ -1238,11 +1238,144 @@ mod tests {
         })
     }
 
+    fn snapshot_secret_names(snap: &TeamSnapshot) -> Vec<String> {
+        snap.secrets
+            .resources
+            .iter()
+            .map(|any| {
+                assert_eq!(any.type_url, SECRET_TYPE_URL);
+                envoy_types::pb::envoy::extensions::transport_sockets::tls::v3::Secret::decode(
+                    any.value.as_slice(),
+                )
+                .expect("decode secret proto")
+                .name
+            })
+            .collect()
+    }
+
     fn rls_cfg() -> translate::RlsClusterConfig {
         translate::RlsClusterConfig {
             grpc_url: "rls.internal:8081".into(),
             tls: None,
         }
+    }
+
+    #[tokio::test]
+    async fn supported_secret_delete_withdraws_only_target_sds_resource() {
+        let Some((pool, team_id)) = one_team().await else {
+            return;
+        };
+        std::env::set_var(
+            "FLOWPLANE_SECRET_ENCRYPTION_KEY",
+            "12345678901234567890123456789012",
+        );
+        let org_id: uuid::Uuid = sqlx::query_scalar("SELECT org_id FROM teams WHERE id = $1")
+            .bind(team_id.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .expect("team org");
+        let org_id = fp_domain::OrgId::from(org_id);
+        let user = identity::upsert_user_by_subject(
+            &pool,
+            &unique("sds-delete-sub"),
+            &format!("{}@test", unique("sds-delete")),
+            "SDS Delete",
+        )
+        .await
+        .expect("user");
+        identity::add_org_membership(&pool, user, org_id, OrgRole::Admin)
+            .await
+            .expect("membership");
+        let ctx = PrincipalCtx::User {
+            user_id: user,
+            platform_admin: false,
+            org_selector_required: false,
+            org: Some((org_id, OrgRole::Admin)),
+            grants: GrantSet::default(),
+        };
+        let team = TeamRef {
+            id: team_id,
+            org_id,
+        };
+        let target_name = unique("delete-target");
+        let retained_name = unique("delete-retained");
+        let target = fp_core::services::secrets::create_secret(
+            &pool,
+            &ctx,
+            team,
+            fp_core::services::secrets::SecretWrite {
+                name: &target_name,
+                description: "",
+                spec: SecretSpec::TlsCertificate {
+                    certificate_chain: "certificate".into(),
+                    private_key: "private-key".into(),
+                    password: None,
+                    ocsp_staple: None,
+                },
+                expires_at: None,
+            },
+            RequestId::generate(),
+        )
+        .await
+        .expect("target secret");
+        fp_core::services::secrets::create_secret(
+            &pool,
+            &ctx,
+            team,
+            fp_core::services::secrets::SecretWrite {
+                name: &retained_name,
+                description: "",
+                spec: SecretSpec::TlsCertificate {
+                    certificate_chain: "certificate".into(),
+                    private_key: "private-key".into(),
+                    password: None,
+                    ocsp_staple: None,
+                },
+                expires_at: None,
+            },
+            RequestId::generate(),
+        )
+        .await
+        .expect("retained secret");
+
+        let cache = SnapshotCache::new();
+        cache
+            .rebuild_team(&pool, team_id)
+            .await
+            .expect("initial rebuild");
+        let before = cache.team(team_id).await;
+        let before_version = before.secrets.version;
+        assert_eq!(
+            snapshot_secret_names(&before),
+            vec![retained_name.clone(), target_name.clone()]
+        );
+        let consumer = format!("sds-delete-test-{}", unique("consumer"));
+        fp_storage::outbox::register_consumer_at_head(&pool, &consumer)
+            .await
+            .expect("register delete consumer");
+
+        fp_core::services::secrets::delete_secret(
+            &pool,
+            &ctx,
+            team,
+            &target_name,
+            target.version,
+            RequestId::generate(),
+        )
+        .await
+        .expect("supported delete");
+        while fp_storage::outbox::process_batch(&pool, &consumer, 100, |events| {
+            let cache = cache.clone();
+            let pool = pool.clone();
+            async move { handle_events(&cache, &pool, events).await }
+        })
+        .await
+        .expect("process delete event")
+            > 0
+        {}
+        let after = cache.team(team_id).await;
+        assert!(after.secrets.version > before_version);
+        assert_eq!(snapshot_secret_names(&after), vec![retained_name]);
     }
 
     #[tokio::test]

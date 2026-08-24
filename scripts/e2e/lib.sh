@@ -152,7 +152,7 @@ mkdir -p /tmp/fp-e2e-www && echo "hello-from-upstream-$(date +%s)" > /tmp/fp-e2e
 mkdir -p /tmp/fp-e2e-www/v1/discovered
 cp /tmp/fp-e2e-www/index.html /tmp/fp-e2e-www/v1/discovered/1
 cp /tmp/fp-e2e-www/index.html /tmp/fp-e2e-www/v1/discovered/2
-(cd /tmp/fp-e2e-www && python3 -m http.server $UPSTREAM_PORT >/dev/null 2>&1) &
+(cd /tmp/fp-e2e-www && exec python3 -m http.server "$UPSTREAM_PORT" >/dev/null 2>&1) &
 UP_PID=$!
 cat >/tmp/fp-e2e-ai-provider.py <<'PY'
 import json

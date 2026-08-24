@@ -32,6 +32,8 @@ pub enum DomainEvent {
     // Dataplanes / mTLS certificate registry (S5.4)
     #[serde(rename = "dataplane.created", alias = "dataplane_created")]
     DataplaneCreated { dataplane_id: Uuid, name: String },
+    #[serde(rename = "dataplane.retired", alias = "dataplane_retired")]
+    DataplaneRetired { dataplane_id: Uuid, name: String },
     #[serde(
         rename = "proxy_certificate.registered",
         alias = "proxy_certificate_registered"
@@ -39,6 +41,15 @@ pub enum DomainEvent {
     ProxyCertificateRegistered {
         certificate_id: Uuid,
         spiffe_uri: String,
+    },
+    #[serde(
+        rename = "proxy_certificate.fingerprint_pinned",
+        alias = "proxy_certificate_fingerprint_pinned"
+    )]
+    ProxyCertificateFingerprintPinned {
+        certificate_id: Uuid,
+        spiffe_uri: String,
+        fingerprint_sha256: String,
     },
     #[serde(
         rename = "proxy_certificate.revoked",
@@ -50,6 +61,8 @@ pub enum DomainEvent {
     },
     #[serde(rename = "secret.upserted", alias = "secret_upserted")]
     SecretUpserted { secret_id: Uuid, name: String },
+    #[serde(rename = "secret.deleted", alias = "secret_deleted")]
+    SecretDeleted { secret_id: Uuid, name: String },
     // API lifecycle / learning config-first spine (S8)
     #[serde(rename = "api_definition.created", alias = "api_definition_created")]
     ApiDefinitionCreated {
@@ -119,9 +132,14 @@ impl DomainEvent {
             Self::TeamCreated { .. } => "team.created",
             Self::TeamDeleted { .. } => "team.deleted",
             Self::DataplaneCreated { .. } => "dataplane.created",
+            Self::DataplaneRetired { .. } => "dataplane.retired",
             Self::ProxyCertificateRegistered { .. } => "proxy_certificate.registered",
+            Self::ProxyCertificateFingerprintPinned { .. } => {
+                "proxy_certificate.fingerprint_pinned"
+            }
             Self::ProxyCertificateRevoked { .. } => "proxy_certificate.revoked",
             Self::SecretUpserted { .. } => "secret.upserted",
+            Self::SecretDeleted { .. } => "secret.deleted",
             Self::ApiDefinitionCreated { .. } => "api_definition.created",
             Self::ApiDefinitionDeleted { .. } => "api_definition.deleted",
             Self::SpecVersionCreated { .. } => "spec_version.created",
@@ -187,6 +205,10 @@ mod tests {
                 dataplane_id: uuid,
                 name: "x".into(),
             },
+            DomainEvent::DataplaneRetired {
+                dataplane_id: uuid,
+                name: "x".into(),
+            },
             DomainEvent::ProxyCertificateRegistered {
                 certificate_id: uuid,
                 spiffe_uri: "spiffe://flowplane.local/org/o/team/t/dataplane/d".into(),
@@ -196,6 +218,10 @@ mod tests {
                 spiffe_uri: "spiffe://flowplane.local/org/o/team/t/dataplane/d".into(),
             },
             DomainEvent::SecretUpserted {
+                secret_id: uuid,
+                name: "x".into(),
+            },
+            DomainEvent::SecretDeleted {
                 secret_id: uuid,
                 name: "x".into(),
             },

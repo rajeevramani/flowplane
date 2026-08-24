@@ -38,6 +38,30 @@ async fn authorize(
     }
 }
 
+async fn authorize_secret_read(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    request_id: RequestId,
+) -> DomainResult<()> {
+    match check_resource_access(ctx, Resource::Secrets, Action::Read, Some(team)) {
+        Decision::Allow(_) => Ok(()),
+        Decision::Deny(reason) => {
+            record_authz_denial(
+                pool,
+                ctx,
+                request_id,
+                Resource::Secrets,
+                Action::Read,
+                Some(team),
+                reason,
+            )
+            .await;
+            Err(deny_to_error(Resource::Secrets, Action::Read, reason))
+        }
+    }
+}
+
 pub async fn create_cluster(
     pool: &PgPool,
     ctx: &PrincipalCtx,
@@ -50,6 +74,9 @@ pub async fn create_cluster(
     authorize(pool, ctx, Action::Create, team, request_id).await?;
     validate_cluster_name(name)?;
     spec.validate()?;
+    if !spec.secret_references().is_empty() {
+        authorize_secret_read(pool, ctx, team, request_id).await?;
+    }
     advisory
         .enforce_hosts(
             pool,
@@ -130,6 +157,9 @@ pub async fn update_cluster(
 ) -> DomainResult<Cluster> {
     authorize(pool, ctx, Action::Update, team, request_id).await?;
     spec.validate()?;
+    if !spec.secret_references().is_empty() {
+        authorize_secret_read(pool, ctx, team, request_id).await?;
+    }
     advisory
         .enforce_hosts(
             pool,

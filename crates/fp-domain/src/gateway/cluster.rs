@@ -317,6 +317,20 @@ fn validate_host(host: &str) -> DomainResult<()> {
 }
 
 impl ClusterSpec {
+    pub fn secret_references(&self) -> Vec<crate::secret::SecretReference<'_>> {
+        self.upstream_tls
+            .as_ref()
+            .and_then(|tls| tls.validation_context_sds_secret_name.as_deref())
+            .map(|name| {
+                vec![crate::secret::SecretReference {
+                    name,
+                    required_type: crate::secret::SecretType::CertificateValidationContext,
+                    usage: "validation_context",
+                }]
+            })
+            .unwrap_or_default()
+    }
+
     pub fn validate(&self) -> DomainResult<()> {
         if !self.aggregate_clusters.is_empty() {
             if !self.endpoints.is_empty() {
@@ -571,6 +585,30 @@ mod tests {
     #[test]
     fn minimal_spec_validates() {
         assert!(minimal().validate().is_ok());
+    }
+
+    #[test]
+    fn extracts_upstream_validation_context_reference() {
+        let spec = ClusterSpec {
+            use_tls: true,
+            upstream_tls: Some(UpstreamTlsConfig {
+                sni: Some("api.example.com".into()),
+                validation_context_sds_secret_name: Some("upstream-ca".into()),
+                ca_cert_file: None,
+                auto_sni_san_validation: true,
+                insecure_skip_verify: false,
+            }),
+            ..minimal()
+        };
+
+        let refs = spec.secret_references();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].name, "upstream-ca");
+        assert_eq!(
+            refs[0].required_type,
+            crate::secret::SecretType::CertificateValidationContext
+        );
+        assert_eq!(refs[0].usage, "validation_context");
     }
 
     #[test]

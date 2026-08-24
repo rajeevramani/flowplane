@@ -44,6 +44,9 @@ __pycache__/
 # Playwright MCP run artifacts (local UI E2E)
 .playwright-mcp/
 
+# Local qualification evidence projections
+.artifacts/
+
 # Local macOS and slice-verification artifacts
 .DS_Store
 .s3-verify.log

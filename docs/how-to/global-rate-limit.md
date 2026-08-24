@@ -87,25 +87,41 @@ split-node setup is below; variable semantics are in the
 On a non-loopback bind, `flowplane-rls` refuses to start without its TLS material, and the CP
 refuses to start if its push token would cross plaintext. The complete two-sided setup needs
 one PKI decision: a CA (or two) that both sides cross-trust. The worked example below uses a
-single private CA for the whole RLS triangle — the same pattern (and the same `openssl` recipe)
-as [Register a dataplane over mTLS](register-dataplane-mtls.md).
+single private CA for the whole RLS triangle. These commands require OpenSSL 3.0 or newer
+(not LibreSSL); if your platform default is older or LibreSSL, put an OpenSSL 3 binary first on
+`PATH` before continuing.
 
 **1. Mint the material** (on your CA host; one CA, three leaf certs):
 
 ```bash
 # CA
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 825 \
-  -keyout rls-ca.key -out rls-ca.pem -subj "/CN=flowplane-rls-ca"
+  -keyout rls-ca.key -out rls-ca.pem -subj "/CN=flowplane-rls-ca" \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" \
+  -addext "subjectKeyIdentifier=hash" \
+  -addext "authorityKeyIdentifier=keyid:always"
 
-mint() { # name subjectAltName
+mint() { # name EKU-extension SAN-extension
   openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
     -keyout "$1.key" -out "$1.csr" -subj "/CN=$1"
+  printf '%s\n' \
+    'basicConstraints=critical,CA:FALSE' \
+    'keyUsage=critical,digitalSignature' \
+    "$2" \
+    'subjectKeyIdentifier=hash' \
+    'authorityKeyIdentifier=keyid:always' \
+    "$3" > "$1.ext"
   openssl x509 -req -in "$1.csr" -CA rls-ca.pem -CAkey rls-ca.key -CAcreateserial \
-    -days 365 -out "$1.pem" -extfile <(printf "subjectAltName=%s" "$2")
+    -days 365 -out "$1.pem" -extfile "$1.ext"
 }
-mint rls-grpc-server  "DNS:rls.example"          # RLS gRPC listener identity
-mint rls-admin-server "DNS:rls.example"          # RLS admin HTTPS identity
-mint envoy-client     "DNS:envoy-fleet.example"  # Envoy's client cert for the RLS hop
+mint rls-grpc-server  "extendedKeyUsage=serverAuth" "subjectAltName=DNS:rls.example"
+mint rls-admin-server "extendedKeyUsage=serverAuth" "subjectAltName=DNS:rls.example"
+mint envoy-client     "extendedKeyUsage=clientAuth" "subjectAltName=DNS:envoy-fleet.example"
+
+openssl verify -x509_strict -partial_chain -purpose sslserver -verify_hostname rls.example -CAfile rls-ca.pem rls-grpc-server.pem
+openssl verify -x509_strict -partial_chain -purpose sslserver -verify_hostname rls.example -CAfile rls-ca.pem rls-admin-server.pem
+openssl verify -x509_strict -partial_chain -purpose sslclient -CAfile rls-ca.pem envoy-client.pem
 ```
 
 Generate the CP→RLS admin token once, e.g. `openssl rand -hex 32 > rls-admin.token`.

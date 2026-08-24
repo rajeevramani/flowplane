@@ -6,7 +6,7 @@
 
 use envoy_types::pb::envoy::config::core::v3::Node;
 use envoy_types::pb::envoy::service::discovery::v3::aggregated_discovery_service_client::AggregatedDiscoveryServiceClient;
-use envoy_types::pb::envoy::service::discovery::v3::DiscoveryRequest;
+use envoy_types::pb::envoy::service::discovery::v3::{DiscoveryRequest, DiscoveryResponse};
 use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_client::ExternalProcessorClient;
 use envoy_types::pb::envoy::service::ext_proc::v3::ProcessingRequest;
 use fp_core::{GrantSet, PrincipalCtx};
@@ -28,6 +28,32 @@ fn unique(prefix: &str) -> String {
         "{prefix}-{}",
         &uuid::Uuid::now_v7().simple().to_string()[20..]
     )
+}
+
+fn certificate_serial() -> String {
+    uuid::Uuid::now_v7().simple().to_string()
+}
+
+struct TestLegacyPinner(sqlx::PgPool);
+
+#[fp_xds::async_trait]
+impl fp_xds::ads::LegacyCertificateFingerprintPinner for TestLegacyPinner {
+    async fn pin(
+        &self,
+        spiffe_uri: &str,
+        serial_number: &str,
+        fingerprint_sha256: &str,
+        request_id: RequestId,
+    ) -> fp_domain::DomainResult<fp_domain::ProxyCertificate> {
+        fp_core::services::dataplanes::pin_legacy_certificate_fingerprint(
+            &self.0,
+            spiffe_uri,
+            serial_number,
+            fingerprint_sha256,
+            request_id,
+        )
+        .await
+    }
 }
 
 /// Run openssl, panicking with its stderr on failure (test fixture only).
@@ -69,6 +95,12 @@ impl TestPki {
                 "-nodes",
                 "-subj",
                 "/CN=fp-test-ca",
+                "-addext",
+                "basicConstraints=critical,CA:TRUE",
+                "-addext",
+                "keyUsage=critical,keyCertSign,cRLSign",
+                "-addext",
+                "subjectKeyIdentifier=hash",
             ],
         );
         std::fs::write(
@@ -137,6 +169,15 @@ impl TestPki {
     /// CA-signed client certificate carrying `spiffe_uri` as a URI SAN. Returns the
     /// identity for the tonic client.
     fn client_identity(&self, name: &str, spiffe_uri: &str) -> Identity {
+        self.client_identity_with_serial(name, spiffe_uri, &certificate_serial())
+    }
+
+    fn client_identity_with_serial(
+        &self,
+        name: &str,
+        spiffe_uri: &str,
+        serial_number: &str,
+    ) -> Identity {
         std::fs::write(
             self.dir.join(format!("{name}-san.cnf")),
             format!("subjectAltName=URI:{spiffe_uri}\n"),
@@ -181,6 +222,8 @@ impl TestPki {
                 "-CAkey",
                 "ca.key",
                 "-CAcreateserial",
+                "-set_serial",
+                &format!("0x{serial_number}"),
                 "-out",
                 &format!("{name}.crt"),
                 "-days",
@@ -282,11 +325,12 @@ async fn start_server(
     let (revocations, _) = tokio::sync::broadcast::channel::<uuid::Uuid>(16);
     let tls = pki.tls_paths();
     let bus = revocations.clone();
+    let pinner = Arc::new(TestLegacyPinner(pool.clone()));
     tokio::spawn(async move {
         serve_mtls(
             addr,
             cache,
-            Arc::new(CertRegistryResolver::new(pool.clone())),
+            Arc::new(CertRegistryResolver::new(pool.clone(), pinner)),
             bus,
             pool,
             &tls,
@@ -328,6 +372,35 @@ fn cds_subscribe(node_id: &str) -> DiscoveryRequest {
     }
 }
 
+async fn open_ads_stream(
+    pki: &TestPki,
+    addr: std::net::SocketAddr,
+    identity: Identity,
+) -> (
+    tokio::sync::mpsc::Sender<DiscoveryRequest>,
+    tonic::Streaming<DiscoveryResponse>,
+) {
+    let channel = tls_channel(pki, addr, Some(identity))
+        .await
+        .expect("mTLS channel");
+    let (requests, inbound) = tokio::sync::mpsc::channel(4);
+    requests
+        .send(cds_subscribe("rotation-dataplane"))
+        .await
+        .expect("subscribe");
+    let mut responses = AggregatedDiscoveryServiceClient::new(channel)
+        .stream_aggregated_resources(tokio_stream::wrappers::ReceiverStream::new(inbound))
+        .await
+        .expect("open ADS stream")
+        .into_inner();
+    tokio::time::timeout(Duration::from_secs(5), responses.message())
+        .await
+        .expect("initial ADS response deadline")
+        .expect("initial ADS response status")
+        .expect("initial ADS response");
+    (requests, responses)
+}
+
 fn ai_ext_proc_request(
     claimed_team: impl std::fmt::Display,
 ) -> (
@@ -360,7 +433,7 @@ async fn ai_ext_proc_mtls_binds_team_before_opening_stream() {
     let pki = TestPki::new();
 
     let dataplane = unique("ai-dp");
-    fp_core::services::dataplanes::create_dataplane(
+    let dataplane_record = fp_core::services::dataplanes::create_dataplane(
         &w.pool,
         &w.ctx,
         w.team,
@@ -371,24 +444,28 @@ async fn ai_ext_proc_mtls_binds_team_before_opening_stream() {
     .await
     .expect("dataplane");
     let spiffe = format!("spiffe://flowplane.test/team/ai/proxy/{dataplane}");
-    fp_core::services::dataplanes::register_certificate(
-        &w.pool,
-        &w.ctx,
-        w.team,
-        fp_core::services::dataplanes::CertificateRegistration {
-            dataplane: &dataplane,
+    let serial = certificate_serial();
+    let mut tx = w.pool.begin().await.expect("certificate fixture tx");
+    fp_storage::repos::dataplanes::register_certificate(
+        &mut tx,
+        fp_storage::repos::dataplanes::NewProxyCertificate {
+            team_id: w.team.id,
+            dataplane_id: dataplane_record.id,
             spiffe_uri: &spiffe,
-            serial_number: &unique("ai-serial"),
+            serial_number: &serial,
+            fingerprint_sha256: None,
+            issued_at: chrono::Utc::now(),
             expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+            issued_by: None,
         },
-        RequestId::generate(),
     )
     .await
-    .expect("register");
+    .expect("register fixture");
+    tx.commit().await.expect("commit certificate fixture");
 
     let cache = SnapshotCache::new();
     let (addr, _revocations) = start_server(&pki, cache, w.pool.clone()).await;
-    let identity = pki.client_identity("ai-ext-proc", &spiffe);
+    let identity = pki.client_identity_with_serial("ai-ext-proc", &spiffe, &serial);
     let channel = tls_channel(&pki, addr, Some(identity))
         .await
         .expect("mTLS connect");
@@ -409,6 +486,136 @@ async fn ai_ext_proc_mtls_binds_team_before_opening_stream() {
         .await
         .expect("matching team must open a response stream before any request message is sent")
         .expect("certificate-bound team claim must be accepted");
+}
+
+#[tokio::test]
+async fn product_issued_rotation_connects_both_then_revokes_only_old() {
+    let Some(w) = world().await else { return };
+    let pki = TestPki::new();
+    std::env::set_var("FLOWPLANE_CERT_ISSUER_CA_CERT_PATH", pki.dir.join("ca.crt"));
+    std::env::set_var("FLOWPLANE_CERT_ISSUER_CA_KEY_PATH", pki.dir.join("ca.key"));
+
+    let dataplane = unique("rotation-dp");
+    fp_core::services::dataplanes::create_dataplane(
+        &w.pool,
+        &w.ctx,
+        w.team,
+        &dataplane,
+        "",
+        RequestId::generate(),
+    )
+    .await
+    .expect("create rotation dataplane");
+    fp_core::services::clusters::create_cluster(
+        &w.pool,
+        &w.ctx,
+        w.team,
+        &unique("rotation-upstream"),
+        cluster_spec("10.2.0.1"),
+        RequestId::generate(),
+        Default::default(),
+    )
+    .await
+    .expect("create rotation snapshot resource");
+
+    let issue = || {
+        fp_core::services::dataplanes::issue_certificate(
+            &w.pool,
+            &w.ctx,
+            w.team,
+            fp_core::services::dataplanes::CertificateIssueRequest {
+                dataplane: &dataplane,
+                ttl_hours: 1,
+            },
+            RequestId::generate(),
+        )
+    };
+    let old = issue().await.expect("issue initial credential");
+    let replacement = issue().await.expect("issue overlapping replacement");
+    assert_ne!(old.certificate.id, replacement.certificate.id);
+
+    let cache = SnapshotCache::new();
+    cache
+        .rebuild_team(&w.pool, w.team.id)
+        .await
+        .expect("prime cache");
+    let (addr, revocations) = start_server(&pki, cache.clone(), w.pool.clone()).await;
+    let old_identity = Identity::from_pem(old.certificate_pem.clone(), old.private_key_pem.clone());
+    let replacement_identity = Identity::from_pem(
+        replacement.certificate_pem.clone(),
+        replacement.private_key_pem.clone(),
+    );
+    let (_old_requests, mut old_responses) =
+        open_ads_stream(&pki, addr, old_identity.clone()).await;
+    let (_replacement_requests, mut replacement_responses) =
+        open_ads_stream(&pki, addr, replacement_identity.clone()).await;
+
+    let consumer = unique("rotation-consumer");
+    fp_storage::outbox::register_consumer_at_head(&w.pool, &consumer)
+        .await
+        .expect("register rotation consumer");
+    fp_core::services::dataplanes::revoke_certificate(
+        &w.pool,
+        &w.ctx,
+        w.team,
+        &old.certificate.serial_number,
+        "rotation complete",
+        RequestId::generate(),
+    )
+    .await
+    .expect("revoke initial credential");
+    while fp_storage::outbox::process_batch(&w.pool, &consumer, 1000, |events| {
+        let cache = cache.clone();
+        let pool = w.pool.clone();
+        let revocations = revocations.clone();
+        async move {
+            publish_revocations(&revocations, &events);
+            handle_events(&cache, &pool, events).await
+        }
+    })
+    .await
+    .expect("process rotation outbox")
+        > 0
+    {}
+
+    let old_outcome = tokio::time::timeout(Duration::from_secs(5), old_responses.message())
+        .await
+        .expect("old stream termination deadline");
+    assert_eq!(
+        old_outcome.expect_err("old stream must terminate").code(),
+        tonic::Code::PermissionDenied
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), replacement_responses.message())
+            .await
+            .is_err(),
+        "replacement stream must remain live after old credential revocation"
+    );
+
+    let (_reconnect_requests, _reconnect_responses) =
+        open_ads_stream(&pki, addr, replacement_identity).await;
+    let channel = tls_channel(&pki, addr, Some(old_identity))
+        .await
+        .expect("revoked leaf still completes TLS");
+    let (requests, inbound) = tokio::sync::mpsc::channel(2);
+    requests
+        .send(cds_subscribe("revoked-old"))
+        .await
+        .expect("subscribe");
+    let mut responses = AggregatedDiscoveryServiceClient::new(channel)
+        .stream_aggregated_resources(tokio_stream::wrappers::ReceiverStream::new(inbound))
+        .await
+        .expect("open revoked ADS transport")
+        .into_inner();
+    let outcome = tokio::time::timeout(Duration::from_secs(5), responses.message())
+        .await
+        .expect("revoked reconnect deadline");
+    assert_eq!(
+        outcome
+            .expect_err("revoked old credential must not reconnect")
+            .code(),
+        tonic::Code::Unauthenticated
+    );
 }
 
 #[tokio::test]
@@ -434,7 +641,7 @@ async fn registry_binds_team_and_revocation_kills_live_stream() {
     // Dataplane + registered certificate. The SPIFFE URI deliberately claims a DIFFERENT
     // team name in its path — the registry row, not the SAN text, decides the tenant.
     let dp = unique("dp");
-    fp_core::services::dataplanes::create_dataplane(
+    let dataplane_record = fp_core::services::dataplanes::create_dataplane(
         &w.pool,
         &w.ctx,
         w.team,
@@ -445,25 +652,28 @@ async fn registry_binds_team_and_revocation_kills_live_stream() {
     .await
     .expect("dataplane");
     let spiffe = format!("spiffe://flowplane.test/team/some-other-team/proxy/{dp}");
-    let serial = unique("serial");
-    fp_core::services::dataplanes::register_certificate(
-        &w.pool,
-        &w.ctx,
-        w.team,
-        fp_core::services::dataplanes::CertificateRegistration {
-            dataplane: &dp,
+    let serial = certificate_serial();
+    let mut tx = w.pool.begin().await.expect("certificate fixture tx");
+    fp_storage::repos::dataplanes::register_certificate(
+        &mut tx,
+        fp_storage::repos::dataplanes::NewProxyCertificate {
+            team_id: w.team.id,
+            dataplane_id: dataplane_record.id,
             spiffe_uri: &spiffe,
             serial_number: &serial,
+            fingerprint_sha256: None,
+            issued_at: chrono::Utc::now(),
             expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+            issued_by: None,
         },
-        RequestId::generate(),
     )
     .await
-    .expect("register");
+    .expect("register fixture");
+    tx.commit().await.expect("commit certificate fixture");
 
     let (addr, revocations) = start_server(&pki, cache.clone(), w.pool.clone()).await;
-    let identity = pki.client_identity("dp-good", &spiffe);
-    let channel = tls_channel(&pki, addr, Some(identity))
+    let identity = pki.client_identity_with_serial("dp-good", &spiffe, &serial);
+    let channel = tls_channel(&pki, addr, Some(identity.clone()))
         .await
         .expect("mTLS connect");
     let mut client = AggregatedDiscoveryServiceClient::new(channel);
@@ -532,7 +742,6 @@ async fn registry_binds_team_and_revocation_kills_live_stream() {
     }
 
     // Reconnect with the same (now revoked) certificate: rejected at the registry.
-    let identity = pki.client_identity("dp-good-2", &spiffe);
     let channel = tls_channel(&pki, addr, Some(identity))
         .await
         .expect("TLS still succeeds; authz happens at the registry");
@@ -603,12 +812,16 @@ async fn unregistered_and_expired_certificates_are_rejected() {
     let mut tx = w.pool.begin().await.expect("tx");
     fp_storage::repos::dataplanes::register_certificate(
         &mut tx,
-        w.team.id,
-        dataplane.id,
-        &spiffe,
-        &unique("serial"),
-        chrono::Utc::now() - chrono::Duration::hours(1),
-        None,
+        fp_storage::repos::dataplanes::NewProxyCertificate {
+            team_id: w.team.id,
+            dataplane_id: dataplane.id,
+            spiffe_uri: &spiffe,
+            serial_number: &certificate_serial(),
+            fingerprint_sha256: None,
+            issued_at: chrono::Utc::now() - chrono::Duration::hours(2),
+            expires_at: chrono::Utc::now() - chrono::Duration::hours(1),
+            issued_by: None,
+        },
     )
     .await
     .expect("insert expired");

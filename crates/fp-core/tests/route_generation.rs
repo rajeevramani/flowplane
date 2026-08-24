@@ -92,6 +92,17 @@ async fn route_plan_apply_replays_persisted_preview() {
     assert_eq!(applied.route_config.spec, plan.plan.route_config_spec);
     assert_eq!(applied.listener.spec, plan.plan.listener_spec);
     assert_eq!(applied.plan.status.as_str(), "applied");
+    let secret_refs: i64 = sqlx::query_scalar(
+        "SELECT \
+           (SELECT count(*) FROM cluster_secret_refs WHERE cluster_id = $1) + \
+           (SELECT count(*) FROM listener_secret_refs WHERE listener_id = $2)",
+    )
+    .bind(applied.cluster.id.as_uuid())
+    .bind(applied.listener.id.as_uuid())
+    .fetch_one(&w.pool)
+    .await
+    .expect("route-generation secret refs");
+    assert_eq!(secret_refs, 0, "generated route resources stay SDS-free");
 }
 
 #[tokio::test]

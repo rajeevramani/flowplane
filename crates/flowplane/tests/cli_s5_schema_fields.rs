@@ -127,7 +127,15 @@ fn schema_is_valid_cli_schema_envelope_no_network() {
                 .unwrap_or_else(|| panic!("each subcommand must have a string `name`: {s}"))
         })
         .collect();
-    for required in ["cluster", "listener", "route", "apply", "version", "schema"] {
+    for required in [
+        "cluster",
+        "listener",
+        "route",
+        "qualification",
+        "apply",
+        "version",
+        "schema",
+    ] {
         assert!(
             names.contains(required),
             "catalog must list top-level command `{required}` (no self-exemption); got {names:?}"
@@ -135,8 +143,8 @@ fn schema_is_valid_cli_schema_envelope_no_network() {
     }
     assert_eq!(
         subs.len(),
-        27,
-        "catalog must list EXACTLY 27 top-level commands, got {}: {names:?}",
+        28,
+        "catalog must list EXACTLY 28 top-level commands, got {}: {names:?}",
         subs.len()
     );
 

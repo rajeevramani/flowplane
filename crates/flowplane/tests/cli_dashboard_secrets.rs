@@ -756,9 +756,9 @@ async fn expiry_warnings_soon_expired_and_none() {
     // Expires within 30 days → a warning indication near that row.
     let (s, e) = region_of(&regions, &n_soon);
     assert!(
-        lower[s..e].contains("30d") || lower[s..e].contains("expire"),
+        lower[s..e].contains("class=\"pill warn\""),
         "the secret expiring in ~10 days ({n_soon:?}) must carry a warning indication \
-         (\"30d\" or \"expire\", case-insensitive) near its row; region:\n{}\n\
+         (the warning pill) near its row; region:\n{}\n\
          full body:\n{body}",
         &lower[s..e]
     );
@@ -774,7 +774,7 @@ async fn expiry_warnings_soon_expired_and_none() {
 
     // Null expiry → no warning for that row.
     let (s, e) = region_of(&regions, &n_none);
-    for warning in ["expired", "30d", "warn"] {
+    for warning in ["class=\"pill crit\"", "class=\"pill warn\""] {
         assert!(
             !lower[s..e].contains(warning),
             "the never-expiring secret ({n_none:?}) must carry no warning, but its row \

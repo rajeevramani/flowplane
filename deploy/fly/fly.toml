@@ -1,0 +1,95 @@
+app = "fpq-flowplane-cp"
+primary_region = "syd"
+kill_signal = "SIGTERM"
+kill_timeout = 30
+
+[build]
+  dockerfile = "Containerfile"
+
+[deploy]
+  release_command = "flowplane db migrate"
+  strategy = "rolling"
+
+[env]
+  FLOWPLANE_FLY_ROLE = "control-plane"
+  FLOWPLANE_API_ADDR = "0.0.0.0:8080"
+  FLOWPLANE_API_INSECURE = "false"
+  FLOWPLANE_API_TLS_CERT = "/run/secrets/api.crt"
+  FLOWPLANE_API_TLS_KEY = "/run/secrets/api.key"
+  FLOWPLANE_XDS_ADDR = "127.0.0.1:18000"
+  FLOWPLANE_XDS_TLS_CERT = "/run/secrets/xds.crt"
+  FLOWPLANE_XDS_TLS_KEY = "/run/secrets/xds.key"
+  FLOWPLANE_XDS_TLS_CLIENT_CA = "/run/secrets/dataplane-ca.crt"
+  FLOWPLANE_CERT_ISSUER_CA_CERT_PATH = "/run/secrets/issuer-ca.crt"
+  FLOWPLANE_CERT_ISSUER_CA_KEY_PATH = "/run/secrets/issuer-ca.key"
+  FLOWPLANE_RLS_ADMIN_URL = "https://fpq-flowplane-rls.internal:8081"
+  FLOWPLANE_RLS_ADMIN_TLS_CA = "/run/secrets/rls-admin-ca.crt"
+  FLOWPLANE_RLS_GRPC_URL = "fpq-flowplane-rls-g2.tail67f704.ts.net:50051"
+  FLOWPLANE_DATAPLANE_TLS_CERT = "/etc/flowplane/certs/dataplane.crt"
+  FLOWPLANE_DATAPLANE_TLS_KEY = "/etc/flowplane/certs/dataplane.key"
+  FLOWPLANE_DATAPLANE_TLS_CLIENT_CA = "/etc/flowplane/certs/dataplane-ca.crt"
+  FLOWPLANE_BOOTSTRAP_TOKEN_FILE = "/run/secrets/bootstrap-token"
+  FLOWPLANE_RLS_ADMIN_TOKEN_FILE = "/run/secrets/rls-admin-token"
+  TAILSCALE_AUTHKEY_FILE = "/run/secrets/tailscale-authkey"
+  TAILSCALE_HOSTNAME = "fpq-flowplane-cp"
+  TAILSCALE_SERVICE_NAME = "svc:fpq-flowplane-cp-g2"
+  FLOWPLANE_LOG_FORMAT = "json"
+
+[[files]]
+  guest_path = "/run/secrets/api.crt"
+  secret_name = "FLOWPLANE_API_TLS_CERT_B64"
+[[files]]
+  guest_path = "/run/secrets/api.key"
+  secret_name = "FLOWPLANE_API_TLS_KEY_B64"
+[[files]]
+  guest_path = "/run/secrets/xds.crt"
+  secret_name = "FLOWPLANE_XDS_TLS_CERT_B64"
+[[files]]
+  guest_path = "/run/secrets/xds.key"
+  secret_name = "FLOWPLANE_XDS_TLS_KEY_B64"
+[[files]]
+  guest_path = "/run/secrets/dataplane-ca.crt"
+  secret_name = "FLOWPLANE_XDS_TLS_CLIENT_CA_B64"
+[[files]]
+  guest_path = "/run/secrets/issuer-ca.crt"
+  secret_name = "FLOWPLANE_CERT_ISSUER_CA_CERT_B64"
+[[files]]
+  guest_path = "/run/secrets/issuer-ca.key"
+  secret_name = "FLOWPLANE_CERT_ISSUER_CA_KEY_B64"
+[[files]]
+  guest_path = "/run/secrets/rls-admin-ca.crt"
+  secret_name = "FLOWPLANE_RLS_ADMIN_TLS_CA_B64"
+[[files]]
+  guest_path = "/run/secrets/bootstrap-token"
+  secret_name = "FLOWPLANE_BOOTSTRAP_TOKEN_B64"
+[[files]]
+  guest_path = "/run/secrets/rls-admin-token"
+  secret_name = "FLOWPLANE_RLS_ADMIN_TOKEN_B64"
+[[files]]
+  guest_path = "/run/secrets/tailscale-authkey"
+  secret_name = "TAILSCALE_AUTHKEY_B64"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 443
+    handlers = []
+
+  [[services.http_checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/readyz"
+    protocol = "https"
+    tls_server_name = "cp.getflowplane.io"
+    tls_skip_verify = false
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

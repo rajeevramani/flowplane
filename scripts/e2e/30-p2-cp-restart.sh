@@ -6,7 +6,7 @@ REQUIRES=""
 # mutation must reach the already-connected Envoy.
 echo "hello-from-upstream2-$(date +%s)" > /tmp/fp-e2e-www2.html
 mkdir -p /tmp/fp-e2e-www2 && cp /tmp/fp-e2e-www2.html /tmp/fp-e2e-www2/index.html
-(cd /tmp/fp-e2e-www2 && python3 -m http.server $((UPSTREAM_PORT+1)) >/dev/null 2>&1) &
+(cd /tmp/fp-e2e-www2 && exec python3 -m http.server $((UPSTREAM_PORT+1)) >/dev/null 2>&1) &
 UP2_PID=$!
 # UP2_PID is reaped by the central cleanup() in lib.sh; no per-phase trap re-install needed.
 

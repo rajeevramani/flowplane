@@ -13,5 +13,6 @@ pub mod gateway;
 pub mod identity;
 pub mod rate_limit;
 pub mod route_generation;
+pub mod secret_refs;
 pub mod secrets;
 pub mod xds_nacks;
