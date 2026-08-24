@@ -15,7 +15,7 @@ compatibility baseline.
 
 ## [Unreleased]
 
-## [3.1.3] - 2026-08-17
+## [3.1.3] - 2026-08-24
 
 Minor release hardening dataplane credential identity and rotation, certificate issuance, upgrade
 operations, OIDC login, and production-shaped deployment qualification. This pre-customer release
