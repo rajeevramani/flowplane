@@ -499,24 +499,29 @@ async fn cross_team_rows_never_appear_in_items_or_total() {
 }
 
 /// Bulk-seeds `count` events for `team` spread one second apart going back
-/// from `now()`, so a narrow recent window is selective.
+/// from `now()`, so a narrow recent window is selective. The newest row is
+/// stamped `first_offset_seconds + 1` seconds ago: a batch seeded with the
+/// offset of an earlier batch's size extends that series further into the
+/// past instead of stamping a second set of rows into the recent window.
 async fn bulk_seed_events(
     pool: &PgPool,
     team: TeamRef,
     route_config_id: RouteConfigId,
     provider_id: AiProviderId,
+    first_offset_seconds: i64,
     count: i64,
 ) {
     sqlx::query(
         "INSERT INTO ai_usage_events \
          (id, team_id, route_config_id, provider_id, prompt_tokens, completion_tokens, total_tokens, created_at) \
-         SELECT gen_random_uuid(), $1, $2, $3, 1, 1, 2, now() - (g * interval '1 second') \
+         SELECT gen_random_uuid(), $1, $2, $3, 1, 1, 2, now() - ((g + $5) * interval '1 second') \
          FROM generate_series(1, $4) AS g",
     )
     .bind(team.id.as_uuid())
     .bind(route_config_id.as_uuid())
     .bind(provider_id.as_uuid())
     .bind(count)
+    .bind(first_offset_seconds)
     .execute(pool)
     .await
     .expect("bulk seed usage events");
@@ -550,28 +555,106 @@ fn plan_is_index_backed(plan: &str) -> bool {
         || !plan.contains("Seq Scan on ai_usage_events")
 }
 
+/// Rows the index fixture seeds for the team under test on the primary path.
+const PRIMARY_FIXTURE_ROWS: i64 = 2_000;
+/// Rows the team under test holds after the spec's planner fallback grows
+/// the fixture ("if the planner still seq-scans at 2000 rows, grow to 10000").
+const FALLBACK_FIXTURE_ROWS: i64 = 10_000;
+
+async fn analyze_usage_events(pool: &PgPool) {
+    sqlx::query("ANALYZE ai_usage_events")
+        .execute(pool)
+        .await
+        .expect("analyze ai_usage_events");
+}
+
+/// Seeds the primary index fixture: `PRIMARY_FIXTURE_ROWS` for `team` plus a
+/// small unrelated batch for `other_team` so the team predicate is selective.
+async fn seed_primary_fixture(
+    pool: &PgPool,
+    (team, route, provider): (TeamRef, RouteConfigId, AiProviderId),
+    (other_team, other_route, other_provider): (TeamRef, RouteConfigId, AiProviderId),
+) {
+    bulk_seed_events(pool, team, route, provider, 0, PRIMARY_FIXTURE_ROWS).await;
+    bulk_seed_events(pool, other_team, other_route, other_provider, 0, 200).await;
+    analyze_usage_events(pool).await;
+}
+
+/// The spec's fallback: grow the team's fixture from `PRIMARY_FIXTURE_ROWS`
+/// to `FALLBACK_FIXTURE_ROWS` and refresh planner statistics. The extra rows
+/// continue the primary series into the past (offsets 2,001..=10,000 s), so
+/// the recent window still holds exactly the primary batch's newest events
+/// whichever path the planner sends the index test down.
+async fn grow_fixture_to_fallback_size(
+    pool: &PgPool,
+    team: TeamRef,
+    route: RouteConfigId,
+    provider: AiProviderId,
+) {
+    bulk_seed_events(
+        pool,
+        team,
+        route,
+        provider,
+        PRIMARY_FIXTURE_ROWS,
+        FALLBACK_FIXTURE_ROWS - PRIMARY_FIXTURE_ROWS,
+    )
+    .await;
+    analyze_usage_events(pool).await;
+}
+
+/// Sanity contract shared by the primary and fallback fixture shapes: the
+/// query answers correctly at scale — a 60-second window ending at the
+/// database clock covers the 59 most recent seeded events (offsets 1..=59
+/// seconds; the upper bound is re-evaluated slightly after seeding, and the
+/// half-open bound excludes nothing seeded at exactly now()). The tolerance
+/// absorbs seeding-to-query latency, never a second seeded batch.
+async fn assert_recent_window_count(
+    pool: &PgPool,
+    team: TeamRef,
+    route: RouteConfigId,
+    provider: AiProviderId,
+) {
+    let database_now = ai::usage_clock_now(pool)
+        .await
+        .expect("database usage clock");
+    let (items, total) = ai::usage_summary(
+        pool,
+        team.id,
+        AiUsageQuery {
+            since: Some(database_now - Duration::seconds(60)),
+            ..all_time()
+        },
+    )
+    .await
+    .expect("windowed summary over bulk fixture");
+    assert_eq!(total, 1);
+    let row = find_pair(&items, route, provider).expect("bulk pair row");
+    assert!(
+        row.event_count >= 50 && row.event_count <= 61,
+        "expected roughly 59 events in the last 60s, got {}",
+        row.event_count
+    );
+}
+
 #[tokio::test]
 async fn windowed_grouped_query_uses_team_scoped_index() {
     let Some(w) = world().await else { return };
     let (provider_a, route_a) = insert_provider_and_route(&w.pool, w.team_a).await;
     let (provider_b, route_b) = insert_provider_and_route(&w.pool, w.team_b).await;
 
-    bulk_seed_events(&w.pool, w.team_a, route_a, provider_a, 2_000).await;
-    bulk_seed_events(&w.pool, w.team_b, route_b, provider_b, 200).await;
-    sqlx::query("ANALYZE ai_usage_events")
-        .execute(&w.pool)
-        .await
-        .expect("analyze");
+    seed_primary_fixture(
+        &w.pool,
+        (w.team_a, route_a, provider_a),
+        (w.team_b, route_b, provider_b),
+    )
+    .await;
 
     let mut plan = explain_windowed_grouped_query(&w.pool, w.team_a).await;
     if !plan_is_index_backed(&plan) {
         // Per spec: if the planner still seq-scans at 2000 rows, grow the
         // fixture to 10000 rows for this team and re-check.
-        bulk_seed_events(&w.pool, w.team_a, route_a, provider_a, 8_000).await;
-        sqlx::query("ANALYZE ai_usage_events")
-            .execute(&w.pool)
-            .await
-            .expect("re-analyze");
+        grow_fixture_to_fallback_size(&w.pool, w.team_a, route_a, provider_a).await;
         plan = explain_windowed_grouped_query(&w.pool, w.team_a).await;
     }
 
@@ -582,28 +665,37 @@ async fn windowed_grouped_query_uses_team_scoped_index() {
          idx_ai_usage_events_route_config), not a sequential scan.\nplan:\n{plan}"
     );
 
-    // Sanity: the query itself still answers correctly at this scale — the
-    // window covers the 59 most recent seeded events (offsets 1..=59 seconds;
-    // the `now()` upper bound is re-evaluated slightly after seeding, and the
-    // half-open bound excludes nothing seeded at exactly now()).
-    let database_now = ai::usage_clock_now(&w.pool)
-        .await
-        .expect("database usage clock");
-    let (items, total) = ai::usage_summary(
+    assert_recent_window_count(&w.pool, w.team_a, route_a, provider_a).await;
+}
+
+/// The fallback fixture shape must satisfy the same recent-window contract as
+/// the primary shape. The planner decides whether the index test above takes
+/// the fallback branch, so this test takes it unconditionally: growing the
+/// fixture to 10,000 rows must not change how many events land in the last
+/// 60 seconds.
+#[tokio::test]
+async fn fallback_fixture_growth_keeps_recent_window_deterministic() {
+    let Some(w) = world().await else { return };
+    let (provider_a, route_a) = insert_provider_and_route(&w.pool, w.team_a).await;
+    let (provider_b, route_b) = insert_provider_and_route(&w.pool, w.team_b).await;
+
+    seed_primary_fixture(
         &w.pool,
-        w.team_a.id,
-        AiUsageQuery {
-            since: Some(database_now - Duration::seconds(60)),
-            ..all_time()
-        },
+        (w.team_a, route_a, provider_a),
+        (w.team_b, route_b, provider_b),
     )
-    .await
-    .expect("windowed summary over bulk fixture");
-    assert_eq!(total, 1);
-    let row = find_pair(&items, route_a, provider_a).expect("bulk pair row");
-    assert!(
-        row.event_count >= 50 && row.event_count <= 61,
-        "expected roughly 59 events in the last 60s, got {}",
-        row.event_count
+    .await;
+    grow_fixture_to_fallback_size(&w.pool, w.team_a, route_a, provider_a).await;
+
+    let seeded: i64 = sqlx::query_scalar("SELECT count(*) FROM ai_usage_events WHERE team_id = $1")
+        .bind(w.team_a.id.as_uuid())
+        .fetch_one(&w.pool)
+        .await
+        .expect("count seeded rows");
+    assert_eq!(
+        seeded, FALLBACK_FIXTURE_ROWS,
+        "fallback fixture holds 10,000 rows"
     );
+
+    assert_recent_window_count(&w.pool, w.team_a, route_a, provider_a).await;
 }
