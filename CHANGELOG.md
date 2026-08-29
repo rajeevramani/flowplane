@@ -20,6 +20,7 @@ compatibility baseline.
 - The AI usage index-suitability test now grows its 10,000-row planner-fallback fixture into the
   past instead of re-stamping a second batch into the recent window, so the recent-window count is
   deterministic on both the primary and fallback paths. Test-only; no runtime change. (fpv2-8dr)
+- xDS status (`ops xds status`, `GET /api/v1/teams/{team}/xds/status`, MCP `ops_xds_status`) now evaluates dataplane liveness on the PostgreSQL clock that stamps heartbeats, with the same exact 60-second boundary `stats overview` uses, so the two reads agree under control-plane/database clock skew. (fpv2-vgt)
 
 ## [3.1.3] - 2026-08-24
 
