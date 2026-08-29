@@ -15,6 +15,12 @@ compatibility baseline.
 
 ## [Unreleased]
 
+### Fixed
+
+- The AI usage index-suitability test now grows its 10,000-row planner-fallback fixture into the
+  past instead of re-stamping a second batch into the recent window, so the recent-window count is
+  deterministic on both the primary and fallback paths. Test-only; no runtime change. (fpv2-8dr)
+
 ## [3.1.3] - 2026-08-24
 
 Minor release hardening dataplane credential identity and rotation, certificate issuance, upgrade
