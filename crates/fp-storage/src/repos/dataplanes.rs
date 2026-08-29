@@ -177,6 +177,17 @@ async fn apply_telemetry_delta(
     Ok(dataplane_from_row(&row))
 }
 
+/// PostgreSQL's current clock value for evaluating dataplane liveness against
+/// `dataplanes.last_heartbeat_at`, which PostgreSQL also stamps (see `apply_telemetry_delta`).
+/// The same clock authority `stats_overview` uses in SQL, exposed for callers that classify
+/// per-row liveness in Rust so both reads agree under host/DB clock skew.
+pub async fn liveness_clock_now(pool: &PgPool) -> DomainResult<chrono::DateTime<chrono::Utc>> {
+    sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("read dataplane liveness clock: {e}")))
+}
+
 pub async fn stats_overview(pool: &PgPool, team_id: TeamId) -> DomainResult<TeamStatsOverview> {
     let row = sqlx::query(
         "SELECT \

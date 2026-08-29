@@ -155,7 +155,12 @@ pub async fn status(
         .into_iter()
         .next();
 
-    let now = chrono::Utc::now();
+    // Liveness is evaluated on PostgreSQL's clock — the clock that stamps `last_heartbeat_at`
+    // and that `dataplanes::stats_overview` compares against in SQL — never the host clock, so
+    // `xds status` and `stats overview` agree under host/DB skew (fpv2-vgt). Read the clock
+    // after the rows so a heartbeat landing between the two reads can only look stale, never
+    // spuriously live. A clock-read failure fails closed as an internal error; no host fallback.
+    let now = fp_storage::repos::dataplanes::liveness_clock_now(pool).await?;
     let mut live_dataplanes = 0;
     let mut config_verified_dataplanes = 0;
     let mut counters = XdsCounterTotals::default();
@@ -164,7 +169,7 @@ pub async fn status(
         .map(|dataplane| {
             let live = dataplane
                 .last_heartbeat_at
-                .map(|ts| (now - ts).num_seconds() <= LIVE_HEARTBEAT_SECONDS)
+                .map(|ts| is_live(now, ts))
                 .unwrap_or(false);
             if live {
                 live_dataplanes += 1;
@@ -222,6 +227,14 @@ pub async fn trace(
         fp_storage::outbox::trace_rows(pool, team.id, trace_id.as_deref(), path.as_deref(), limit)
             .await?;
     Ok(OpsTrace { audit, events })
+}
+
+/// The 60-second inclusive liveness window, evaluated exactly (no whole-second truncation) so it
+/// matches `stats_overview`'s SQL `clock_timestamp() - last_heartbeat_at <= interval '60 seconds'`.
+/// `now` must come from the same PostgreSQL clock that stamped `last_heartbeat_at`.
+fn is_live(now: DateTime<Utc>, last_heartbeat_at: DateTime<Utc>) -> bool {
+    now.signed_duration_since(last_heartbeat_at)
+        <= chrono::Duration::seconds(LIVE_HEARTBEAT_SECONDS)
 }
 
 fn bounded_trace_path(path: Option<&str>) -> DomainResult<Option<String>> {
@@ -328,6 +341,36 @@ mod tests {
                 total_errors: i64::MAX,
                 warming_failures: i64::MAX,
             }
+        );
+    }
+
+    /// The liveness window is 60 seconds inclusive and exact — the same predicate
+    /// `stats_overview` evaluates in SQL — with no whole-second truncation that would call a
+    /// 60.5-second-old heartbeat live.
+    #[test]
+    fn liveness_window_is_sixty_seconds_inclusive_and_exact() {
+        let now = DateTime::parse_from_rfc3339("2026-08-29T00:01:00Z")
+            .expect("rfc3339")
+            .with_timezone(&Utc);
+        let secs = chrono::Duration::seconds;
+        let millis = chrono::Duration::milliseconds;
+        assert!(is_live(now, now - secs(59)), "59 s is live");
+        assert!(
+            is_live(now, now - secs(60)),
+            "exactly 60 s is live (inclusive)"
+        );
+        assert!(
+            !is_live(now, now - secs(60) - millis(1)),
+            "60.001 s is stale (exact, not truncated)"
+        );
+        assert!(
+            !is_live(now, now - secs(60) - millis(500)),
+            "60.5 s is stale"
+        );
+        assert!(!is_live(now, now - secs(61)), "61 s is stale");
+        assert!(
+            is_live(now, now + secs(5)),
+            "a future-stamped heartbeat is live"
         );
     }
 
