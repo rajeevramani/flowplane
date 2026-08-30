@@ -163,26 +163,61 @@ A dataplane is registered under a team, so a **tenant org and team must already 
 first [create a tenant org and a team](create-tenant-org-and-team.md), then use that
 org+team below.
 
-Create the dataplane and issue a one-time cert response:
+Create the dataplane and issue a one-time cert response. The response contains
+`private_key_pem`, and the CLI's global `--out` writes it under the **process umask** with no
+mode of its own (`0644` under the common `umask 022`) — and if the file already exists it is
+truncated in place and keeps its old mode. So make the file private *at creation*: `.local` is
+`0700` (nobody else can traverse into it), the JSON target is pre-created at `0600` (safe even
+when re-running over a leftover file), and `umask 077` backstops anything else created below.
+`--json` is required: on an interactive terminal the CLI's default `table` format prints only a
+one-line `created …` summary for a mutation and writes nothing to `--out`.
 
 ```bash
+umask 077
 install -d -m 0700 .local
+install -m 0600 /dev/null .local/aws-dp-cert.json
 flowplane dataplane create edge-local --team <team>
-flowplane --out .local/aws-dp-cert.json dataplane cert issue edge-local --team <team>
+flowplane --json --out .local/aws-dp-cert.json dataplane cert issue edge-local --team <team>
 ```
 
-Write the PEM values to files:
+Split the PEM values into files pre-created at `0600` (a redirect into an existing file keeps
+its mode, so this is also re-run safe), then delete the one-time JSON. The key is not
+recoverable from Flowplane, so the block only deletes the JSON after all three outputs have
+been extracted (`jq -e` fails on a missing path instead of writing the string `null`) and parsed
+by OpenSSL; `set -e` stops the subshell at the first failure, leaving the JSON in place:
 
 ```bash
-jq -r '.data.certificate_pem' .local/aws-dp-cert.json > .local/aws-dp.crt
-jq -r '.data.private_key_pem' .local/aws-dp-cert.json > .local/aws-dp.key
-jq -r '.data.ca_certificate_pem' .local/aws-dp-cert.json > .local/aws-dp-client-chain-ca.crt
-chmod 600 .local/aws-dp.key
+(
+  set -eu
+  umask 077
+  install -m 0600 /dev/null .local/aws-dp.key                    # one target per install: with several
+  install -m 0600 /dev/null .local/aws-dp.crt                    # arguments, install treats the last one
+  install -m 0600 /dev/null .local/aws-dp-client-chain-ca.crt    # as a directory
+  jq -er '.data.private_key_pem'    .local/aws-dp-cert.json > .local/aws-dp.key                  # secret, 0600
+  jq -er '.data.certificate_pem'    .local/aws-dp-cert.json > .local/aws-dp.crt                  # public leaf
+  jq -er '.data.ca_certificate_pem' .local/aws-dp-cert.json > .local/aws-dp-client-chain-ca.crt  # public CA
+  openssl pkey -noout -in .local/aws-dp.key
+  openssl x509 -noout -in .local/aws-dp.crt
+  openssl x509 -noout -in .local/aws-dp-client-chain-ca.crt
+  rm -f .local/aws-dp-cert.json
+)
 ```
+
+Intended modes on the workstation: `aws-dp.key` `0600` (secret); the two certificate files are
+public material and are also `0600` here only because the same user runs Envoy in this smoke
+test — widen them to `0644` if a different local user needs to read them, never the key. Do
+not copy `.local` into a shared drive, backup set, or ticket; if the JSON or key ever lands
+outside `.local`, issue a replacement certificate and revoke this one.
 
 `data.ca_certificate_pem` is the dataplane **client-chain CA** from the issue response. It is the CA the control plane trusts for the dataplane client certificate; it is not the CA Envoy uses to verify the control plane's xDS server certificate.
 
 `XDS_SERVER_CA_SECRET_ID` names a workstation-only xDS **server-trust CA** secret that is separate from `data.ca_certificate_pem`; its `SecretString` contains the issuing CA that validates the certificate served by `xds.getflowplane.io`.
+
+The block below is safe regardless of the shell's umask: `install -m 0600 /dev/null` pre-creates an
+empty owner-only file, and the redirect that follows truncates that existing file in place, so it
+inherits `0600` rather than the umask default. Use this shape whenever the process writing a file
+does not let you control its mode. (The server-trust CA is public material, so `0600` is stricter
+than it needs to be; it is harmless here and keeps every file in `.local` at one mode.)
 
 ```bash
 (

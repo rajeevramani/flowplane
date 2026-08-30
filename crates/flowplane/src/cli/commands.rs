@@ -254,7 +254,7 @@ pub enum GrantCommand {
     },
     /// Grant a member an action on a resource.
     #[command(
-        after_help = "Example:\n  flowplane team grant add user@example.com --team payments --resource clusters --action write"
+        after_help = "Example:\n  flowplane team grant add user@example.com --team payments --resource clusters --action update"
     )]
     Add {
         /// Team scope; defaults to the active context's team.

@@ -29,7 +29,7 @@ These flags are accepted on every command (`global = true`). Place them before o
 | `--revision <N>` | | | | Optimistic-concurrency precondition for `update`/`delete`, sent as `If-Match`. Omit it and the CLI does read-modify-write: it reads the resource's current revision and sends that, so a concurrent edit is detected. A stale revision fails with a `409` whose error envelope names both the `attempted_revision` and the server's current one. |
 | `--fields <a,b,c>` | | | | Project reader output to only these comma-separated keys, applied inside the envelope `data` (per item for lists). `schemaVersion`/`kind` always survive; an absent key is omitted (no `null`). |
 | `--timeout <SECS>` | | `FLOWPLANE_TIMEOUT` | `30` | HTTP timeout in seconds (u64). |
-| `--out <PATH>` | | | | Write command output to a file. |
+| `--out <PATH>` | | | | Write command output to a file instead of stdout. The file is created, or truncated in place if it already exists, under the **process umask** — the CLI sets no file mode of its own, so a new file is `0644` under the common `umask 022`, and an existing file keeps whatever mode it had. Only rendered output is written: a mutating command on an interactive terminal renders its default `table` format as a one-line `created`/`updated`/`deleted` summary and writes **nothing** to `--out` — pass `--json` or `-o json` to have the JSON envelope written. Some outputs are credential-bearing (`dataplane cert issue` returns `private_key_pem`): for those, pre-create the target at `0600` inside a `0700` directory (or run under `umask 077`), as shown in [Register a dataplane and connect its agent over mTLS](../how-to/register-dataplane-mtls.md#2-issue-its-mtls-client-certificate). Host ownership, ACLs, mounts, backups, and secret-store ingestion are the operator's responsibility. |
 
 ### Other environment variables
 
@@ -387,7 +387,7 @@ Dataplane certificate management.
 |------------|--------------|
 | `dataplane cert list` | `--team <TEAM>` |
 | `dataplane cert register` | `--team <TEAM>`, `--file <PATH>` / `-f` (required) |
-| `dataplane cert issue <DATAPLANE>` | `--team <TEAM>`, positional `dataplane`, `--ttl-hours <N>` (i64, default 24) |
+| `dataplane cert issue <DATAPLANE>` | `--team <TEAM>`, positional `dataplane`, `--ttl-hours <N>` (i64, default 24). **Credential-bearing output:** the response contains `private_key_pem` exactly once and Flowplane never stores it. With `--out` the file follows the process umask and is written only in JSON/YAML output (on an interactive terminal pass `--json`; the default `table` summary writes nothing) — see [`--out`](#global-options). Create it privately (a pre-created `0600` file in a `0700` directory, or `umask 077`), then move the key into your secret store or the agent's runtime paths and delete the one-time file. |
 | `dataplane cert revoke <SERIAL>` | `--team <TEAM>`, positional `serial`, `--reason <TEXT>` (required) |
 
 ### `expose`

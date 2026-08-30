@@ -15,6 +15,32 @@ compatibility baseline.
 
 ## [Unreleased]
 
+## [3.1.4] - 2026-08-30
+
+Bug-fix-only patch release. It corrects the `team grant add` help example, makes xDS status
+liveness agree with `stats overview` under control-plane/database clock skew, stabilizes one
+storage test fixture, and documents secure operator handling of credential-bearing CLI outputs.
+No REST, CLI, configuration, or MCP contract changes.
+
+### Fixed
+
+- `flowplane team grant add --help` now ends with an example that uses a documented action
+  (`--action update`) instead of `--action write`, which the control plane rejects. A regression
+  test pins the help example to the documented action set. (fpv2-8zf)
+- The AI usage index-suitability test now grows its 10,000-row planner-fallback fixture into the
+  past instead of re-stamping a second batch into the recent window, so the recent-window count is
+  deterministic on both the primary and fallback paths. Test-only; no runtime change. (fpv2-8dr)
+- xDS status (`ops xds status`, `GET /api/v1/teams/{team}/xds/status`, MCP `ops_xds_status`) now evaluates dataplane liveness on the PostgreSQL clock that stamps heartbeats, with the same exact 60-second boundary `stats overview` uses, so the two reads agree under control-plane/database clock skew. (fpv2-vgt)
+- Documentation now states that the CLI's global `--out` flag writes files under the process
+  umask with no mode of its own (an existing file keeps its mode), that a mutation on an
+  interactive terminal writes to `--out` only with `--json`/`-o json`, and identifies
+  `dataplane cert issue` output as credential-bearing (`private_key_pem`). The dataplane mTLS
+  how-to and the AWS secure-deployment runbook replace their write-then-`chmod` private-key
+  recipes with recipes that are private at creation and safe to re-run (`0700` parent, targets
+  pre-created at `0600`/`0644`, `umask 077`), with explicit modes for secret versus public
+  material, runtime ownership, secret-store ingestion, and one-time issue-JSON cleanup. No CLI
+  file-mode behavior changed. (`fpv2-pon`)
+
 ## [3.1.3] - 2026-08-24
 
 Minor release hardening dataplane credential identity and rotation, certificate issuance, upgrade

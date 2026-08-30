@@ -743,6 +743,59 @@ mod tests {
         assert!(help.contains("flowplane apply -f gateway.json --diff"));
     }
 
+    /// Regression for fpv2-8zf: the `team grant add` help example must be copy-pasteable
+    /// against a real control plane, so every `--action` it shows must be a documented
+    /// `fp_domain::authz::Action` (`read|create|update|delete|execute`). Clap parsing alone
+    /// cannot catch this because `--action` is a free `String` validated server-side.
+    #[test]
+    fn team_grant_add_help_example_uses_documented_action() {
+        let root = Cli::command();
+        let node = root
+            .find_subcommand("team")
+            .and_then(|team| team.find_subcommand("grant"))
+            .and_then(|grant| grant.find_subcommand("add"))
+            .expect("team grant add must exist");
+        let after_help = node
+            .get_after_help()
+            .map(|s| s.to_string())
+            .expect("team grant add must carry an after_help example");
+
+        // Every example line's `--action` value must be a documented grant action.
+        let examples: Vec<&str> = after_help
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("flowplane"))
+            .collect();
+        assert!(
+            !examples.is_empty(),
+            "team grant add must show at least one example"
+        );
+        for line in &examples {
+            let tokens: Vec<&str> = line.split_whitespace().collect();
+            Cli::try_parse_from(&tokens).expect("example must parse");
+            let action = tokens
+                .iter()
+                .position(|token| *token == "--action")
+                .and_then(|idx| tokens.get(idx + 1));
+            assert!(action.is_some(), "example must pass --action: {line}");
+            let action = action.expect("checked above");
+            let parsed = fp_domain::authz::Action::parse(action);
+            assert!(
+                parsed.is_ok(),
+                "team grant add example uses an undocumented action `{action}`: {:?}",
+                parsed.err()
+            );
+        }
+
+        // Pin the exact example so the help text cannot silently drift.
+        let pinned = "flowplane team grant add user@example.com --team payments \
+                      --resource clusters --action update";
+        assert!(
+            examples.contains(&pinned),
+            "team grant add after_help must contain the pinned example `{pinned}`; got:\n{after_help}"
+        );
+    }
+
     #[test]
     fn chk_help_examples_parse() {
         // `chk:help-examples-parse` lint for CLI-R-06: every top-level + spine workflow command's
