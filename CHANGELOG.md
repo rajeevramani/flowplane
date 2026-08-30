@@ -15,8 +15,18 @@ compatibility baseline.
 
 ## [Unreleased]
 
+## [3.1.4] - 2026-08-30
+
+Bug-fix-only patch release. It corrects the `team grant add` help example, makes xDS status
+liveness agree with `stats overview` under control-plane/database clock skew, stabilizes one
+storage test fixture, and documents secure operator handling of credential-bearing CLI outputs.
+No REST, CLI, configuration, or MCP contract changes.
+
 ### Fixed
 
+- `flowplane team grant add --help` now ends with an example that uses a documented action
+  (`--action update`) instead of `--action write`, which the control plane rejects. A regression
+  test pins the help example to the documented action set. (fpv2-8zf)
 - The AI usage index-suitability test now grows its 10,000-row planner-fallback fixture into the
   past instead of re-stamping a second batch into the recent window, so the recent-window count is
   deterministic on both the primary and fallback paths. Test-only; no runtime change. (fpv2-8dr)

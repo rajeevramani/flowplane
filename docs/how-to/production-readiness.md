@@ -21,7 +21,7 @@ Deploy the control plane and dataplane bundle separately.
 Install the published operator binaries on the control-plane host, operator workstation, and dataplane host. Pick the archive for the host architecture:
 
 ```bash
-VER=3.1.3
+VER=3.1.4
 ARCH=linux-amd64   # or linux-arm64
 BASE="https://github.com/rajeevramani/flowplane/releases/download/v${VER}"
 
@@ -37,7 +37,7 @@ sudo install -m 0755 "flowplane-${VER}-${ARCH}/bin/flowplane-rls" /usr/local/bin
 
 Use `shasum -a 256 -c` instead of `sha256sum -c` on systems that do not provide `sha256sum`. The release archive also includes `bin/fp-agent` as a deprecated compatibility alias, but public operator commands use `flowplane-agent`.
 
-The `v3.1.3` binary archives are Linux `amd64` and Linux `arm64`. Use a Linux host for the installed CLI, or run the published container image with an entrypoint override when your operator workstation is not Linux.
+The `v3.1.4` binary archives are Linux `amd64` and Linux `arm64`. Use a Linux host for the installed CLI, or run the published container image with an entrypoint override when your operator workstation is not Linux.
 
 Control plane:
 
