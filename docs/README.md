@@ -57,7 +57,7 @@ are `Audience: operators` / `platform-engineers` / `api-teams` / `newcomers` and
 
 - **Implementation truth** → code + tests.
 - **User/operator truth** → the single canonical page for that task (e.g. one bootstrap how-to, one configuration reference). Do not restate it elsewhere.
-- **Deployment examples** (AWS, later k8s/systemd) → platform-specific *delivery* only; they **link** to the canonical how-to/reference instead of duplicating it.
+- **Deployment examples** (AWS, Fly.io, later k8s/systemd) → platform-specific *delivery* only; they **link** to the canonical how-to/reference instead of duplicating it. Current provider pages: [AWS secure deployment](how-to/aws-secure-deployment.md) and [Fly.io with Tailscale dataplanes](how-to/fly-secure-deployment.md) (draft).
 - **Design rationale** → `spec/` + issues (linked, not inlined).
 
 When behavior changes: update the one canonical user page plus any deployment example whose exact commands would otherwise be wrong. Do not sprinkle the change across every file.
