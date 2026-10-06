@@ -382,4 +382,4 @@ flowplane mcp connections --team <team>
 flowplane mcp enable --api api_get-catalog --team <team>
 ```
 
-For deployment-specific details, use the relevant public runbook such as [AWS secure deployment](aws-secure-deployment.md). Keep release evidence separate from day-to-day operator runbooks.
+For deployment-specific details, use the relevant public runbook such as [AWS secure deployment](aws-secure-deployment.md) or [Fly.io with Tailscale dataplanes](fly-secure-deployment.md). Keep release evidence separate from day-to-day operator runbooks.
