@@ -1,0 +1,48 @@
+name: Documentation issue
+description: A documented step fails, or a page is missing, wrong, or unclear.
+labels: ["documentation", "triage"]
+body:
+  - type: input
+    id: page
+    attributes:
+      label: Page
+      description: Path of the page, and the step or heading.
+      placeholder: "docs/tutorials/evaluate-no-clone.md, step 4"
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem?
+      options:
+        - A documented step fails when followed literally
+        - Something I need is missing
+        - The page is wrong or out of date
+        - The page is unclear or hard to follow
+        - I could not find where to start
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: What were you trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: The commands you ran and the output, with secrets removed.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected the page to say or do
+  - type: input
+    id: version
+    attributes:
+      label: Flowplane version
+      description: Output of `flowplane version`, or the image tag.
+      placeholder: "3.1.4"

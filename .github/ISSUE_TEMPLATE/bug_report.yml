@@ -1,0 +1,77 @@
+name: Bug report
+description: Something in Flowplane behaves differently from what the docs or the CLI/API contract say.
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please remove tokens, private keys, certificate bodies, provider API keys, and internal hostnames before submitting.
+        Security vulnerabilities do not belong here: use "Report a security vulnerability" on the new-issue page.
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description
+      description: One or two sentences. What is wrong, and on which surface (CLI, REST, dataplane traffic, dashboard)?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Flowplane version
+      description: Output of `flowplane version`, or the image tag or commit you are running.
+      placeholder: "3.1.4"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI
+        - REST API
+        - Gateway resources and filters (clusters, routes, listeners)
+        - Dataplane / xDS / Envoy
+        - Auth, orgs, teams, grants
+        - API definitions, learning, discovery
+        - AI gateway
+        - MCP tools
+        - Dashboard
+        - Packaging, images, deployment
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Sanitized reproduction
+      description: The exact commands or requests, in order, and how the control plane was started (eval bundle, dev mode, production shape).
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the full error text and the `request id` line if the CLI printed one.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: What does this block, and is there a workaround?
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for a duplicate.
+          required: true
+        - label: This report contains no secrets and is not a security vulnerability.
+          required: true
