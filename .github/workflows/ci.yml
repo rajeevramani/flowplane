@@ -155,6 +155,11 @@ jobs:
         run: python3 scripts/ci/check-docs-jargon.py
       - name: Agent recovery Compose and documentation contract
         run: python3 scripts/ci/check-agent-recovery-contract.py
+      - name: Empty evaluator packaging and integration-harness contracts
+        run: |
+          python3 scripts/ci/check-empty-eval-contract.py
+          python3 scripts/ci/check-empty-eval-contract.py --self-test
+          python3 scripts/ci/test-empty-eval-integration.py --self-test
       - name: Eval PKI issuer contract
         run: python3 scripts/ci/check-eval-pki-contract.py
       - name: Fly packaging and provider-boundary contract

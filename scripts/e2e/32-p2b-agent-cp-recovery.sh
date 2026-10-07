@@ -326,6 +326,14 @@ CP_IMAGE=$("$RUNTIME" inspect --format '{{.Image}}' "$CP_IMAGE")
 DP_ID=$(curl -fsS "${auth[@]}" "http://$API/api/v1/teams/default/dataplanes/dp-eval" \
   | python3 -c 'import json,sys; value=json.load(sys.stdin).get("id"); assert isinstance(value,str) and value; print(value)')
 
+# Empty installation deliberately has no demo listener. Author the last-good exposure only
+# after authenticated infrastructure/agent readiness; keep outage assertions unchanged.
+compose exec -T flowplane-eval sh -c \
+  'FLOWPLANE_TOKEN=$(cat /shared/dev-token) FLOWPLANE_ORG=dev-org FLOWPLANE_TEAM=default flowplane expose http://demo-upstream:5678 --name demo --path / --port 10000' \
+  || fail "explicit demo exposure failed"
+wait_config_names demo-upstream demo-routes demo \
+  || fail "explicit demo exposure never reached Envoy"
+
 # Add a deterministic error listener before the outage. It points at an unbound loopback port in
 # Envoy's network namespace, so exactly one request below deterministically contributes one 5xx.
 create_resource clusters \

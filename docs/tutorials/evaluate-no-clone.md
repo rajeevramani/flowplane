@@ -6,14 +6,14 @@ This tutorial takes you from a clean machine to a working Flowplane evaluation u
 
 You need Docker Compose or Podman Compose and `curl`. The examples use `docker compose`; if you use Podman Compose, replace that command with your local Podman Compose equivalent. You do not need Rust, a source checkout, `./target/debug/flowplane`, `internal/`, or `spec/`.
 
-The evaluation bundle runs dev mode: an in-process identity issuer, seeded `dev-org` / `default` resources, a dev bearer token, Postgres, a demo upstream, and Envoy. It binds host ports to `127.0.0.1` and is not a production shape.
+The evaluation bundle runs dev mode: an in-process identity issuer, seeded `dev-org` / `default` identities, a dev bearer token, Postgres, a demo upstream, and Envoy. It installs no exposed APIs or gateway clusters, route configs or listeners. It binds host ports to `127.0.0.1` and is not a production shape.
 
 ## 1. Start the published evaluator bundle
 
-Use a published release. This example targets `3.1.4`; use it after `v3.1.4` appears on the GitHub Releases page. Its eval compose file and multi-arch eval image support the dashboard step below (`3.1.0` or newer):
+This example describes the `3.2.0` empty-install bundle; use it only after `v3.2.0` and its eval image are published. Older `3.1.x` bundles automatically expose the demo and do not have this empty-install behavior.
 
 ```bash
-VER=3.1.4
+VER=3.2.0
 
 curl -fsSLO https://raw.githubusercontent.com/rajeevramani/flowplane/v${VER}/compose.eval.yml
 
@@ -21,7 +21,24 @@ FLOWPLANE_EVAL_IMAGE=ghcr.io/rajeevramani/flowplane:${VER}-eval \
   docker compose -f compose.eval.yml up -d --no-build
 ```
 
-Wait until the services are healthy, then send a request through Envoy:
+Wait until the services are healthy. Confirm authenticated control-plane readiness and the automatic dataplane registration independently of gateway traffic:
+
+```bash
+docker compose -f compose.eval.yml exec flowplane-eval \
+  sh -c 'FLOWPLANE_TOKEN=$(cat /shared/dev-token) flowplane auth whoami'
+
+docker compose -f compose.eval.yml exec flowplane-eval \
+  sh -c 'FLOWPLANE_TOKEN=$(cat /shared/dev-token) FLOWPLANE_ORG=dev-org FLOWPLANE_TEAM=default flowplane dataplane get dp-eval'
+```
+
+The dataplane's `last_heartbeat_at` should become non-null. At this point the gateway has no listener, so `curl http://127.0.0.1:10000/` should fail, not return the demo body. Explicitly expose the supplied backend, then call it:
+
+```bash
+docker compose -f compose.eval.yml exec flowplane-eval \
+  sh -c 'FLOWPLANE_TOKEN=$(cat /shared/dev-token) FLOWPLANE_ORG=dev-org FLOWPLANE_TEAM=default flowplane expose http://demo-upstream:5678 --name demo --path / --port 10000 --public-base-url http://127.0.0.1:10000'
+```
+
+Allow xDS delivery to converge, then send a request through Envoy:
 
 ```bash
 curl http://127.0.0.1:10000/
@@ -37,6 +54,8 @@ That request reached the demo upstream through Envoy on `127.0.0.1:10000`; the c
 
 ## 2. Open the dashboard
 
+This step is optional; gateway traffic does not depend on the dashboard.
+
 The bundle also serves a read-only dashboard for the seeded team. Its URL contains a per-launch security nonce, and the `shared` volume is a named volume the host cannot read directly, so read the URL through the container:
 
 ```bash
@@ -49,7 +68,7 @@ Open the printed URL (`http://127.0.0.1:8081/<nonce>/`) in your browser. The das
 docker compose -f compose.eval.yml logs flowplane-dashboard
 ```
 
-The dashboard is published on host loopback only (`127.0.0.1:8081`), and every route requires the nonce path — a request without it is rejected. Each restart of the dashboard container generates a fresh nonce, so re-read the file after a restart. In 3.1.4 the bundle runs `flowplane-agent` beside Envoy over xDS mTLS, so `dp-eval` should become live and its telemetry should advance after requests. If it remains stale, inspect `docker compose -f compose.eval.yml logs flowplane-agent`.
+The dashboard is published on host loopback only (`127.0.0.1:8081`), and every route requires the nonce path — a request without it is rejected. Each restart of the dashboard container generates a fresh nonce, so re-read the file after a restart. The bundle runs `flowplane-agent` beside Envoy over xDS mTLS, so `dp-eval` should become live and its telemetry should advance after requests. If it remains stale, inspect `docker compose -f compose.eval.yml logs flowplane-agent`.
 
 ## 3. Confirm CLI authentication
 
@@ -73,7 +92,7 @@ docker compose -f compose.eval.yml exec flowplane-eval \
   sh -c 'FLOWPLANE_TOKEN=$(cat /shared/dev-token) FLOWPLANE_ORG=dev-org FLOWPLANE_TEAM=default flowplane route list'
 ```
 
-You should see the resources created by the evaluator bundle. They are the durable gateway resources that produce Envoy config: a cluster, a route config, a listener, and a dataplane record. To inspect or create those resources directly, use the [gateway resource request body examples](../reference/rest-api.md#gateway-resource-request-bodies).
+You should now see the gateway resources created by your explicit exposure: cluster `demo-upstream`, route config `demo-routes`, and listener `demo`. The bundle registered dataplane `dp-eval` automatically before that exposure. These durable gateway resources produce Envoy config. Before exposure, the three gateway lists are empty. To inspect or create those resources directly, use the [gateway resource request body examples](../reference/rest-api.md#gateway-resource-request-bodies).
 
 ## 4. Import a small OpenAPI document
 
@@ -150,7 +169,7 @@ The published OpenAPI operation is now represented as a generated API tool for t
 At this point you have proven:
 
 - a published Flowplane eval artifact can start without a source checkout;
-- a request can route through Envoy;
+- installation has no exposed APIs, and a request routes through Envoy after your explicit exposure;
 - the read-only dashboard shows the team's dataplane and totals at a nonce-protected loopback URL;
 - the CLI can authenticate and inspect gateway resources;
 - an OpenAPI document can become an API definition;

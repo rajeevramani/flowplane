@@ -238,16 +238,16 @@ jobs:
         run: |
           set -euo pipefail
           export FLOWPLANE_EVAL_IMAGE=flowplane:eval-candidate
+          export COMPOSE_PROJECT_NAME=flowplane-candidate
           docker compose -f compose.eval.yml up -d --no-build
 
-          ok=
-          for _ in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:10000/ | grep -q "hello from the flowplane eval demo upstream"; then
-              ok=1; break
-            fi
-            sleep 2
-          done
-          [ -n "$ok" ] || { echo "::error::eval image smoke did not return the demo body"; exit 1; }
+          # Infrastructure readiness is independent of exposed gateway traffic. This checks
+          # empty inventories, dp-eval heartbeat and pre-exposure refusal, then authors the
+          # first exposure and verifies exact response bytes and same-volume persistence.
+          python3 scripts/ci/test-empty-eval-integration.py \
+            --compose-command 'docker compose' --project "$COMPOSE_PROJECT_NAME" \
+            --compose-file "$PWD/compose.eval.yml" \
+            --gateway-url http://127.0.0.1:10000 --restart-test
 
           ok=
           for _ in $(seq 1 60); do
@@ -295,6 +295,7 @@ jobs:
       - name: Evaluator smoke logs + teardown (always)
         if: always()
         run: |
+          export COMPOSE_PROJECT_NAME=flowplane-candidate
           docker compose -f compose.eval.yml logs --no-color > compose-smoke.log 2>&1 || true
           docker compose -f compose.eval.yml down -v
           remaining=$(docker compose -f compose.eval.yml ps -q | wc -l)
