@@ -60,14 +60,25 @@ async fn expose_impl(
     advisory: crate::services::egress_advisory::EgressAdvisoryPolicy,
 ) -> DomainResult<ExposedService> {
     // Full authorization precedes advisory DNS and every product write.
-    for resource in [
-        Resource::Clusters,
-        Resource::RouteConfigs,
-        Resource::Listeners,
-    ] {
-        authorize(pool, ctx, resource, Action::Create, team, request_id).await?;
+    if request.listener.is_some() {
+        for (resource, action) in [
+            (Resource::Clusters, Action::Create),
+            (Resource::Listeners, Action::Read),
+            (Resource::RouteConfigs, Action::Read),
+            (Resource::RouteConfigs, Action::Update),
+        ] {
+            authorize(pool, ctx, resource, action, team, request_id).await?;
+        }
+    } else {
+        for resource in [
+            Resource::Clusters,
+            Resource::RouteConfigs,
+            Resource::Listeners,
+        ] {
+            authorize(pool, ctx, resource, Action::Create, team, request_id).await?;
+        }
     }
-    if request.port.is_none() {
+    if request.listener.is_none() && request.port.is_none() {
         authorize(
             pool,
             ctx,
@@ -78,11 +89,21 @@ async fn expose_impl(
         )
         .await?;
     }
+    if let Some(listener) = &request.listener {
+        fp_domain::validate_name(listener)?;
+        if request.port.is_some() || request.public_base_url.is_some() {
+            return Err(DomainError::validation(
+                "listener conflicts with port and public_base_url",
+            ));
+        }
+    }
     fp_domain::validate_name(&request.name)?;
     let names = ExposeNames::new(&request.name);
     fp_domain::gateway::cluster::validate_cluster_name(&names.cluster)?;
     fp_domain::validate_name(&names.route_config)?;
-    gateway::validate_user_listener_name(&names.listener)?;
+    if request.listener.is_none() {
+        gateway::validate_user_listener_name(&names.listener)?;
+    }
     let upstream = parse_upstream(&request.upstream)?;
     let path = normalize_path(&request.path)?;
     let public_base_url = request.public_base_url.clone();
@@ -185,6 +206,9 @@ async fn expose_impl(
         &advisory,
     )
     .await?;
+    if request.listener.is_some() {
+        return attach_resources(pool, ctx, team, &request, &template, &path, request_id).await;
+    }
     let mut attempted = BTreeSet::new();
     for _ in 0..DEFAULT_PORT_ATTEMPTS {
         let mut tx = pool
@@ -243,6 +267,189 @@ async fn expose_impl(
         }
     }
     Err(no_ports_available())
+}
+
+/// Restrict attachment to shape whose first-match semantics can be explained exactly.
+fn shared_route_config(
+    spec: &RouteConfigSpec,
+    route: RouteRule,
+) -> DomainResult<(RouteConfigSpec, String)> {
+    if spec.virtual_hosts.len() != 1
+        || spec.virtual_hosts[0].domains.len() != 1
+        || spec.virtual_hosts[0].domains[0] != "*"
+    {
+        return Err(DomainError::validation(
+            "shared exposure needs exactly one wildcard virtual host",
+        )
+        .with_hint("use ordinary gateway authoring for custom domains or multiple virtual hosts"));
+    }
+    let new_prefix = match &route.matcher {
+        PathMatch::Prefix { prefix } => prefix,
+        _ => return Err(DomainError::internal("shortcut route must use Prefix")),
+    };
+    let existing = &spec.virtual_hosts[0].routes;
+    for entry in existing {
+        if !entry.headers.is_empty()
+            || !entry.query_parameters.is_empty()
+            || !matches!(
+                entry.matcher,
+                PathMatch::Prefix { .. } | PathMatch::Exact { .. }
+            )
+        {
+            return Err(DomainError::conflict(
+                "shared route overlap cannot be established for this matcher",
+            )
+            .with_hint("use ordinary gateway authoring for regex/template/header/query routes"));
+        }
+        let equal_path = match &entry.matcher {
+            PathMatch::Prefix { prefix } => prefix == new_prefix,
+            PathMatch::Exact { path } => path == new_prefix,
+            _ => false,
+        };
+        if entry.name == route.name || equal_path {
+            return Err(DomainError::conflict(
+                "shared exposure route name or path already exists",
+            ));
+        }
+    }
+    let index = existing
+        .iter()
+        .position(|entry| match &entry.matcher {
+            PathMatch::Prefix { prefix } => new_prefix.starts_with(prefix.as_str()),
+            _ => false,
+        })
+        .unwrap_or(existing.len());
+    let mut result = spec.clone();
+    result.virtual_hosts[0].routes.insert(index, route);
+    result.validate()?;
+    let vhost_name = result.virtual_hosts[0].name.clone();
+    Ok((result, vhost_name))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn attach_resources(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    request: &ExposeRequest,
+    template: &ExposeTemplate,
+    path: &str,
+    request_id: RequestId,
+) -> DomainResult<ExposedService> {
+    let listener_name = request
+        .listener
+        .as_deref()
+        .ok_or_else(|| DomainError::internal("shared exposure requires listener selection"))?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| exposures::db_error("attach begin", e))?;
+    exposures::lock_team(&mut tx, team.id).await?;
+    // Same authoritative lock order as removal: listener then its actual config.
+    let listener = gateway_repo::get_listener_named_for_update(&mut tx, team.id, listener_name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("listener", listener_name))?;
+    if listener.spec.protocol != ListenerProtocol::Http {
+        return Err(DomainError::validation(
+            "shared exposure requires an HTTP listener",
+        ));
+    }
+    let config_name = listener
+        .spec
+        .route_config
+        .as_deref()
+        .ok_or_else(|| DomainError::validation("shared listener has no route config"))?;
+    let config = gateway_repo::get_route_config_named_for_update(&mut tx, team.id, config_name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("route-config", config_name))?;
+    let (new_spec, virtual_host) = shared_route_config(
+        &config.spec,
+        template.route_config_spec.virtual_hosts[0].routes[0].clone(),
+    )?;
+    let dependents = exposures::route_dependents(
+        &mut tx,
+        team.id,
+        config.id,
+        &virtual_host,
+        Some(&request.name),
+    )
+    .await?;
+    if !dependents.is_empty() {
+        return Err(protected_exposure(&request.name, &dependents,
+            "existing live binding or active capture would cover the new route; use supported API/capture remediation before attaching"));
+    }
+    // Render from the selected listener, never from an invented local address.
+    let curl_url = listener
+        .spec
+        .public_base_url
+        .as_deref()
+        .map(|base| expose_curl_url(base, path))
+        .transpose()?;
+    let endpoint_source = if curl_url.is_some() {
+        ExposeEndpointSource::ListenerPublicBaseUrl
+    } else {
+        ExposeEndpointSource::Unconfigured
+    };
+    let (cleanup_listener, cleanup_route_config) =
+        exposures::cleanup_for_pair(&mut tx, team.id, listener.id, config.id).await?;
+    crate::services::quota::check_team_resource_quota_in_tx(&mut tx, team.id, Resource::Clusters)
+        .await?;
+    let cluster = clusters::create_cluster_in_tx(
+        &mut tx,
+        ctx,
+        team,
+        &template.names.cluster,
+        template.cluster_spec.clone(),
+        request_id,
+    )
+    .await?;
+    let route_config = gateway::update_route_config_in_tx(
+        &mut tx,
+        ctx,
+        team,
+        &config.name,
+        new_spec,
+        config.version,
+        request_id,
+    )
+    .await?;
+    let now = chrono::Utc::now();
+    exposures::create(
+        &mut tx,
+        team,
+        &Exposure {
+            id: ExposureId::generate(),
+            team_id: team.id,
+            org_id: team.org_id,
+            name: request.name.clone(),
+            cluster_id: cluster.id,
+            route_config_id: config.id,
+            listener_id: listener.id,
+            virtual_host,
+            route_name: request.name.clone(),
+            cleanup_listener,
+            cleanup_route_config,
+            version: 1,
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| exposures::db_error("attach commit", e))?;
+    Ok(ExposedService {
+        name: request.name.clone(),
+        upstream: request.upstream.clone(),
+        path: path.into(),
+        port: listener.spec.port,
+        mode: ExposureMode::Attached,
+        cluster,
+        route_config,
+        listener,
+        curl_url,
+        endpoint_source,
+    })
 }
 
 fn listener_spec(names: &ExposeNames, port: u16, public_base_url: &Option<String>) -> ListenerSpec {
@@ -674,4 +881,81 @@ fn expose_curl_url(public_base_url: &str, path: &str) -> DomainResult<String> {
         .map_err(|e| DomainError::validation(format!("invalid listener public_base_url: {e}")))?;
     url.set_path(path);
     Ok(url.to_string())
+}
+
+#[cfg(test)]
+mod shared_route_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn route(name: &str, matcher: serde_json::Value) -> Result<RouteRule, serde_json::Error> {
+        serde_json::from_value(json!({
+            "name": name, "match": matcher,
+            "action": {"cluster": "unit-upstream", "timeout_secs": 19}
+        }))
+    }
+
+    fn config(routes: Vec<RouteRule>) -> Result<RouteConfigSpec, serde_json::Error> {
+        serde_json::from_value(json!({"virtual_hosts": [{
+            "name": "wildcard", "domains": ["*"], "routes": routes
+        }]}))
+    }
+
+    #[test]
+    fn insertion_preserves_exact_exception_existing_order_and_input(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let exact = route("health", json!({"exact": {"path": "/api/health"}}))?;
+        let root = route("root", json!({"prefix": {"prefix": "/"}}))?;
+        let spec = config(vec![exact.clone(), root.clone()])?;
+        let added = route("api", json!({"prefix": {"prefix": "/api"}}))?;
+        let (updated, vhost) = shared_route_config(&spec, added.clone())?;
+        assert_eq!(vhost, "wildcard");
+        assert_eq!(
+            updated.virtual_hosts[0].routes,
+            vec![exact.clone(), added, root.clone()]
+        );
+        assert_eq!(spec.virtual_hosts[0].routes, vec![exact, root]);
+        Ok(())
+    }
+
+    #[test]
+    fn no_covering_prefix_appends_without_changing_existing_route(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let existing = route("catalog", json!({"prefix": {"prefix": "/catalog"}}))?;
+        let added = route("orders", json!({"prefix": {"prefix": "/orders"}}))?;
+        let (updated, _) = shared_route_config(&config(vec![existing.clone()])?, added.clone())?;
+        assert_eq!(updated.virtual_hosts[0].routes, vec![existing, added]);
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_name_or_equal_prefix_or_exact_path_fails_without_mutation(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let added = route("api", json!({"prefix": {"prefix": "/api"}}))?;
+        for existing in [
+            route("api", json!({"prefix": {"prefix": "/other"}}))?,
+            route("other", json!({"prefix": {"prefix": "/api"}}))?,
+            route("exact", json!({"exact": {"path": "/api"}}))?,
+        ] {
+            let spec = config(vec![existing.clone()])?;
+            assert!(shared_route_config(&spec, added.clone()).is_err());
+            assert_eq!(spec.virtual_hosts[0].routes, vec![existing]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nonwildcard_or_multiple_virtual_hosts_are_not_guessed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let added = route("api", json!({"prefix": {"prefix": "/api"}}))?;
+        let mut domain = config(Vec::new())?;
+        domain.virtual_hosts[0].domains = vec!["example.com".into()];
+        assert!(shared_route_config(&domain, added.clone()).is_err());
+        let mut multiple = config(Vec::new())?;
+        multiple
+            .virtual_hosts
+            .push(multiple.virtual_hosts[0].clone());
+        assert!(shared_route_config(&multiple, added).is_err());
+        Ok(())
+    }
 }

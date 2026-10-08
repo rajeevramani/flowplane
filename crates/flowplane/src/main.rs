@@ -673,6 +673,69 @@ mod tests {
     }
 
     #[test]
+    fn shared_expose_listener_parses_without_new_listener_options(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let parsed = Cli::try_parse_from([
+            "flowplane",
+            "expose",
+            "http://backend:8080",
+            "--name",
+            "service",
+            "--path",
+            "/service",
+            "--listener",
+            "gateway",
+        ])?;
+        let Command::Expose { command: args } = parsed.command else {
+            return Err("expected expose command".into());
+        };
+        assert_eq!(args.listener.as_deref(), Some("gateway"));
+        assert_eq!(args.path, "/service");
+        assert_eq!(args.name, "service");
+        assert!(args.port.is_none());
+        assert!(args.public_base_url.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn shared_expose_listener_rejects_explicit_port() -> Result<(), Box<dyn std::error::Error>> {
+        let error = Cli::try_parse_from([
+            "flowplane",
+            "expose",
+            "http://backend:8080",
+            "--name",
+            "service",
+            "--listener",
+            "gateway",
+            "--port",
+            "10000",
+        ])
+        .err()
+        .ok_or("listener and port must conflict")?;
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        Ok(())
+    }
+
+    #[test]
+    fn shared_expose_listener_rejects_public_base_url() -> Result<(), Box<dyn std::error::Error>> {
+        let error = Cli::try_parse_from([
+            "flowplane",
+            "expose",
+            "http://backend:8080",
+            "--name",
+            "service",
+            "--listener",
+            "gateway",
+            "--public-base-url",
+            "https://gateway.example",
+        ])
+        .err()
+        .ok_or("listener and public base URL must conflict")?;
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        Ok(())
+    }
+
+    #[test]
     fn team_member_and_grant_accept_immutable_user_selectors() {
         Cli::try_parse_from([
             "flowplane",

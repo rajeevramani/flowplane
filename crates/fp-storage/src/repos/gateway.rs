@@ -816,6 +816,29 @@ pub async fn teams_with_gateway_resources(pool: &PgPool) -> DomainResult<Vec<Tea
 }
 
 /// Scoped user-owned identity read; locks serialize shortcut and ordinary row writes.
+pub async fn get_listener_named_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+) -> DomainResult<Option<Listener>> {
+    let row = sqlx::query(&format!("SELECT {COLUMNS} FROM listeners WHERE team_id=$1 AND name=$2 AND owner_kind='user' FOR UPDATE"))
+        .bind(team_id.as_uuid()).bind(name).fetch_optional(&mut **tx).await
+        .map_err(|e| crate::repos::exposures::db_error("lock named listener", e))?;
+    row.as_ref().map(listener_from_row).transpose()
+}
+
+pub async fn get_route_config_named_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+) -> DomainResult<Option<RouteConfig>> {
+    let row = sqlx::query(&format!("SELECT {COLUMNS} FROM route_configs WHERE team_id=$1 AND name=$2 AND owner_kind='user' FOR UPDATE"))
+        .bind(team_id.as_uuid()).bind(name).fetch_optional(&mut **tx).await
+        .map_err(|e| crate::repos::exposures::db_error("lock named route config", e))?;
+    row.as_ref().map(rc_from_row).transpose()
+}
+
+/// Scoped user-owned identity read; locks serialize shortcut and ordinary row writes.
 pub async fn get_listener_for_update(
     tx: &mut Transaction<'_, Postgres>,
     team_id: TeamId,

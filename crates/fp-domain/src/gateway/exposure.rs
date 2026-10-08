@@ -30,17 +30,20 @@ pub struct ExposeRequest {
     pub path: String,
     pub port: Option<u16>,
     pub public_base_url: Option<String>,
+    pub listener: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ExposureMode {
     Created,
+    Attached,
 }
 impl ExposureMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Created => "created",
+            Self::Attached => "attached",
         }
     }
 }

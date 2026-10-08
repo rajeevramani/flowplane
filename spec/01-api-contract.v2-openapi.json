@@ -9858,6 +9858,13 @@
           "upstream"
         ],
         "properties": {
+          "listener": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Existing same-team user HTTP listener; conflicts with port/public_base_url."
+          },
           "name": {
             "type": "string"
           },
@@ -9915,7 +9922,7 @@
           },
           "mode": {
             "$ref": "#/components/schemas/ExposureMode",
-            "description": "Independent scaffold mode; attachment is not available in this slice."
+            "description": "Created scaffold or attachment to the actual existing shared route config."
           },
           "name": {
             "type": "string"
@@ -9939,7 +9946,8 @@
       "ExposureMode": {
         "type": "string",
         "enum": [
-          "created"
+          "created",
+          "attached"
         ]
       },
       "ExtAuthzConfig": {

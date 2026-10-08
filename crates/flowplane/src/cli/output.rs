@@ -677,6 +677,12 @@ fn flatten_expose(value: &Value) -> Option<Value> {
     {
         row.insert("listener_name".into(), Value::String(name.into()));
     }
+    if obj.get("mode").and_then(Value::as_str) == Some("attached") {
+        row.insert(
+            "attachment_scope".into(),
+            Value::String("every listener sharing the named route config".into()),
+        );
+    }
     Some(Value::Array(vec![Value::Object(row)]))
 }
 
@@ -990,6 +996,24 @@ mod tests {
         assert_eq!(rows[0]["route_config_name"], "demo-routes");
         assert_eq!(rows[0]["listener_name"], "demo");
         assert_eq!(envelope("mutationResult", &value)["data"], value);
+    }
+
+    #[test]
+    fn attached_expose_table_names_shared_config_and_fanout(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let value = serde_json::json!({"name":"service", "mode":"attached",
+            "cluster":{"name":"service-upstream"}, "route_config":{"name":"shared-config"},
+            "listener":{"name":"gateway"}});
+        let rows = flatten_expose(&value).ok_or("attached result must flatten")?;
+        assert_eq!(rows[0]["mode"], "attached");
+        assert_eq!(rows[0]["route_config_name"], "shared-config");
+        assert_eq!(rows[0]["listener_name"], "gateway");
+        assert_eq!(
+            rows[0]["attachment_scope"],
+            "every listener sharing the named route config"
+        );
+        assert_eq!(envelope("mutationResult", &value)["data"], value);
+        Ok(())
     }
 
     #[test]

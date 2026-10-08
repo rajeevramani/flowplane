@@ -20,13 +20,16 @@ fn generated_rest_document_matches_committed_current_snapshot() -> Result<(), se
 }
 
 #[test]
-fn s2_exposure_schema_declares_only_created_and_actual_cleanup_dispositions(
+fn s3_exposure_schema_declares_attachment_and_actual_cleanup_dispositions(
 ) -> Result<(), serde_json::Error> {
     let doc = generated()?;
     assert!(doc["paths"]["/api/v1/teams/{team}/expose"]["post"].is_object());
     assert!(doc["paths"]["/api/v1/teams/{team}/expose/{name}"]["delete"].is_object());
     let schemas = &doc["components"]["schemas"];
-    assert_eq!(schemas["ExposureMode"]["enum"], json!(["created"]));
+    assert_eq!(
+        schemas["ExposureMode"]["enum"],
+        json!(["created", "attached"])
+    );
     assert_eq!(
         schemas["ResourceDisposition"]["enum"],
         json!(["deleted", "retained"])
@@ -51,10 +54,14 @@ fn s2_exposure_schema_declares_only_created_and_actual_cleanup_dispositions(
             .as_array()
             .is_some_and(|required| required.contains(&json!(field))));
     }
-    for selector in ["listener", "virtual_host", "route_name"] {
+    assert!(schemas["ExposeBody"]["properties"]["listener"].is_object());
+    assert!(!schemas["ExposeBody"]["required"]
+        .as_array()
+        .is_some_and(|required| required.contains(&json!("listener"))));
+    for selector in ["virtual_host", "route_name"] {
         assert!(
             schemas["ExposeBody"]["properties"].get(selector).is_none(),
-            "S3 selector is not implemented in S2"
+            "virtual-host/route selectors are not part of the approved shared shortcut"
         );
     }
     assert_eq!(schemas["ExposeBody"]["additionalProperties"], false);

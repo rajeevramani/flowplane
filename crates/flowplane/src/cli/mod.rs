@@ -1041,6 +1041,7 @@ pub async fn run_expose(global: GlobalOptions, command: ExposeCommand) -> Result
                 "path": command.path,
                 "port": command.port,
                 "public_base_url": command.public_base_url,
+                "listener": command.listener,
             })),
         )
         .await?;

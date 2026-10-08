@@ -26,6 +26,9 @@ pub struct ExposeBody {
     pub port: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_base_url: Option<String>,
+    /// Existing same-team user HTTP listener; conflicts with port/public_base_url.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listener: Option<String>,
 }
 
 fn default_path() -> String {
@@ -38,7 +41,7 @@ pub struct ExposeView {
     pub upstream: String,
     pub path: String,
     pub port: u16,
-    /// Independent scaffold mode; attachment is not available in this slice.
+    /// Created scaffold or attachment to the actual existing shared route config.
     pub mode: ExposureMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub curl_url: Option<String>,
@@ -122,6 +125,7 @@ pub async fn expose(
                 path: body.path,
                 port: body.port,
                 public_base_url: body.public_base_url,
+                listener: body.listener,
             },
             rid,
             state.egress_advisory.clone(),

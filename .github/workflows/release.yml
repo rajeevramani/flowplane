@@ -242,8 +242,9 @@ jobs:
           docker compose -f compose.eval.yml up -d --no-build
 
           # Infrastructure readiness is independent of exposed gateway traffic. This checks
-          # empty inventories, dp-eval heartbeat and pre-exposure refusal, then authors the
-          # first exposure and verifies exact response bytes and same-volume persistence.
+          # empty inventories, dp-eval heartbeat and pre-exposure refusal, then runs two
+          # shared-exposure cycles with exact traffic, same-volume restart persistence,
+          # both removal orders and empty final inventories.
           python3 scripts/ci/test-empty-eval-integration.py \
             --compose-command 'docker compose' --project "$COMPOSE_PROJECT_NAME" \
             --compose-file "$PWD/compose.eval.yml" \

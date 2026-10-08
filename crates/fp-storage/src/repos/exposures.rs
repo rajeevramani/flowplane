@@ -67,7 +67,7 @@ pub async fn create(
         .fetch_one(&mut **tx).await.map_err(|e| match &e {
             sqlx::Error::Database(db) if db.code().as_deref()==Some("23505") =>
                 DomainError::conflict(format!("exposure \"{}\" already owns that name, cluster or route",value.name)),
-            _=>db_error("create exposure",e),
+            _=>create_error("create exposure",e),
         })?;
     Ok(from_row(&row))
 }
@@ -121,22 +121,29 @@ pub async fn guard_resource_delete(
     Ok(())
 }
 
+fn is_exposure_fk_violation(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(db)
+    if db.code().as_deref() == Some("23503")
+        && matches!(db.constraint(), Some(
+            "exposures_cluster_fk" | "exposures_route_config_fk" | "exposures_listener_fk"
+        )))
+}
+
+/// An association insert lost one of its scoped parents, not a delete dependency.
+fn create_error(context: &str, error: sqlx::Error) -> DomainError {
+    if is_exposure_fk_violation(&error) {
+        return DomainError::conflict("exposure resource identity changed concurrently").with_hint(
+            "inspect the upstream, listener and route configuration; retry after rereading",
+        );
+    }
+    db_error(context, error)
+}
+
 /// Preserve unrelated DB errors; only the named new exposure constraints become 409.
 pub fn delete_error(context: &str, error: sqlx::Error) -> DomainError {
-    if let sqlx::Error::Database(db) = &error {
-        if db.code().as_deref() == Some("23503")
-            && matches!(
-                db.constraint(),
-                Some(
-                    "exposures_cluster_fk" | "exposures_route_config_fk" | "exposures_listener_fk"
-                )
-            )
-        {
-            return DomainError::conflict("resource acquired an exposure reference concurrently")
-                .with_hint(
-                    "inspect current resources and use unexpose <name>; retry after rereading",
-                );
-        }
+    if is_exposure_fk_violation(&error) {
+        return DomainError::conflict("resource acquired an exposure reference concurrently")
+            .with_hint("inspect current resources and use unexpose <name>; retry after rereading");
     }
     db_error(context, error)
 }
@@ -299,6 +306,18 @@ pub async fn route_dependents(
     ) d ORDER BY label")
         .bind(team_id.as_uuid()).bind(config.as_uuid()).bind(vhost).bind(route)
         .fetch_all(&mut **tx).await.map_err(|e| db_error("protected route dependents",e))
+}
+
+/// Caller holds listener/config locks: no unlocked name-based ownership adoption.
+pub async fn cleanup_for_pair(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    listener_id: ListenerId,
+    route_config_id: RouteConfigId,
+) -> DomainResult<(bool, bool)> {
+    sqlx::query_as("SELECT coalesce(bool_or(cleanup_listener), false), coalesce(bool_or(cleanup_route_config), false) FROM exposures WHERE team_id=$1 AND listener_id=$2 AND route_config_id=$3")
+        .bind(team_id.as_uuid()).bind(listener_id.as_uuid()).bind(route_config_id.as_uuid())
+        .fetch_one(&mut **tx).await.map_err(|e| db_error("read cleanup provenance", e))
 }
 
 pub async fn scaffold_dependents(

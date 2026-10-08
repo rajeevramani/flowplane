@@ -393,16 +393,33 @@ Dataplane certificate management.
 ### `expose`
 Expose an upstream through Envoy with cluster + route + listener resources. Flattened args (no subcommands):
 
-`flowplane expose <UPSTREAM> --name <NAME> [--team <TEAM>] [--path <PATH>] [--port <PORT>] [--public-base-url <URL>]`
+```text
+# Create a new listener:
+flowplane expose <UPSTREAM> --name <NAME> [--team <TEAM>] [--path <PATH>] [--port <PORT>] [--public-base-url <URL>]
+
+# Attach to an existing listener:
+flowplane expose <UPSTREAM> --name <NAME> [--team <TEAM>] [--path <PATH>] --listener <NAME>
+```
+
+Use `--listener <NAME>` to attach a new upstream/Prefix route to the existing same-team user-owned HTTP listener's actual route configuration. It cannot be combined with `--port` or `--public-base-url`. The listener's policies, revision and public endpoint are preserved; no endpoint is invented when none is configured. JSON/YAML return `mode: attached`; table output also discloses that **every listener sharing the named route configuration** receives the change.
+
+The shortcut accepts one wildcard virtual host with Prefix/Exact routes and no header/query matchers. It inserts before the first wider Prefix, otherwise appends; existing relative order and earlier Exact exceptions remain intact. `/api` is a literal Prefix and also matches `/apix`. Duplicate names/equal paths conflict; use ordinary revision-checked route authoring for unsupported shapes. Attachment needs Clusters/Create, Listeners/Read and RouteConfigs/Read+Update, and consumes only cluster quota.
+
+```sh
+flowplane expose http://backend:8080 --name service --path /service --listener gateway --team default
+```
+
+For managed scaffolding, either removal order preserves remaining routes and the final exposure cleans up only with the corresponding Delete grants. Borrowed manual/legacy scaffolding is never adopted: add a genuine replacement route before removing its final shortcut route. See the [REST lifecycle contract](rest-api.md#expose).
 
 | Arg / Flag | Default | Meaning |
 |------------|---------|---------|
 | `<UPSTREAM>` (positional) | | Upstream address. |
 | `--name <NAME>` | (required) | Resource name. |
 | `--team <TEAM>` | | Team scope. |
-| `--path <PATH>` | `/` | Route match path. |
-| `--port <PORT>` | | Listener port (u16). |
-| `--public-base-url <URL>` | | Public gateway base URL clients use to reach the listener. |
+| `--path <PATH>` | `/` | Literal Prefix route match path. |
+| `--listener <NAME>` | | Attach to an existing listener; conflicts with `--port` and `--public-base-url`. |
+| `--port <PORT>` | | New-listener port (u16); not accepted when attaching. |
+| `--public-base-url <URL>` | | Public gateway base URL for a new listener; not accepted when attaching. |
 
 ### `unexpose`
 Atomically remove the exposure's route and upstream. If other routes remain, its listener and route configuration are retained. Final managed-scaffold cleanup deletes the listener/configuration, **including subsequent policy edits**, and requires all three Delete grants. Use ordinary gateway authoring for independently owned infrastructure. Legacy/manual matching names are not shortcut ownership: inspect and unwind those through ordinary revision-checked commands.
