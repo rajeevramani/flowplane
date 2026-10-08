@@ -88,7 +88,7 @@ async fn create_with_owner(
             DomainError::conflict(format!("cluster \"{name}\" already exists in this team"))
                 .with_hint("choose a different name or update the existing cluster")
         }
-        _ => DomainError::internal(format!("create cluster: {e}")),
+        _ => crate::sql_error("create cluster", e),
     })?;
     let cluster = from_row(&row)?;
     secret_refs::replace_cluster(tx, team.id, cluster.id.as_uuid(), &resolved_secret_refs).await?;
@@ -138,7 +138,7 @@ pub async fn list(
     .bind(team_id.as_uuid())
     .fetch_one(pool)
     .await
-    .map_err(|e| DomainError::internal(format!("count clusters: {e}")))?;
+    .map_err(|e| crate::sql_error("count clusters", e))?;
     rows.iter()
         .map(from_row)
         .collect::<DomainResult<Vec<_>>>()
@@ -167,7 +167,7 @@ pub async fn update(
     .bind(expected_version)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(|e| DomainError::internal(format!("update cluster: {e}")))?;
+    .map_err(|e| crate::sql_error("update cluster", e))?;
 
     match row {
         Some(row) => {
@@ -241,6 +241,13 @@ pub async fn delete(
     name: &str,
     expected_version: i64,
 ) -> DomainResult<ClusterId> {
+    crate::repos::exposures::guard_resource_delete(
+        tx,
+        team_id,
+        fp_domain::authz::Resource::Clusters,
+        name,
+    )
+    .await?;
     if is_discovery_owned(tx, team_id, name).await? {
         return Err(DomainError::conflict(format!(
             "cluster \"{name}\" is owned by a discovery session"
@@ -255,7 +262,7 @@ pub async fn delete(
     .bind(expected_version)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(|e| DomainError::internal(format!("delete cluster: {e}")))?;
+    .map_err(|e| crate::repos::exposures::delete_error("delete cluster", e))?;
     match row {
         Some(row) => Ok(ClusterId::from(row.get::<Uuid, _>("id"))),
         None => {
@@ -337,7 +344,7 @@ pub async fn count_for_team(pool: &PgPool, team_id: TeamId) -> DomainResult<i64>
         .bind(team_id.as_uuid())
         .fetch_one(pool)
         .await
-        .map_err(|e| DomainError::internal(format!("count clusters: {e}")))
+        .map_err(|e| crate::sql_error("count clusters", e))
 }
 
 /// Transaction-executor variant: quota count inside an AI-materialization mutation tx,
@@ -350,5 +357,17 @@ pub async fn count_for_team_in_tx(
         .bind(team_id.as_uuid())
         .fetch_one(&mut **tx)
         .await
-        .map_err(|e| DomainError::internal(format!("count clusters: {e}")))
+        .map_err(|e| crate::sql_error("count clusters", e))
+}
+
+/// Scoped user-owned identity read; locks serialize shortcut and ordinary row writes.
+pub async fn get_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    id: ClusterId,
+) -> DomainResult<Option<Cluster>> {
+    let row=sqlx::query(&format!("SELECT {COLUMNS} FROM clusters WHERE team_id=$1 AND id=$2 AND owner_kind='user' FOR UPDATE"))
+        .bind(team_id.as_uuid()).bind(id.as_uuid()).fetch_optional(&mut **tx).await
+        .map_err(|e| crate::repos::exposures::db_error("lock clusters",e))?;
+    row.as_ref().map(from_row).transpose()
 }

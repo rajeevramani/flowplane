@@ -10,6 +10,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use fp_core::services::expose as svc;
 use fp_core::PrincipalCtx;
+use fp_domain::gateway::exposure::{ExposureMode, ResourceDisposition};
 use fp_domain::RequestId;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -37,6 +38,8 @@ pub struct ExposeView {
     pub upstream: String,
     pub path: String,
     pub port: u16,
+    /// Independent scaffold mode; attachment is not available in this slice.
+    pub mode: ExposureMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub curl_url: Option<String>,
     pub endpoint_source: String,
@@ -51,6 +54,9 @@ pub struct UnexposeView {
     pub cluster_name: String,
     pub route_config_name: String,
     pub listener_name: String,
+    pub cluster_disposition: ResourceDisposition,
+    pub route_config_disposition: ResourceDisposition,
+    pub listener_disposition: ResourceDisposition,
 }
 
 impl From<svc::ExposedService> for ExposeView {
@@ -60,6 +66,7 @@ impl From<svc::ExposedService> for ExposeView {
             upstream: value.upstream,
             path: value.path,
             port: value.port,
+            mode: value.mode,
             curl_url: value.curl_url,
             endpoint_source: value.endpoint_source.as_str().into(),
             cluster: ClusterView::from(value.cluster),
@@ -76,6 +83,9 @@ impl From<svc::UnexposedService> for UnexposeView {
             cluster_name: value.cluster_name,
             route_config_name: value.route_config_name,
             listener_name: value.listener_name,
+            cluster_disposition: value.cluster_disposition,
+            route_config_disposition: value.route_config_disposition,
+            listener_disposition: value.listener_disposition,
         }
     }
 }
@@ -122,7 +132,8 @@ pub async fn expose(
     Ok((StatusCode::CREATED, Json(ExposeView::from(exposed))))
 }
 
-/// Delete the listener, route config, and cluster created by `expose`.
+/// Atomically remove the associated route/upstream; retain infrastructure with other routes.
+/// Final managed-scaffold cleanup removes subsequent policy edits too; legacy names are not ownership.
 #[utoipa::path(delete, path = "/api/v1/teams/{team}/expose/{name}",
     tag = "Expose",
     params(

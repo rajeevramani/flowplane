@@ -648,6 +648,7 @@ fn flatten_expose(value: &Value) -> Option<Value> {
         "upstream",
         "path",
         "port",
+        "mode",
         "curl_url",
         "endpoint_source",
     ] {
@@ -976,6 +977,19 @@ mod tests {
         assert_eq!(value["retryable"], true);
         assert!(value.get("hint").is_none());
         assert!(value.get("request_id").is_none());
+    }
+
+    #[test]
+    fn expose_table_retains_mode_and_actual_resource_names() {
+        let value = serde_json::json!({"name":"demo", "mode":"created",
+            "cluster":{"name":"demo-upstream"}, "route_config":{"name":"demo-routes"},
+            "listener":{"name":"demo"}});
+        let rows = flatten_expose(&value).unwrap();
+        assert_eq!(rows[0]["mode"], "created");
+        assert_eq!(rows[0]["cluster_name"], "demo-upstream");
+        assert_eq!(rows[0]["route_config_name"], "demo-routes");
+        assert_eq!(rows[0]["listener_name"], "demo");
+        assert_eq!(envelope("mutationResult", &value)["data"], value);
     }
 
     #[test]

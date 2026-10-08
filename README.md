@@ -114,7 +114,7 @@ envoy -c /tmp/flowplane-envoy.yaml --log-level info
 curl -i http://127.0.0.1:10001/        # -> 200 OK, body: hello-flowplane
 ```
 
-Tear it down with `flowplane unexpose local`. The full walkthrough with every check is in the [Getting Started tutorial](docs/tutorials/getting-started.md).
+Tear down the exposure's route/upstream with `flowplane unexpose local`. Other routes keep their listener/configuration; final managed-scaffold cleanup deletes its listener/configuration and subsequent policy edits. Legacy/manual matching names are never shortcut-deleted. The full walkthrough with every check is in the [Getting Started tutorial](docs/tutorials/getting-started.md).
 
 > Dev mode runs an in-process identity issuer over plaintext — local exploration only, never production. The published release container is built `--no-default-features` and rejects dev mode entirely.
 

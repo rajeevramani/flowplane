@@ -38,7 +38,7 @@ pub async fn append(
     .bind(trace_context)
     .execute(&mut **tx)
     .await
-    .map_err(|e| DomainError::internal(format!("outbox: append: {e}")))?;
+    .map_err(|e| crate::sql_error("outbox: append", e))?;
     Ok(())
 }
 

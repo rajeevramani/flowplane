@@ -52,6 +52,16 @@ If-Match: <revision>
 
 The revision is returned as the `revision` field on each resource view (and increments on update). A missing or unparseable `If-Match` yields a validation error (`validation_failed` → `400`); a stale revision yields a conflict (`revision_mismatch` → `409`). Read the resource, then echo its `revision`.
 
+A listener create/update that conflicts with an occupied same-team port returns `409`
+with `code: conflict` and optional `details.conflict_kind: listener_port`. This
+machine-readable detail identifies only port collisions, not arbitrary name conflicts;
+clients must tolerate absent details. The expose shortcut uses it to retry an
+**auto-selected** port only, after rolling back the entire attempt. Explicit ports
+are never silently changed. Shortcut PostgreSQL deadlock/serialization conflicts
+(`40P01`/`40001`) return `409` with reread/retry guidance and no automatic replay.
+Other internal database errors keep the redacted `500` envelope; the internal
+SQLSTATE marker used by reusable helpers is not returned in that envelope.
+
 ### Pagination envelope
 
 Most paged collection endpoints (clusters, listeners, route-configs, api-definitions, learning/discovery sessions, dataplanes, secrets, ai providers/routes/budgets, etc.) accept two `ListQuery` query parameters:
@@ -428,6 +438,10 @@ The spec-content endpoint supports conditional reads: it returns `ETag`, accepts
 | POST   | `/api/v1/teams/{team}/expose` |
 | DELETE | `/api/v1/teams/{team}/expose/{name}` |
 
+Independent creation returns 201 with `mode: created`; ordinary user-owned cluster/config/listener rows, shortcut provenance, successful audit and outbox events commit together. Removal returns 200 with the resource names and `cluster_disposition`, `route_config_disposition`, `listener_disposition` (`deleted` or `retained`). It removes the associated route/upstream, retaining listener/configuration when other routes remain. Final managed-scaffold cleanup deletes subsequent listener/configuration policy edits too and requires the corresponding Delete grants.
+
+Matching legacy/manual names never establish deletion ownership: an absent association returns 404 with ordinary inspection/cleanup guidance. Stale ownership, surviving upstream references, covering API bindings, active captures or unsafe final cleanup return 409 with no partial mutation. Historical direct-capture FKs can block final resource deletion even after stop/cancel; they do not block route-only removal when other genuine routes remain. Ordinary delete of an associated cluster/config/listener returns 409 naming the exposure. Restore a stale route's exact name/direct upstream and listener/config binding through revision-checked ordinary updates before retrying removal.
+
 ### Route generation plans
 
 | Method | Path |
@@ -524,6 +538,8 @@ Obtain the document:
 
 - `GET /api-docs/openapi.json` — served by a running control plane.
 - `flowplane openapi` — prints the exact document this binary serves.
+
+The checked-in current secured-REST snapshot is [`spec/01-api-contract.v2-openapi.json`](../../spec/01-api-contract.v2-openapi.json). It is derivative, not an independent authority: regenerate with `flowplane openapi > spec/01-api-contract.v2-openapi.json` in the same commit as every API/schema or workspace version change. The executable gate compares JSON values against `openapi_document()` and separately asserts exposure wire semantics. Keep the historical v1 snapshot unchanged.
 
 ## Source of truth
 

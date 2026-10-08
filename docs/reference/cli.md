@@ -405,7 +405,9 @@ Expose an upstream through Envoy with cluster + route + listener resources. Flat
 | `--public-base-url <URL>` | | Public gateway base URL clients use to reach the listener. |
 
 ### `unexpose`
-Remove resources created by `expose`. Flattened args (no subcommands):
+Atomically remove the exposure's route and upstream. If other routes remain, its listener and route configuration are retained. Final managed-scaffold cleanup deletes the listener/configuration, **including subsequent policy edits**, and requires all three Delete grants. Use ordinary gateway authoring for independently owned infrastructure. Legacy/manual matching names are not shortcut ownership: inspect and unwind those through ordinary revision-checked commands.
+
+JSON/YAML report `cluster_disposition`, `route_config_disposition` and `listener_disposition` as `deleted` or `retained`; table output retains these fields. Destructive confirmation is required (`--yes` in non-interactive use). Flattened args (no subcommands):
 
 `flowplane unexpose <NAME> [--team <TEAM>]`
 

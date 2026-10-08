@@ -67,10 +67,43 @@ pub(crate) fn confirm_destructive(global: &GlobalOptions, action: &str) -> Resul
     }
 }
 
+/// Render the destructive scope without promising that retained infrastructure is deleted.
+pub(crate) fn delete_action(path: &str) -> String {
+    let parts: Vec<_> = path.trim_start_matches('/').split('/').collect();
+    match parts.as_slice() {
+        ["api", "v1", "teams", _, "expose", name] => format!(
+            "unexpose {name} (remove its route/upstream; retain infrastructure with other routes; final managed listener/config cleanup deletes subsequent policy edits)"
+        ),
+        _ => format!("delete {}", path.trim_start_matches('/')),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exposure_confirmation_discloses_retention_and_policy_cleanup() {
+        let action = delete_action("/api/v1/teams/payments/expose/demo");
+        assert!(action.starts_with("unexpose demo "));
+        assert!(action.contains("remove its route/upstream"));
+        assert!(action.contains("retain infrastructure with other routes"));
+        assert!(action.contains("cleanup deletes subsequent policy edits"));
+    }
+
+    #[test]
+    fn unrelated_delete_confirmation_is_unchanged() {
+        for path in [
+            "/api/v1/teams/payments/listeners/demo",
+            "/api/v1/teams/payments/expose",
+        ] {
+            assert_eq!(
+                delete_action(path),
+                format!("delete {}", path.trim_start_matches('/'))
+            );
+        }
+    }
 
     #[test]
     fn yes_flag_proceeds_regardless_of_tty_or_answer() {

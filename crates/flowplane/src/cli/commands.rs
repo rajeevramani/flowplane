@@ -1249,7 +1249,8 @@ pub struct ExposeCommand {
 
 #[derive(Debug, Args)]
 pub struct UnexposeCommand {
-    /// Name of the exposed route to remove.
+    /// Exposure name (not a legacy/manual listener name); removes its route/upstream.
+    /// Final managed-scaffold cleanup also deletes subsequent listener/config policy edits.
     pub name: String,
     /// Team scope; defaults to the active context's team.
     #[arg(long)]

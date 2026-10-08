@@ -30,7 +30,7 @@ pub async fn resolve(
         .bind(reference.name)
         .fetch_optional(&mut **tx)
         .await
-        .map_err(|e| DomainError::internal(format!("resolve secret reference: {e}")))?
+        .map_err(|e| crate::sql_error("resolve secret reference", e))?
         .ok_or_else(|| DomainError::not_found("secret", reference.name))?;
         let actual = row.get::<String, _>("secret_type").parse::<SecretType>()?;
         if actual != reference.required_type {
@@ -61,7 +61,7 @@ pub async fn replace_listener(
         .bind(listener_id)
         .execute(&mut **tx)
         .await
-        .map_err(|e| DomainError::internal(format!("clear listener secret refs: {e}")))?;
+        .map_err(|e| crate::sql_error("clear listener secret refs", e))?;
     for reference in references {
         sqlx::query(
             "INSERT INTO listener_secret_refs (listener_id, team_id, secret_id, usage) \
@@ -73,7 +73,7 @@ pub async fn replace_listener(
         .bind(reference.usage)
         .execute(&mut **tx)
         .await
-        .map_err(|e| DomainError::internal(format!("insert listener secret ref: {e}")))?;
+        .map_err(|e| crate::sql_error("insert listener secret ref", e))?;
     }
     Ok(())
 }
@@ -88,7 +88,7 @@ pub async fn replace_cluster(
         .bind(cluster_id)
         .execute(&mut **tx)
         .await
-        .map_err(|e| DomainError::internal(format!("clear cluster secret refs: {e}")))?;
+        .map_err(|e| crate::sql_error("clear cluster secret refs", e))?;
     for reference in references {
         sqlx::query(
             "INSERT INTO cluster_secret_refs (cluster_id, team_id, secret_id, usage) \
@@ -100,7 +100,7 @@ pub async fn replace_cluster(
         .bind(reference.usage)
         .execute(&mut **tx)
         .await
-        .map_err(|e| DomainError::internal(format!("insert cluster secret ref: {e}")))?;
+        .map_err(|e| crate::sql_error("insert cluster secret ref", e))?;
     }
     Ok(())
 }

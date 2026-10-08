@@ -11,7 +11,7 @@ use fp_domain::gateway::cluster::{validate_cluster_name, Cluster, ClusterSpec};
 use fp_domain::{DomainResult, RequestId};
 use fp_storage::repos::{audit, clusters};
 use fp_storage::scope::TeamScope;
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 
 async fn authorize(
     pool: &PgPool,
@@ -71,48 +71,14 @@ pub async fn create_cluster(
     request_id: RequestId,
     advisory: EgressAdvisoryPolicy,
 ) -> DomainResult<Cluster> {
-    authorize(pool, ctx, Action::Create, team, request_id).await?;
-    validate_cluster_name(name)?;
-    spec.validate()?;
-    if !spec.secret_references().is_empty() {
-        authorize_secret_read(pool, ctx, team, request_id).await?;
-    }
-    advisory
-        .enforce_hosts(
-            pool,
-            ctx,
-            request_id,
-            team,
-            "cluster.create",
-            &format!("clusters/{name}"),
-            spec.endpoints.iter().map(|e| e.host.clone()).collect(),
-        )
-        .await?;
+    prepare_cluster_create(pool, ctx, team, name, &spec, request_id, &advisory).await?;
     crate::services::quota::check_team_resource_quota(pool, team.id, Resource::Clusters).await?;
 
     let mut tx = pool
         .begin()
         .await
         .map_err(crate::services::db_err("create cluster: begin"))?;
-    let cluster = clusters::create(&mut tx, team, name, &spec).await?;
-    fp_storage::outbox::append(
-        &mut tx,
-        &DomainEvent::ClusterUpserted {
-            cluster_id: cluster.id.as_uuid(),
-            name: name.into(),
-        },
-        EventScope {
-            org_id: Some(team.org_id),
-            team_id: Some(team.id),
-        },
-        trace_context_json(),
-    )
-    .await?;
-    audit::record_in_tx(
-        &mut tx,
-        &mutation_audit(ctx, request_id, team, "cluster.create", name),
-    )
-    .await?;
+    let cluster = create_cluster_in_tx(&mut tx, ctx, team, name, spec, request_id).await?;
     tx.commit()
         .await
         .map_err(crate::services::db_err("create cluster: commit"))?;
@@ -213,37 +179,7 @@ pub async fn delete_cluster(
         .begin()
         .await
         .map_err(crate::services::db_err("delete cluster: begin"))?;
-    // Referenced clusters cannot be deleted (no silent cascade — spec/10 §3.4.1); the
-    // error lists dependents so the operator knows exactly what to unwind.
-    let dependents =
-        fp_storage::repos::gateway::route_configs_referencing_cluster(&mut tx, team.id, name)
-            .await?;
-    if !dependents.is_empty() {
-        return Err(fp_domain::DomainError::conflict(format!(
-            "cluster \"{name}\" is referenced by route configs: {}",
-            dependents.join(", ")
-        ))
-        .with_hint("update or delete those route configs first"));
-    }
-    let cluster_id = clusters::delete(&mut tx, team.id, name, expected_version).await?;
-    fp_storage::outbox::append(
-        &mut tx,
-        &DomainEvent::ClusterDeleted {
-            cluster_id: cluster_id.as_uuid(),
-            name: name.into(),
-        },
-        EventScope {
-            org_id: Some(team.org_id),
-            team_id: Some(team.id),
-        },
-        trace_context_json(),
-    )
-    .await?;
-    audit::record_in_tx(
-        &mut tx,
-        &mutation_audit(ctx, request_id, team, "cluster.delete", name),
-    )
-    .await?;
+    delete_cluster_in_tx(&mut tx, ctx, team, name, expected_version, request_id).await?;
     tx.commit()
         .await
         .map_err(crate::services::db_err("delete cluster: commit"))?;
@@ -271,4 +207,113 @@ fn mutation_audit(
         outcome: audit::Outcome::Success,
         detail: serde_json::json!({}),
     }
+}
+
+/// Internal composition seam: caller authorizes and prepares policy/quota before writes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_cluster_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    spec: ClusterSpec,
+    request_id: RequestId,
+) -> DomainResult<Cluster> {
+    validate_cluster_name(name)?;
+    spec.validate()?;
+    let cluster = clusters::create(tx, team, name, &spec).await?;
+    fp_storage::outbox::append(
+        tx,
+        &DomainEvent::ClusterUpserted {
+            cluster_id: cluster.id.as_uuid(),
+            name: name.into(),
+        },
+        EventScope {
+            org_id: Some(team.org_id),
+            team_id: Some(team.id),
+        },
+        trace_context_json(),
+    )
+    .await?;
+    audit::record_in_tx(
+        tx,
+        &mutation_audit(ctx, request_id, team, "cluster.create", name),
+    )
+    .await?;
+    Ok(cluster)
+}
+
+/// Internal composition seam: caller authorizes and prepares policy/quota before writes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn delete_cluster_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    expected_version: i64,
+    request_id: RequestId,
+) -> DomainResult<()> {
+    fp_storage::repos::exposures::guard_resource_delete(tx, team.id, Resource::Clusters, name)
+        .await?;
+    // Referenced clusters cannot be deleted (no silent cascade — spec/10 §3.4.1); the
+    // error lists dependents so the operator knows exactly what to unwind.
+    let dependents =
+        fp_storage::repos::gateway::route_configs_referencing_cluster(tx, team.id, name).await?;
+    if !dependents.is_empty() {
+        return Err(fp_domain::DomainError::conflict(format!(
+            "cluster \"{name}\" is referenced by route configs: {}",
+            dependents.join(", ")
+        ))
+        .with_hint("update or delete those route configs first"));
+    }
+    let cluster_id = clusters::delete(tx, team.id, name, expected_version).await?;
+    fp_storage::outbox::append(
+        tx,
+        &DomainEvent::ClusterDeleted {
+            cluster_id: cluster_id.as_uuid(),
+            name: name.into(),
+        },
+        EventScope {
+            org_id: Some(team.org_id),
+            team_id: Some(team.id),
+        },
+        trace_context_json(),
+    )
+    .await?;
+    audit::record_in_tx(
+        tx,
+        &mutation_audit(ctx, request_id, team, "cluster.delete", name),
+    )
+    .await?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn prepare_cluster_create(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    spec: &ClusterSpec,
+    request_id: RequestId,
+    advisory: &EgressAdvisoryPolicy,
+) -> DomainResult<()> {
+    authorize(pool, ctx, Action::Create, team, request_id).await?;
+    validate_cluster_name(name)?;
+    spec.validate()?;
+    if !spec.secret_references().is_empty() {
+        authorize_secret_read(pool, ctx, team, request_id).await?;
+    }
+    advisory
+        .enforce_hosts(
+            pool,
+            ctx,
+            request_id,
+            team,
+            "cluster.create",
+            &format!("clusters/{name}"),
+            spec.endpoints.iter().map(|e| e.host.clone()).collect(),
+        )
+        .await?;
+    Ok(())
 }

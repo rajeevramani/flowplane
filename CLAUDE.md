@@ -38,6 +38,15 @@ constitution was unavailable. `/aidf:feature` likewise loads it fail-closed befo
   cargo nextest run --workspace --all-features          # CI adds --profile ci
   cargo test --workspace --all-features --doc           # nextest does NOT run doctests
   ```
+- Exposure integration suites use only `FLOWPLANE_TEST_DATABASE_URL` (never generic
+  `DATABASE_URL`). They visibly return early only when that test variable is unset,
+  matching the repository convention; a configured but unavailable database is a failure.
+  Fault-injection suites create/drop uniquely named scratch databases on that same
+  test server, so the configured test role needs `CREATEDB` and ownership of its scratch
+  databases. Point it only at a disposable test server. CI's PostgreSQL service role has
+  those privileges. A qualifying gate must supply this prerequisite and verify that
+  no database-backed cases returned early; capture variable names and role capabilities,
+  not connection strings or secrets, in execution evidence.
 - `.config/nextest.toml` defines the `ci` profile (caps `test-threads` so the shared
   PG can't be connection-exhausted under nextest's global parallelism). Plain
   `cargo test --workspace --all-features` still works and runs doctests inline.

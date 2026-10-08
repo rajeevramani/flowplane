@@ -130,7 +130,8 @@ enum Command {
         #[command(flatten)]
         command: cli::ExposeCommand,
     },
-    /// Remove resources created by `expose`.
+    /// Remove an exposure's route/upstream; retain infrastructure with other routes.
+    /// Final managed listener/config cleanup deletes subsequent policy edits.
     #[command(after_help = "Example:\n  flowplane unexpose payments-api --team payments")]
     Unexpose {
         #[command(flatten)]

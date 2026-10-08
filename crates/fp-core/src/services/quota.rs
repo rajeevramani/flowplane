@@ -60,3 +60,17 @@ pub fn quota_exceeded(resource: Resource, used: i64, limit: i64) -> DomainError 
     )
     .with_hint("delete unused resources or ask a platform admin to raise the quota")
 }
+
+/// Counts under the shortcut team lock; does not change ordinary create semantics.
+pub(crate) async fn check_team_resource_quota_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    team_id: TeamId,
+    resource: Resource,
+) -> DomainResult<()> {
+    let used = fp_storage::repos::exposures::count_resources(tx, team_id, resource).await?;
+    let limit = default_limit(resource);
+    if used >= limit {
+        return Err(quota_exceeded(resource, used, limit));
+    }
+    Ok(())
+}

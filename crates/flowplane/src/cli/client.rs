@@ -261,7 +261,7 @@ impl RestClient {
         if method == reqwest::Method::DELETE && self.report_errors {
             crate::cli::confirm::confirm_destructive(
                 &self.global,
-                &format!("delete {}", path.trim_start_matches('/')),
+                &crate::cli::confirm::delete_action(path),
             )?;
         }
         let method_label = method.as_str().to_string();

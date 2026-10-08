@@ -689,6 +689,8 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
     assert_eq!(json_of(response).await["code"], "not_found");
 
     // S7.7d: expose shortcut creates normal gateway resources and unexpose removes them.
+    let expose_socket = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve expose port");
+    let expose_port = expose_socket.local_addr().expect("expose address").port();
     let expose_name = unique("demo");
     let expose_base = format!("/api/v1/teams/{}/expose", team.name);
     let response = app
@@ -700,7 +702,7 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
                 "name": expose_name,
                 "upstream": "http://127.0.0.1:3001",
                 "path": "/",
-                "port": 10001,
+                "port": expose_port,
                 "public_base_url": "https://gateway.example"
             })),
             None,
@@ -709,7 +711,8 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
         .expect("expose");
     assert_eq!(response.status(), StatusCode::CREATED);
     let body = json_of(response).await;
-    assert_eq!(body["port"], 10001);
+    assert_eq!(body["port"], expose_port);
+    assert_eq!(body["mode"], "created");
     assert_eq!(body["curl_url"], "https://gateway.example/");
     assert_eq!(body["endpoint_source"], "listener.public_base_url");
     assert_eq!(body["cluster"]["name"], format!("{expose_name}-upstream"));
@@ -747,6 +750,8 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
         "generated expose resources stay SDS-free"
     );
 
+    let local_socket = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve local port");
+    let local_port = local_socket.local_addr().expect("local address").port();
     let no_endpoint_name = unique("local");
     let response = app
         .clone()
@@ -757,7 +762,7 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
                 "name": no_endpoint_name,
                 "upstream": "http://127.0.0.1:3001",
                 "path": "/local",
-                "port": 10002
+                "port": local_port
             })),
             None,
         ))
@@ -767,6 +772,7 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
     let body = json_of(response).await;
     assert!(body.get("curl_url").is_none(), "curl_url must be omitted");
     assert_eq!(body["endpoint_source"], "unconfigured");
+    assert_eq!(body["mode"], "created");
 
     let response = app
         .clone()
@@ -781,6 +787,13 @@ async fn full_crud_journey_over_http_with_bearer_auth() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_of(response).await;
     assert_eq!(body["cluster_name"], format!("{expose_name}-upstream"));
+    for field in [
+        "cluster_disposition",
+        "route_config_disposition",
+        "listener_disposition",
+    ] {
+        assert_eq!(body[field], "deleted");
+    }
 
     let response = app
         .clone()
