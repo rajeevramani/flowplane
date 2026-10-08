@@ -59,7 +59,7 @@ Confirm infrastructure readiness separately from gateway traffic. This block inc
 )
 ```
 
-The block waits for authenticated `whoami` and a non-null dataplane `last_heartbeat_at`. If it fails, stop and diagnose; do not proceed to exposure. Successful one-shot setup services can be `Exited (0)`; they are not failed long-running services. The three gateway inventories must be empty for a fresh stack. If they are not, stop: you are resuming existing state, not testing an empty installation. For initial diagnosis, inspect `docker compose -f compose.eval.yml logs flowplane-eval init flowplane-agent envoy`; never use Envoy admin as an operator API.
+The block waits for authenticated `whoami` and a non-null dataplane `last_heartbeat_at`. If it fails, stop and diagnose; do not proceed to exposure. Successful one-shot setup services can be `Exited (0)`; they are not failed long-running services. The three gateway inventories must be empty for a fresh stack. If they are not, stop: you are resuming existing state, not testing an empty installation. **Sensitive diagnostic output:** control-plane boot logs include the dev management bearer token (`dev_token`); redact it, dashboard nonce URLs and other credentials before copying, archiving or sharing. For initial diagnosis, inspect `docker compose -f compose.eval.yml logs flowplane-eval init flowplane-agent envoy`; never use Envoy admin as an operator API.
 
 There is no gateway listener yet. This bounded request must **not** return a successful sample response:
 
@@ -293,6 +293,8 @@ To repeat, run the sample exposure and own-backend attachment again, then remove
 - **API-to-MCP:** [Import and publish an OpenAPI spec](../how-to/import-and-publish-openapi-spec.md) explains import, publish, and route bindings. Generated tools/status are not evidence that a backend invocation succeeded; execution needs a valid binding and reachable backend. Complete the traffic journey first, and keep bindings/captures in mind before `unexpose`.
 
 ## Stop versus destructive reset
+
+To exercise retained exposure/policy recovery, do so **before the final removals**: use [evaluation readiness and recovery](../how-to/evaluation-readiness-and-recovery.md) to snapshot resources, stop/resume without deleting volumes, establish a first authenticated post-disruption baseline and require a strictly later same-identity heartbeat, and verify retained configuration and traffic. After `unexpose`, `down` cannot restore removed configuration. Keep a separately launched own backend running if verifying its resumed traffic.
 
 Stop the Python backend with Ctrl-C. Preserve Flowplane state and volumes when stopping the evaluation:
 

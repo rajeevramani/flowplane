@@ -21,24 +21,38 @@ Install local evaluation infrastructure with **no exposed APIs**, then explicitl
 Use a fresh directory, then keep this shell open:
 
 ```sh
-mkdir flowplane-evaluation
-cd flowplane-evaluation
-VER=3.2.0
-curl -fsSLO "https://raw.githubusercontent.com/rajeevramani/flowplane/v${VER}/compose.eval.yml"
-export FLOWPLANE_EVAL_IMAGE="ghcr.io/rajeevramani/flowplane:${VER}-eval"
-docker compose -f compose.eval.yml up -d --no-build
+if mkdir flowplane-evaluation &&
+   cd flowplane-evaluation &&
+   VER=3.2.0 &&
+   curl -fsSLO "https://raw.githubusercontent.com/rajeevramani/flowplane/v${VER}/compose.eval.yml" &&
+   export FLOWPLANE_EVAL_IMAGE="ghcr.io/rajeevramani/flowplane:${VER}-eval" &&
+   docker compose -f compose.eval.yml up -d --no-build; then
 
 fp() {
   docker compose -f compose.eval.yml exec -T flowplane-eval \
     sh -ec 'export FLOWPLANE_SERVER=http://127.0.0.1:8080 FLOWPLANE_ORG=dev-org FLOWPLANE_TEAM=default; FLOWPLANE_TOKEN="$(cat /shared/dev-token)"; export FLOWPLANE_TOKEN; exec flowplane "$@"' sh "$@"
 }
 
-# Infrastructure readiness is separate from traffic readiness.
-fp auth whoami
-fp dataplane get dp-eval
-fp cluster list
-fp route list
-fp listener list
+(
+  set -eu
+  infra_ready=false
+  for attempt in $(seq 1 30); do
+    if fp auth whoami >/dev/null 2>&1 &&
+       fp -o json dataplane get dp-eval | python3 -c 'import json,sys; assert json.load(sys.stdin)["data"]["last_heartbeat_at"] is not None' 2>/dev/null; then
+      infra_ready=true
+      break
+    fi
+    sleep 2
+  done
+  [ "$infra_ready" = true ] || { printf '%s\n' 'Infrastructure readiness failed; inspect Compose/setup/agent logs before exposing' >&2; exit 1; }
+  fp cluster list
+  fp route list
+  fp listener list
+)
+else
+  printf '%s\n' 'Installation failed; use a fresh directory, inspect the failure and do not continue to exposure' >&2
+  false
+fi
 ```
 
 Wait for authenticated readiness and non-null `last_heartbeat_at`. For a fresh stack, all three gateway lists are empty. Port `10000` is published but has no Envoy listener yet; a gateway request must not return the sample body before you expose it. The [tutorial](docs/tutorials/evaluate-no-clone.md#1-install-infrastructure-not-apis) explains readiness and diagnostics.
@@ -46,10 +60,22 @@ Wait for authenticated readiness and non-null `last_heartbeat_at`. For a fresh s
 ### Deploy the first service
 
 ```sh
-fp expose http://demo-upstream:5678 --name demo --path / --port 10000 \
-  --public-base-url http://127.0.0.1:10000
-# After xDS converges, expect: hello from the flowplane eval demo upstream
-curl --max-time 5 -fsS http://127.0.0.1:10000/
+(
+  set -eu
+  fp expose http://demo-upstream:5678 --name demo --path / --port 10000 \
+    --public-base-url http://127.0.0.1:10000
+  traffic_ready=false
+  for attempt in $(seq 1 30); do
+    sample_body=$(curl --max-time 2 -fsS http://127.0.0.1:10000/ 2>/dev/null) || sample_body=
+    if [ "$sample_body" = 'hello from the flowplane eval demo upstream' ]; then
+      traffic_ready=true
+      break
+    fi
+    sleep 1
+  done
+  [ "$traffic_ready" = true ] || { printf '%s\n' 'Expected sample body did not arrive; diagnose, do not replay expose blindly' >&2; exit 1; }
+  printf '%s\n' "$sample_body"
+)
 ```
 
 Continue the [no-clone tutorial](docs/tutorials/evaluate-no-clone.md) for a bounded expected-body check, a real host backend, and `fp expose ... --listener demo` to share the existing port. The bundle publishes only gateway port `10000` by default. For an additional independent listener, [publish another container port explicitly](docs/how-to/expose-an-api.md#publish-an-additional-evaluation-port); auto-allocation does not change Compose mappings.
@@ -63,11 +89,10 @@ Continue the [no-clone tutorial](docs/tutorials/evaluate-no-clone.md) for a boun
 
 ### Remove or stop
 
-For the single untouched sample exposure, deliberately confirm removal:
+To retain your exposure, skip `unexpose` and use the [preserve/resume/recovery guide](docs/how-to/evaluation-readiness-and-recovery.md); `down` retains volumes but `unexpose` removes configuration. For the single untouched sample exposure, deliberately confirm removal:
 
 ```sh
 fp --yes unexpose demo
-# Stop infrastructure while preserving state/volumes.
 docker compose -f compose.eval.yml down
 ```
 
