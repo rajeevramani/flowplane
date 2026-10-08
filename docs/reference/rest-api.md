@@ -543,6 +543,10 @@ Obtain the document:
 - `GET /api-docs/openapi.json` — served by a running control plane.
 - `flowplane openapi` — prints the exact document this binary serves.
 
+## Further reading
+
+Optional contributor background; the served document and CLI above are sufficient for users.
+
 The checked-in current secured-REST snapshot is [`spec/01-api-contract.v2-openapi.json`](../../spec/01-api-contract.v2-openapi.json). It is derivative, not an independent authority: regenerate with `flowplane openapi > spec/01-api-contract.v2-openapi.json` in the same commit as every API/schema or workspace version change. The executable gate compares JSON values against `openapi_document()` and separately asserts exposure wire semantics. Keep the historical v1 snapshot unchanged.
 
 ## Source of truth

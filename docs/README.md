@@ -53,6 +53,10 @@ Every page starts with one metadata line:
 are `Audience: operators` / `platform-engineers` / `api-teams` / `newcomers` and
 `Status: stable` / `draft`; use other clear values when they describe the page better.
 
+## First exposure
+
+Start with the [empty-install evaluation tutorial](tutorials/evaluate-no-clone.md), then use [Expose an API](how-to/expose-an-api.md) for shared listeners, published ports, conflicts and safe removal. Both pages target the draft 3.2.0 journey and label the platform paths actually exercised.
+
 ## Source-of-truth policy
 
 - **Implementation truth** → code + tests.

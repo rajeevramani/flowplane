@@ -391,7 +391,7 @@ Dataplane certificate management.
 | `dataplane cert revoke <SERIAL>` | `--team <TEAM>`, positional `serial`, `--reason <TEXT>` (required) |
 
 ### `expose`
-Expose an upstream through Envoy with cluster + route + listener resources. Flattened args (no subcommands):
+Expose an upstream through Envoy with cluster + route + listener resources. For the task-oriented sample/own-backend, published-port, and safe-removal journey, see [Expose an API](../how-to/expose-an-api.md) and the [no-clone tutorial](../tutorials/evaluate-no-clone.md). Flattened args (no subcommands):
 
 ```text
 # Create a new listener:

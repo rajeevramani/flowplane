@@ -58,16 +58,20 @@ flowplane learn start orders-learn-2026-06 \
   --target-sample-count 1000
 ```
 
-Route-config-scoped learning uses the route target instead:
+Route-config-scoped learning uses the route target instead. Read the real config and listener first; substitute their IDs, virtual-host name, and **exact route name** below. A shortcut created with `expose --name orders` creates route `orders`, not a universal `all` route:
 
 ```bash
+flowplane route get orders-routes --team my-team
+flowplane listener get orders --team my-team
 flowplane learn start orders-route-learn-2026-06 \
   --team my-team \
-  --route-config-id 019f0000-0000-7000-8000-000000000001 \
-  --listener-id 019f0000-0000-7000-8000-000000000002 \
+  --route-config-id '<route-config-id-from-get>' \
+  --listener-id '<listener-id-from-get>' \
   --virtual-host default \
-  --route all
+  --route orders
 ```
+
+Bindings and captures can block shared attachment/removal. Stop active capture through its supported lifecycle, and inspect remaining references before `unexpose`; stopped capture history can still prevent final listener/config deletion. Do not assume stopping a session removes historical foreign-key references.
 
 ## 2. Drive traffic and let it capture
 
