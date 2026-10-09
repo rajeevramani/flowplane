@@ -617,6 +617,7 @@ mod expose_shortcut {
                         path: "/".into(),
                         port: None,
                         public_base_url: None,
+                        listener: None,
                     },
                     RequestId::generate(),
                     Default::default(),

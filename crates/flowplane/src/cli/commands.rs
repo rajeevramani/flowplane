@@ -1245,11 +1245,15 @@ pub struct ExposeCommand {
     /// Public gateway base URL clients can use to reach the listener.
     #[arg(long)]
     pub public_base_url: Option<String>,
+    /// Attach to an existing HTTP listener/config; route is reachable through every listener using that config.
+    #[arg(long, conflicts_with_all = ["port", "public_base_url"])]
+    pub listener: Option<String>,
 }
 
 #[derive(Debug, Args)]
 pub struct UnexposeCommand {
-    /// Name of the exposed route to remove.
+    /// Exposure name (not a legacy/manual listener name); removes its route/upstream.
+    /// Final managed-scaffold cleanup also deletes subsequent listener/config policy edits.
     pub name: String,
     /// Team scope; defaults to the active context's team.
     #[arg(long)]

@@ -52,6 +52,16 @@ If-Match: <revision>
 
 The revision is returned as the `revision` field on each resource view (and increments on update). A missing or unparseable `If-Match` yields a validation error (`validation_failed` → `400`); a stale revision yields a conflict (`revision_mismatch` → `409`). Read the resource, then echo its `revision`.
 
+A listener create/update that conflicts with an occupied same-team port returns `409`
+with `code: conflict` and optional `details.conflict_kind: listener_port`. This
+machine-readable detail identifies only port collisions, not arbitrary name conflicts;
+clients must tolerate absent details. The expose shortcut uses it to retry an
+**auto-selected** port only, after rolling back the entire attempt. Explicit ports
+are never silently changed. Shortcut PostgreSQL deadlock/serialization conflicts
+(`40P01`/`40001`) return `409` with reread/retry guidance and no automatic replay.
+Other internal database errors keep the redacted `500` envelope; the internal
+SQLSTATE marker used by reusable helpers is not returned in that envelope.
+
 ### Pagination envelope
 
 Most paged collection endpoints (clusters, listeners, route-configs, api-definitions, learning/discovery sessions, dataplanes, secrets, ai providers/routes/budgets, etc.) accept two `ListQuery` query parameters:
@@ -428,6 +438,14 @@ The spec-content endpoint supports conditional reads: it returns `ETag`, accepts
 | POST   | `/api/v1/teams/{team}/expose` |
 | DELETE | `/api/v1/teams/{team}/expose/{name}` |
 
+Independent creation returns 201 with `mode: created`; ordinary user-owned cluster/config/listener rows, shortcut provenance, successful audit and outbox events commit together. Supply optional `listener` to attach to an existing same-team user-owned HTTP listener instead: the response is 201 with `mode: attached`, only the upstream cluster is created, and the selected listener's actual route configuration is updated atomically. Attachment requires Clusters/Create, Listeners/Read and RouteConfigs/Read+Update, not listener/configuration Create grants; only cluster quota applies. `listener` cannot be combined with `port` or `public_base_url`. The existing listener, including its policies, revision and configured public endpoint, is preserved; an absent endpoint stays unconfigured. **Every listener sharing that route configuration receives the route change.**
+
+The shared-listener shortcut requires one wildcard virtual host and existing Prefix/Exact routes without header/query matchers. It inserts a Prefix route before the first wider Prefix, or appends when none exists, without reordering existing routes. Earlier Exact exceptions remain earlier; Prefix matching is literal (`/api` also matches `/apix`). Duplicate route names or equal match paths conflict. Unsupported shapes must use ordinary revision-checked route authoring, rather than adding virtual-host/route selectors to this shortcut.
+
+Attachment inherits final-cleanup provenance only from an existing exposure on the exact scoped listener/configuration identity pair. Borrowed manual/legacy infrastructure is not adopted or backfilled. A second manual listener sharing a managed configuration is a different identity pair: attaching through it remains borrowed and does not inherit the original listener's cleanup rights. After removing the original exposure, borrowed last-route protection and genuine-replacement-route remediation still apply; retained scaffolding must be inspected and removed through ordinary revision-checked commands, not inferred ownership. Removal works in either order; the last managed exposure needs the applicable Delete grants. A borrowed configuration's final route cannot be removed by the shortcut: add a genuine replacement route through ordinary authoring before retrying. Removal returns 200 with the resource names and `cluster_disposition`, `route_config_disposition`, `listener_disposition` (`deleted` or `retained`). It removes the associated route/upstream, retaining listener/configuration when other routes remain. Final managed-scaffold cleanup deletes subsequent listener/configuration policy edits too and requires the corresponding Delete grants.
+
+Matching legacy/manual names never establish deletion ownership: an absent association returns 404 with ordinary inspection/cleanup guidance. Stale ownership, surviving upstream references, covering API bindings, active captures or unsafe final cleanup return 409 with no partial mutation. Historical direct-capture FKs can block final resource deletion even after stop/cancel; they do not block route-only removal when other genuine routes remain. Ordinary delete of an associated cluster/config/listener returns 409 naming the exposure. Restore a stale route's exact name/direct upstream and listener/config binding through revision-checked ordinary updates before retrying removal.
+
 ### Route generation plans
 
 | Method | Path |
@@ -524,6 +542,12 @@ Obtain the document:
 
 - `GET /api-docs/openapi.json` — served by a running control plane.
 - `flowplane openapi` — prints the exact document this binary serves.
+
+## Further reading
+
+Optional contributor background; the served document and CLI above are sufficient for users.
+
+The checked-in current secured-REST snapshot is [`spec/01-api-contract.v2-openapi.json`](../../spec/01-api-contract.v2-openapi.json). It is derivative, not an independent authority: regenerate with `flowplane openapi > spec/01-api-contract.v2-openapi.json` in the same commit as every API/schema or workspace version change. The executable gate compares JSON values against `openapi_document()` and separately asserts exposure wire semantics. Keep the historical v1 snapshot unchanged.
 
 ## Source of truth
 

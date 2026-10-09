@@ -254,19 +254,17 @@ missing cluster. See the [`global_rate_limit` reference](../reference/filters.md
 
 ## 6. Verify
 
-First confirm Envoy has the filter and the **composed** domain. The emitted domain is the
-tenant-namespaced form `{namespaceUUID(org)}|{namespaceUUID(team)}|checkout`, not the raw
-`checkout`. The two leading segments are **SHA-256-derived** UUIDs — a stable, opaque namespace
-of your org and team ids, **not** the raw org/team UUIDs — so match them by shape, not by your
-own ids:
+Inspect the authored listener through the supported control-plane API/CLI, replacing the listener name and team with yours:
 
 ```bash
-curl -fsS http://127.0.0.1:9901/config_dump | grep -oE '[0-9a-f-]{36}\|[0-9a-f-]{36}\|checkout'
-# 16d8d7aa-7842-8166-88ac-c72392a9d771|04c9f1e3-3f4f-8e5d-8f75-5c5bb671fd58|checkout
+flowplane listener get '<listener-name>' --team default
 ```
 
-(`9901` is the Envoy admin port from your bootstrap.) Then send traffic through the gateway listener. Replace `10000` with your listener port; the getting-started tutorial uses `10001`. The
-first 100 requests in the minute pass; the 101st is rate-limited:
+Check that `http_filters` contains the `global_rate_limit` entry above. This read confirms stored configuration, **not** that Envoy has applied it; the traffic check below verifies enforcement. Operator diagnostics must not require direct access to Envoy admin or its config dump. Keep admin loopback-local to the dataplane agent.
+
+The emitted domain is tenant-namespaced as `{namespaceUUID(org)}|{namespaceUUID(team)}|checkout`, rather than the raw `checkout`. The leading SHA-256-derived UUIDs are opaque namespaces, not raw org/team IDs; callers configure the plain domain and do not construct those prefixes.
+
+Send traffic through an explicitly configured gateway listener. Replace `10000` with its published port; the getting-started tutorial uses `10001`, and the [evaluation tutorial](../tutorials/evaluate-no-clone.md) requires an explicit exposure before traffic can succeed. Keep other callers idle and finish this test within one policy window: the first 100 requests should pass and the 101st should be rate-limited:
 
 ```bash
 for i in $(seq 1 101); do

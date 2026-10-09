@@ -152,7 +152,7 @@ Expected table fields include:
 | `route_config_name` | `local-routes` |
 | `listener_name` | `local` |
 
-Cleanup after testing:
+Cleanup after testing removes the exposure route/upstream. It retains infrastructure if other routes remain; otherwise final managed cleanup deletes its listener/configuration and later policy edits. Legacy/manual matching names are not shortcut-deleted. See [the CLI cleanup contract](../docs/reference/cli.md#unexpose).
 
 ```bash
 ./target/debug/flowplane unexpose local

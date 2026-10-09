@@ -130,7 +130,8 @@ enum Command {
         #[command(flatten)]
         command: cli::ExposeCommand,
     },
-    /// Remove resources created by `expose`.
+    /// Remove an exposure's route/upstream; retain infrastructure with other routes.
+    /// Final managed listener/config cleanup deletes subsequent policy edits.
     #[command(after_help = "Example:\n  flowplane unexpose payments-api --team payments")]
     Unexpose {
         #[command(flatten)]
@@ -669,6 +670,69 @@ mod tests {
         .expect("expose shortcut form should parse");
         Cli::try_parse_from(["flowplane", "unexpose", "demo"])
             .expect("unexpose shortcut form should parse");
+    }
+
+    #[test]
+    fn shared_expose_listener_parses_without_new_listener_options(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let parsed = Cli::try_parse_from([
+            "flowplane",
+            "expose",
+            "http://backend:8080",
+            "--name",
+            "service",
+            "--path",
+            "/service",
+            "--listener",
+            "gateway",
+        ])?;
+        let Command::Expose { command: args } = parsed.command else {
+            return Err("expected expose command".into());
+        };
+        assert_eq!(args.listener.as_deref(), Some("gateway"));
+        assert_eq!(args.path, "/service");
+        assert_eq!(args.name, "service");
+        assert!(args.port.is_none());
+        assert!(args.public_base_url.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn shared_expose_listener_rejects_explicit_port() -> Result<(), Box<dyn std::error::Error>> {
+        let error = Cli::try_parse_from([
+            "flowplane",
+            "expose",
+            "http://backend:8080",
+            "--name",
+            "service",
+            "--listener",
+            "gateway",
+            "--port",
+            "10000",
+        ])
+        .err()
+        .ok_or("listener and port must conflict")?;
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        Ok(())
+    }
+
+    #[test]
+    fn shared_expose_listener_rejects_public_base_url() -> Result<(), Box<dyn std::error::Error>> {
+        let error = Cli::try_parse_from([
+            "flowplane",
+            "expose",
+            "http://backend:8080",
+            "--name",
+            "service",
+            "--listener",
+            "gateway",
+            "--public-base-url",
+            "https://gateway.example",
+        ])
+        .err()
+        .ok_or("listener and public base URL must conflict")?;
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        Ok(())
     }
 
     #[test]

@@ -219,7 +219,7 @@ u2-add)
 cleanup)
   say "Tear down local bits (leaves AWS infra alone)"
   [ -f "$WORK/upstream.pid" ] && kill "$(cat $WORK/upstream.pid)" 2>/dev/null && echo "   stopped upstream" || true
-  "$FP" unexpose local 2>/dev/null && echo "   unexposed listener" || true
+  "$FP" unexpose local --yes 2>/dev/null && echo "   removed exposure route/upstream (see reported dispositions)" || true
   echo "   (stop Envoy with Ctrl-C in its terminal; AWS teardown: tofu -chdir=deploy/aws destroy)"
   ;;
 

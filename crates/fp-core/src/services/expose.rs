@@ -1,18 +1,20 @@
-//! Expose shortcut: orchestrates the existing cluster, route-config, and listener services.
-//! This is intentionally not a second resource model; the durable state remains the three
-//! gateway resources that xDS already understands.
-
+//! Atomic gateway shortcut. Association is membership/provenance, never xDS config.
 use crate::authz::{check_resource_access, Decision, PrincipalCtx};
 use crate::services::{clusters, gateway, record_authz_denial};
 use fp_domain::authz::{Action, Resource, TeamRef};
 use fp_domain::gateway::cluster::{Cluster, ClusterSpec, Endpoint, UpstreamTlsConfig};
+pub use fp_domain::gateway::exposure::{
+    ExposeEndpointSource, ExposeRequest, ExposedService, UnexposedService,
+};
+use fp_domain::gateway::exposure::{Exposure, ExposureMode, ResourceDisposition};
 use fp_domain::gateway::listener::{Listener, ListenerProtocol, ListenerSpec};
 use fp_domain::gateway::route_config::{
     PathMatch, RouteAction, RouteConfig, RouteConfigSpec, RouteRule, VirtualHost,
 };
-use fp_domain::{DomainError, DomainResult, ErrorCode, RequestId};
+use fp_domain::{DomainError, DomainResult, ExposureId, RequestId};
+use fp_storage::repos::{clusters as cluster_repo, exposures, gateway as gateway_repo};
 use reqwest::Url;
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::BTreeSet;
 
 const DEFAULT_PORT_START: u16 = 10_000;
@@ -36,51 +38,6 @@ async fn authorize(
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ExposeRequest {
-    pub name: String,
-    pub upstream: String,
-    pub path: String,
-    pub port: Option<u16>,
-    pub public_base_url: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ExposedService {
-    pub name: String,
-    pub upstream: String,
-    pub path: String,
-    pub port: u16,
-    pub cluster: Cluster,
-    pub route_config: RouteConfig,
-    pub listener: Listener,
-    pub curl_url: Option<String>,
-    pub endpoint_source: ExposeEndpointSource,
-}
-
-#[derive(Debug, Clone)]
-pub struct UnexposedService {
-    pub name: String,
-    pub cluster_name: String,
-    pub route_config_name: String,
-    pub listener_name: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExposeEndpointSource {
-    ListenerPublicBaseUrl,
-    Unconfigured,
-}
-
-impl ExposeEndpointSource {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::ListenerPublicBaseUrl => "listener.public_base_url",
-            Self::Unconfigured => "unconfigured",
-        }
-    }
-}
-
 pub async fn expose(
     pool: &PgPool,
     ctx: &PrincipalCtx,
@@ -89,24 +46,83 @@ pub async fn expose(
     request_id: RequestId,
     advisory: crate::services::egress_advisory::EgressAdvisoryPolicy,
 ) -> DomainResult<ExposedService> {
-    // Authorize the full shortcut up front (it creates a cluster, route config, and listener) —
-    // an unauthorized caller must get the authz denial, not advisory side effects (DNS lookups /
-    // rejection audit rows).
-    for resource in [
-        Resource::Clusters,
-        Resource::RouteConfigs,
-        Resource::Listeners,
-    ] {
-        authorize(pool, ctx, resource, Action::Create, team, request_id).await?;
+    expose_impl(pool, ctx, team, request, request_id, advisory)
+        .await
+        .map_err(exposures::shortcut_error)
+}
+
+async fn expose_impl(
+    pool: &PgPool,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    request: ExposeRequest,
+    request_id: RequestId,
+    advisory: crate::services::egress_advisory::EgressAdvisoryPolicy,
+) -> DomainResult<ExposedService> {
+    // Full authorization precedes advisory DNS and every product write.
+    if request.listener.is_some() {
+        for (resource, action) in [
+            (Resource::Clusters, Action::Create),
+            (Resource::Listeners, Action::Read),
+            (Resource::RouteConfigs, Action::Read),
+            (Resource::RouteConfigs, Action::Update),
+        ] {
+            authorize(pool, ctx, resource, action, team, request_id).await?;
+        }
+    } else {
+        for resource in [
+            Resource::Clusters,
+            Resource::RouteConfigs,
+            Resource::Listeners,
+        ] {
+            authorize(pool, ctx, resource, Action::Create, team, request_id).await?;
+        }
+    }
+    if request.listener.is_none() && request.port.is_none() {
+        authorize(
+            pool,
+            ctx,
+            Resource::Listeners,
+            Action::Read,
+            team,
+            request_id,
+        )
+        .await?;
+    }
+    if let Some(listener) = &request.listener {
+        fp_domain::validate_name(listener)?;
+        if request.port.is_some() || request.public_base_url.is_some() {
+            return Err(DomainError::validation(
+                "listener conflicts with port and public_base_url",
+            ));
+        }
     }
     fp_domain::validate_name(&request.name)?;
+    let names = ExposeNames::new(&request.name);
+    fp_domain::gateway::cluster::validate_cluster_name(&names.cluster)?;
+    fp_domain::validate_name(&names.route_config)?;
+    if request.listener.is_none() {
+        gateway::validate_user_listener_name(&names.listener)?;
+    }
     let upstream = parse_upstream(&request.upstream)?;
     let path = normalize_path(&request.path)?;
-    let names = ExposeNames::new(&request.name);
-    let public_base_url = request.public_base_url;
-
-    // Path-specific egress advisory (fpv2-1hp.4): after authz, before any resource is created,
-    // with the expose mutation label; the inner cluster create re-checks as defense-in-depth.
+    let public_base_url = request.public_base_url.clone();
+    // Endpoint rendering is validated before transaction, never after a successful commit.
+    let curl_url = public_base_url
+        .as_deref()
+        .map(|base| expose_curl_url(base, &path))
+        .transpose()?;
+    let endpoint_source = if curl_url.is_some() {
+        ExposeEndpointSource::ListenerPublicBaseUrl
+    } else {
+        ExposeEndpointSource::Unconfigured
+    };
+    listener_spec(
+        &names,
+        request.port.unwrap_or(DEFAULT_PORT_START),
+        &public_base_url,
+    )
+    .validate()?;
     advisory
         .enforce_hosts(
             pool,
@@ -118,7 +134,6 @@ pub async fn expose(
             vec![upstream.host.clone()],
         )
         .await?;
-
     let cluster_spec = ClusterSpec {
         aggregate_clusters: Vec::new(),
         endpoints: vec![Endpoint {
@@ -150,7 +165,7 @@ pub async fn expose(
             name: "default".into(),
             domains: vec!["*".into()],
             routes: vec![RouteRule {
-                name: "all".into(),
+                name: request.name.clone(),
                 matcher: PathMatch::Prefix {
                     prefix: path.clone(),
                 },
@@ -180,31 +195,57 @@ pub async fn expose(
         public_base_url,
     };
 
-    for attempt in 0..DEFAULT_PORT_ATTEMPTS {
+    template.route_config_spec.validate()?;
+    clusters::prepare_cluster_create(
+        pool,
+        ctx,
+        team,
+        &template.names.cluster,
+        &template.cluster_spec,
+        request_id,
+        &advisory,
+    )
+    .await?;
+    if request.listener.is_some() {
+        return attach_resources(pool, ctx, team, &request, &template, &path, request_id).await;
+    }
+    let mut attempted = BTreeSet::new();
+    for _ in 0..DEFAULT_PORT_ATTEMPTS {
+        let mut tx = pool
+            .begin()
+            .await
+            .map_err(|e| exposures::db_error("expose begin", e))?;
+        exposures::lock_team(&mut tx, team.id).await?;
         let port = match request.port {
             Some(port) => port,
-            None => allocate_port(pool, ctx, team, request_id).await?,
+            None => {
+                let used = exposures::listener_ports(&mut tx, team.id).await?;
+                (DEFAULT_PORT_START..=DEFAULT_PORT_END)
+                    .find(|p| !attempted.contains(p) && !used.contains(&i32::from(*p)))
+                    .ok_or_else(no_ports_available)?
+            }
         };
-        match create_resources_for_port(pool, ctx, team, &template, port, request_id, &advisory)
-            .await
-        {
+        let result = create_resources_for_port(
+            &mut tx,
+            ctx,
+            team,
+            &template,
+            &request.name,
+            port,
+            request_id,
+        )
+        .await;
+        match result {
             Ok((cluster, route_config, listener)) => {
-                let curl_url = listener
-                    .spec
-                    .public_base_url
-                    .as_deref()
-                    .map(|base_url| expose_curl_url(base_url, &path))
-                    .transpose()?;
-                let endpoint_source = if curl_url.is_some() {
-                    ExposeEndpointSource::ListenerPublicBaseUrl
-                } else {
-                    ExposeEndpointSource::Unconfigured
-                };
+                tx.commit()
+                    .await
+                    .map_err(|e| exposures::db_error("expose commit", e))?;
                 return Ok(ExposedService {
                     name: request.name,
                     upstream: request.upstream,
-                    path: path.clone(),
+                    path,
                     port,
+                    mode: ExposureMode::Created,
                     cluster,
                     route_config,
                     listener,
@@ -212,108 +253,284 @@ pub async fn expose(
                     endpoint_source,
                 });
             }
-            Err(err) if request.port.is_none() && is_listener_port_conflict(&err) => {
-                tracing::debug!(
-                    attempt = attempt + 1,
-                    port,
-                    "auto-selected expose listener port raced with another writer; retrying"
-                );
-                continue;
+            Err(error) => {
+                // Only a machine-identified auto-port race is replayed, after explicit rollback.
+                tx.rollback()
+                    .await
+                    .map_err(|e| exposures::db_error("expose rollback", e))?;
+                if request.port.is_none() && is_listener_port_conflict(&error) {
+                    attempted.insert(port);
+                    continue;
+                }
+                return Err(error);
             }
-            Err(err) => return Err(err),
         }
     }
-
     Err(no_ports_available())
 }
 
-async fn create_resources_for_port(
+/// Restrict attachment to shape whose first-match semantics can be explained exactly.
+fn shared_route_config(
+    spec: &RouteConfigSpec,
+    route: RouteRule,
+) -> DomainResult<(RouteConfigSpec, String)> {
+    if spec.virtual_hosts.len() != 1
+        || spec.virtual_hosts[0].domains.len() != 1
+        || spec.virtual_hosts[0].domains[0] != "*"
+    {
+        return Err(DomainError::validation(
+            "shared exposure needs exactly one wildcard virtual host",
+        )
+        .with_hint("use ordinary gateway authoring for custom domains or multiple virtual hosts"));
+    }
+    let new_prefix = match &route.matcher {
+        PathMatch::Prefix { prefix } => prefix,
+        _ => return Err(DomainError::internal("shortcut route must use Prefix")),
+    };
+    let existing = &spec.virtual_hosts[0].routes;
+    for entry in existing {
+        if !entry.headers.is_empty()
+            || !entry.query_parameters.is_empty()
+            || !matches!(
+                entry.matcher,
+                PathMatch::Prefix { .. } | PathMatch::Exact { .. }
+            )
+        {
+            return Err(DomainError::conflict(
+                "shared route overlap cannot be established for this matcher",
+            )
+            .with_hint("use ordinary gateway authoring for regex/template/header/query routes"));
+        }
+        let equal_path = match &entry.matcher {
+            PathMatch::Prefix { prefix } => prefix == new_prefix,
+            PathMatch::Exact { path } => path == new_prefix,
+            _ => false,
+        };
+        if entry.name == route.name || equal_path {
+            return Err(DomainError::conflict(
+                "shared exposure route name or path already exists",
+            ));
+        }
+    }
+    let index = existing
+        .iter()
+        .position(|entry| match &entry.matcher {
+            PathMatch::Prefix { prefix } => new_prefix.starts_with(prefix.as_str()),
+            _ => false,
+        })
+        .unwrap_or(existing.len());
+    let mut result = spec.clone();
+    result.virtual_hosts[0].routes.insert(index, route);
+    result.validate()?;
+    let vhost_name = result.virtual_hosts[0].name.clone();
+    Ok((result, vhost_name))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn attach_resources(
     pool: &PgPool,
     ctx: &PrincipalCtx,
     team: TeamRef,
+    request: &ExposeRequest,
     template: &ExposeTemplate,
-    port: u16,
+    path: &str,
     request_id: RequestId,
-    advisory: &crate::services::egress_advisory::EgressAdvisoryPolicy,
-) -> DomainResult<(Cluster, RouteConfig, Listener)> {
-    let listener_spec = ListenerSpec {
-        address: "0.0.0.0".into(),
-        port,
-        public_base_url: template.public_base_url.clone(),
-        protocol: ListenerProtocol::Http,
-        route_config: Some(template.names.route_config.clone()),
-        http_filters: Vec::new(),
-        access_logs: Vec::new(),
-        tls_context: None,
+) -> DomainResult<ExposedService> {
+    let listener_name = request
+        .listener
+        .as_deref()
+        .ok_or_else(|| DomainError::internal("shared exposure requires listener selection"))?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| exposures::db_error("attach begin", e))?;
+    exposures::lock_team(&mut tx, team.id).await?;
+    // Same authoritative lock order as removal: listener then its actual config.
+    let listener = gateway_repo::get_listener_named_for_update(&mut tx, team.id, listener_name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("listener", listener_name))?;
+    if listener.spec.protocol != ListenerProtocol::Http {
+        return Err(DomainError::validation(
+            "shared exposure requires an HTTP listener",
+        ));
+    }
+    let config_name = listener
+        .spec
+        .route_config
+        .as_deref()
+        .ok_or_else(|| DomainError::validation("shared listener has no route config"))?;
+    let config = gateway_repo::get_route_config_named_for_update(&mut tx, team.id, config_name)
+        .await?
+        .ok_or_else(|| DomainError::not_found("route-config", config_name))?;
+    let (new_spec, virtual_host) = shared_route_config(
+        &config.spec,
+        template.route_config_spec.virtual_hosts[0].routes[0].clone(),
+    )?;
+    let dependents = exposures::route_dependents(
+        &mut tx,
+        team.id,
+        config.id,
+        &virtual_host,
+        Some(&request.name),
+    )
+    .await?;
+    if !dependents.is_empty() {
+        return Err(protected_exposure(&request.name, &dependents,
+            "existing live binding or active capture would cover the new route; use supported API/capture remediation before attaching"));
+    }
+    // Render from the selected listener, never from an invented local address.
+    let curl_url = listener
+        .spec
+        .public_base_url
+        .as_deref()
+        .map(|base| expose_curl_url(base, path))
+        .transpose()?;
+    let endpoint_source = if curl_url.is_some() {
+        ExposeEndpointSource::ListenerPublicBaseUrl
+    } else {
+        ExposeEndpointSource::Unconfigured
     };
-
-    let cluster = clusters::create_cluster(
-        pool,
+    let (cleanup_listener, cleanup_route_config) =
+        exposures::cleanup_for_pair(&mut tx, team.id, listener.id, config.id).await?;
+    crate::services::quota::check_team_resource_quota_in_tx(&mut tx, team.id, Resource::Clusters)
+        .await?;
+    let cluster = clusters::create_cluster_in_tx(
+        &mut tx,
         ctx,
         team,
         &template.names.cluster,
         template.cluster_spec.clone(),
         request_id,
-        advisory.clone(),
     )
     .await?;
-    let route_config = match gateway::create_route_config(
-        pool,
+    let route_config = gateway::update_route_config_in_tx(
+        &mut tx,
+        ctx,
+        team,
+        &config.name,
+        new_spec,
+        config.version,
+        request_id,
+    )
+    .await?;
+    let now = chrono::Utc::now();
+    exposures::create(
+        &mut tx,
+        team,
+        &Exposure {
+            id: ExposureId::generate(),
+            team_id: team.id,
+            org_id: team.org_id,
+            name: request.name.clone(),
+            cluster_id: cluster.id,
+            route_config_id: config.id,
+            listener_id: listener.id,
+            virtual_host,
+            route_name: request.name.clone(),
+            cleanup_listener,
+            cleanup_route_config,
+            version: 1,
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| exposures::db_error("attach commit", e))?;
+    Ok(ExposedService {
+        name: request.name.clone(),
+        upstream: request.upstream.clone(),
+        path: path.into(),
+        port: listener.spec.port,
+        mode: ExposureMode::Attached,
+        cluster,
+        route_config,
+        listener,
+        curl_url,
+        endpoint_source,
+    })
+}
+
+fn listener_spec(names: &ExposeNames, port: u16, public_base_url: &Option<String>) -> ListenerSpec {
+    ListenerSpec {
+        address: "0.0.0.0".into(),
+        port,
+        public_base_url: public_base_url.clone(),
+        protocol: ListenerProtocol::Http,
+        route_config: Some(names.route_config.clone()),
+        http_filters: Vec::new(),
+        access_logs: Vec::new(),
+        tls_context: None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_resources_for_port(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    template: &ExposeTemplate,
+    name: &str,
+    port: u16,
+    request_id: RequestId,
+) -> DomainResult<(Cluster, RouteConfig, Listener)> {
+    for resource in [
+        Resource::Clusters,
+        Resource::RouteConfigs,
+        Resource::Listeners,
+    ] {
+        crate::services::quota::check_team_resource_quota_in_tx(tx, team.id, resource).await?;
+    }
+    let cluster = clusters::create_cluster_in_tx(
+        tx,
+        ctx,
+        team,
+        &template.names.cluster,
+        template.cluster_spec.clone(),
+        request_id,
+    )
+    .await?;
+    let route_config = gateway::create_route_config_in_tx(
+        tx,
         ctx,
         team,
         &template.names.route_config,
         template.route_config_spec.clone(),
         request_id,
     )
-    .await
-    {
-        Ok(route_config) => route_config,
-        Err(err) => {
-            if let Err(cleanup_err) = cleanup_cluster(pool, ctx, team, &cluster, request_id).await {
-                tracing::error!(
-                    cluster = %cluster.name,
-                    error = %cleanup_err,
-                    "failed to clean up cluster after expose route-config create failed"
-                );
-            }
-            return Err(err);
-        }
-    };
-    let listener = match gateway::create_listener(
-        pool,
+    .await?;
+    let listener = gateway::create_listener_in_tx(
+        tx,
         ctx,
         team,
         &template.names.listener,
-        listener_spec,
+        listener_spec(&template.names, port, &template.public_base_url),
         request_id,
-        // Exposed listeners carry no http_filters (listener_spec above), so the
-        // global_rate_limit reference check is a no-op regardless of RLS configuration.
-        false,
     )
-    .await
-    {
-        Ok(listener) => listener,
-        Err(err) => {
-            if let Err(cleanup_err) =
-                cleanup_route_config(pool, ctx, team, &route_config, request_id).await
-            {
-                tracing::error!(
-                    route_config = %route_config.name,
-                    error = %cleanup_err,
-                    "failed to clean up route config after expose listener create failed"
-                );
-            }
-            if let Err(cleanup_err) = cleanup_cluster(pool, ctx, team, &cluster, request_id).await {
-                tracing::error!(
-                    cluster = %cluster.name,
-                    error = %cleanup_err,
-                    "failed to clean up cluster after expose listener create failed"
-                );
-            }
-            return Err(err);
-        }
-    };
-
+    .await?;
+    let now = chrono::Utc::now();
+    exposures::create(
+        tx,
+        team,
+        &Exposure {
+            id: ExposureId::generate(),
+            team_id: team.id,
+            org_id: team.org_id,
+            name: name.into(),
+            cluster_id: cluster.id,
+            route_config_id: route_config.id,
+            listener_id: listener.id,
+            virtual_host: "default".into(),
+            route_name: name.into(),
+            cleanup_listener: true,
+            cleanup_route_config: true,
+            version: 1,
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await?;
     Ok((cluster, route_config, listener))
 }
 
@@ -324,101 +541,260 @@ pub async fn unexpose(
     name: &str,
     request_id: RequestId,
 ) -> DomainResult<UnexposedService> {
-    fp_domain::validate_name(name)?;
-    let names = ExposeNames::new(name);
-
-    let listener = gateway::get_listener(pool, ctx, team, &names.listener, request_id).await?;
-    gateway::delete_listener(
-        pool,
-        ctx,
-        team,
-        &names.listener,
-        listener.version,
-        request_id,
-    )
-    .await?;
-
-    let route_config =
-        gateway::get_route_config(pool, ctx, team, &names.route_config, request_id).await?;
-    gateway::delete_route_config(
-        pool,
-        ctx,
-        team,
-        &names.route_config,
-        route_config.version,
-        request_id,
-    )
-    .await?;
-
-    let cluster = clusters::get_cluster(pool, ctx, team, &names.cluster, request_id).await?;
-    clusters::delete_cluster(pool, ctx, team, &names.cluster, cluster.version, request_id).await?;
-
-    Ok(UnexposedService {
-        name: name.into(),
-        cluster_name: names.cluster,
-        route_config_name: names.route_config,
-        listener_name: names.listener,
-    })
+    unexpose_impl(pool, ctx, team, name, request_id)
+        .await
+        .map_err(exposures::shortcut_error)
 }
 
-async fn allocate_port(
+async fn unexpose_impl(
     pool: &PgPool,
     ctx: &PrincipalCtx,
     team: TeamRef,
+    name: &str,
     request_id: RequestId,
-) -> DomainResult<u16> {
-    let (listeners, _) = gateway::list_listeners(pool, ctx, team, 500, 0, request_id).await?;
-    let used = listeners
-        .into_iter()
-        .map(|listener| listener.spec.port)
-        .collect::<BTreeSet<_>>();
-    (DEFAULT_PORT_START..=DEFAULT_PORT_END)
-        .find(|port| !used.contains(port))
-        .ok_or_else(no_ports_available)
+) -> DomainResult<UnexposedService> {
+    for resource in [
+        Resource::Listeners,
+        Resource::RouteConfigs,
+        Resource::Clusters,
+    ] {
+        authorize(pool, ctx, resource, Action::Read, team, request_id).await?;
+    }
+    fp_domain::validate_name(name)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| exposures::db_error("unexpose begin", e))?;
+    let exposure=exposures::get_for_update(&mut tx,team.id,name).await?.ok_or_else(|| DomainError::not_found("exposure",name).with_hint("no shortcut association exists; inspect legacy/manual listener, route-config and cluster with ordinary commands; names alone never permit cleanup, and existing dependencies may block ordinary deletion"))?;
+    // Authoritative resource lock order: listener -> route config -> cluster.
+    let listener = gateway_repo::get_listener_for_update(&mut tx, team.id, exposure.listener_id)
+        .await?
+        .ok_or_else(|| stale_exposure(&exposure, None, None, None))?;
+    let route_config =
+        gateway_repo::get_route_config_for_update(&mut tx, team.id, exposure.route_config_id)
+            .await?
+            .ok_or_else(|| stale_exposure(&exposure, Some(&listener), None, None))?;
+    let cluster = cluster_repo::get_for_update(&mut tx, team.id, exposure.cluster_id)
+        .await?
+        .ok_or_else(|| stale_exposure(&exposure, Some(&listener), Some(&route_config), None))?;
+    if listener.spec.route_config.as_deref() != Some(route_config.name.as_str()) {
+        return Err(stale_exposure(
+            &exposure,
+            Some(&listener),
+            Some(&route_config),
+            Some(&cluster),
+        ));
+    }
+    let mut remaining = route_config.spec.clone();
+    let vhost_index = remaining
+        .virtual_hosts
+        .iter()
+        .position(|v| v.name == exposure.virtual_host)
+        .ok_or_else(|| {
+            stale_exposure(
+                &exposure,
+                Some(&listener),
+                Some(&route_config),
+                Some(&cluster),
+            )
+        })?;
+    let route_index = remaining.virtual_hosts[vhost_index]
+        .routes
+        .iter()
+        .position(|r| r.name == exposure.route_name)
+        .ok_or_else(|| {
+            stale_exposure(
+                &exposure,
+                Some(&listener),
+                Some(&route_config),
+                Some(&cluster),
+            )
+        })?;
+    let route = &remaining.virtual_hosts[vhost_index].routes[route_index];
+    if route.action.cluster.as_deref() != Some(cluster.name.as_str())
+        || route.action.weighted_clusters.is_some()
+        || route.action.redirect.is_some()
+        || route.action.direct_response.is_some()
+    {
+        return Err(stale_exposure(
+            &exposure,
+            Some(&listener),
+            Some(&route_config),
+            Some(&cluster),
+        ));
+    }
+    let dependents = exposures::route_dependents(
+        &mut tx,
+        team.id,
+        route_config.id,
+        &exposure.virtual_host,
+        Some(&exposure.route_name),
+    )
+    .await?;
+    if !dependents.is_empty() {
+        return Err(protected_exposure(name,&dependents,"stop active direct captures; delete associated API definitions through supported revision-checked commands when appropriate; stop/cancel does not erase historical scaffold FKs"));
+    }
+    remaining.virtual_hosts[vhost_index]
+        .routes
+        .remove(route_index);
+    let other_routes = remaining.virtual_hosts.iter().any(|v| !v.routes.is_empty());
+    if other_routes && remaining.virtual_hosts[vhost_index].routes.is_empty() {
+        let vhost = &remaining.virtual_hosts[vhost_index];
+        let dependents = exposures::route_dependents(
+            &mut tx,
+            team.id,
+            route_config.id,
+            &exposure.virtual_host,
+            None,
+        )
+        .await?;
+        if !vhost.rate_limits.is_empty()
+            || !vhost.filter_overrides.is_empty()
+            || !dependents.is_empty()
+        {
+            return Err(protected_exposure(name,&dependents,"empty virtual host still has policy or live dependencies; restore/add a genuine route through ordinary route-config update"));
+        }
+        remaining.virtual_hosts.remove(vhost_index);
+    }
+    if !other_routes {
+        let dependents = exposures::scaffold_dependents(&mut tx, team.id, &exposure).await?;
+        if !exposure.cleanup_listener || !exposure.cleanup_route_config || !dependents.is_empty() {
+            return Err(protected_exposure(name,&dependents,"last-route infrastructure cannot be shortcut-deleted; inspect and add a genuine unrelated route before retrying route-only removal; stopping a capture does not erase historical FKs"));
+        }
+    } else {
+        remaining.validate()?;
+    }
+    // Branch-specific complete grants are decided under locks, before any product write.
+    authorize(
+        pool,
+        ctx,
+        Resource::Clusters,
+        Action::Delete,
+        team,
+        request_id,
+    )
+    .await?;
+    if other_routes {
+        authorize(
+            pool,
+            ctx,
+            Resource::RouteConfigs,
+            Action::Update,
+            team,
+            request_id,
+        )
+        .await?;
+    } else {
+        authorize(
+            pool,
+            ctx,
+            Resource::Listeners,
+            Action::Delete,
+            team,
+            request_id,
+        )
+        .await?;
+        authorize(
+            pool,
+            ctx,
+            Resource::RouteConfigs,
+            Action::Delete,
+            team,
+            request_id,
+        )
+        .await?;
+    }
+    exposures::delete(&mut tx, team.id, &exposure).await?;
+    let disposition = if other_routes {
+        gateway::update_route_config_in_tx(
+            &mut tx,
+            ctx,
+            team,
+            &route_config.name,
+            remaining,
+            route_config.version,
+            request_id,
+        )
+        .await?;
+        ResourceDisposition::Retained
+    } else {
+        gateway::delete_listener_in_tx(
+            &mut tx,
+            ctx,
+            team,
+            &listener.name,
+            listener.version,
+            request_id,
+        )
+        .await?;
+        gateway::delete_route_config_in_tx(
+            &mut tx,
+            ctx,
+            team,
+            &route_config.name,
+            route_config.version,
+            request_id,
+        )
+        .await?;
+        ResourceDisposition::Deleted
+    };
+    let dependents =
+        exposures::surviving_cluster_dependents(&mut tx, team.id, &cluster.name).await?;
+    if !dependents.is_empty() {
+        return Err(protected_exposure(name,&dependents,"remove surviving upstream references through ordinary gateway authoring, then retry; the whole shortcut transaction rolls back"));
+    }
+    clusters::delete_cluster_in_tx(
+        &mut tx,
+        ctx,
+        team,
+        &cluster.name,
+        cluster.version,
+        request_id,
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| exposures::db_error("unexpose commit", e))?;
+    Ok(UnexposedService {
+        name: name.into(),
+        cluster_name: cluster.name,
+        route_config_name: route_config.name,
+        listener_name: listener.name,
+        cluster_disposition: ResourceDisposition::Deleted,
+        route_config_disposition: disposition,
+        listener_disposition: disposition,
+    })
 }
 
+fn protected_exposure(name: &str, dependents: &[String], hint: &str) -> DomainError {
+    DomainError::conflict(format!(
+        "exposure {name} has protected state or dependents: {}",
+        dependents.join(", ")
+    ))
+    .with_hint(hint)
+}
+fn stale_exposure(
+    e: &Exposure,
+    listener: Option<&Listener>,
+    config: Option<&RouteConfig>,
+    cluster: Option<&Cluster>,
+) -> DomainError {
+    DomainError::conflict(format!("exposure {} has stale ownership; expected listener {} -> config {}, virtual host {}, route {} -> upstream {}",e.name,listener.map(|l|l.name.clone()).unwrap_or_else(||e.listener_id.to_string()),config.map(|r|r.name.clone()).unwrap_or_else(||e.route_config_id.to_string()),e.virtual_host,e.route_name,cluster.map(|c|c.name.clone()).unwrap_or_else(||e.cluster_id.to_string())))
+        .with_hint(format!("inspect with listener get, route-config get and cluster get; restore route '{}' with its exact direct upstream and the listener->config binding using ordinary revision-checked updates, then retry unexpose {}",e.route_name,e.name))
+}
 fn no_ports_available() -> DomainError {
     DomainError::conflict(format!(
         "no listener ports available in {DEFAULT_PORT_START}-{DEFAULT_PORT_END}"
     ))
     .with_hint("pass --port with an available listener port")
 }
-
-fn is_listener_port_conflict(err: &DomainError) -> bool {
-    err.code == ErrorCode::Conflict
-        && err
-            .message
-            .contains("the listener port is already bound by another listener in this team")
-}
-
-async fn cleanup_route_config(
-    pool: &PgPool,
-    ctx: &PrincipalCtx,
-    team: TeamRef,
-    route_config: &RouteConfig,
-    request_id: RequestId,
-) -> DomainResult<()> {
-    gateway::delete_route_config(
-        pool,
-        ctx,
-        team,
-        &route_config.name,
-        route_config.version,
-        request_id,
-    )
-    .await?;
-    Ok(())
-}
-
-async fn cleanup_cluster(
-    pool: &PgPool,
-    ctx: &PrincipalCtx,
-    team: TeamRef,
-    cluster: &Cluster,
-    request_id: RequestId,
-) -> DomainResult<()> {
-    clusters::delete_cluster(pool, ctx, team, &cluster.name, cluster.version, request_id).await?;
-    Ok(())
+fn is_listener_port_conflict(error: &DomainError) -> bool {
+    error
+        .details
+        .as_ref()
+        .and_then(|d| d.get("conflict_kind"))
+        .and_then(serde_json::Value::as_str)
+        == Some("listener_port")
 }
 
 #[derive(Debug)]
@@ -505,4 +881,81 @@ fn expose_curl_url(public_base_url: &str, path: &str) -> DomainResult<String> {
         .map_err(|e| DomainError::validation(format!("invalid listener public_base_url: {e}")))?;
     url.set_path(path);
     Ok(url.to_string())
+}
+
+#[cfg(test)]
+mod shared_route_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn route(name: &str, matcher: serde_json::Value) -> Result<RouteRule, serde_json::Error> {
+        serde_json::from_value(json!({
+            "name": name, "match": matcher,
+            "action": {"cluster": "unit-upstream", "timeout_secs": 19}
+        }))
+    }
+
+    fn config(routes: Vec<RouteRule>) -> Result<RouteConfigSpec, serde_json::Error> {
+        serde_json::from_value(json!({"virtual_hosts": [{
+            "name": "wildcard", "domains": ["*"], "routes": routes
+        }]}))
+    }
+
+    #[test]
+    fn insertion_preserves_exact_exception_existing_order_and_input(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let exact = route("health", json!({"exact": {"path": "/api/health"}}))?;
+        let root = route("root", json!({"prefix": {"prefix": "/"}}))?;
+        let spec = config(vec![exact.clone(), root.clone()])?;
+        let added = route("api", json!({"prefix": {"prefix": "/api"}}))?;
+        let (updated, vhost) = shared_route_config(&spec, added.clone())?;
+        assert_eq!(vhost, "wildcard");
+        assert_eq!(
+            updated.virtual_hosts[0].routes,
+            vec![exact.clone(), added, root.clone()]
+        );
+        assert_eq!(spec.virtual_hosts[0].routes, vec![exact, root]);
+        Ok(())
+    }
+
+    #[test]
+    fn no_covering_prefix_appends_without_changing_existing_route(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let existing = route("catalog", json!({"prefix": {"prefix": "/catalog"}}))?;
+        let added = route("orders", json!({"prefix": {"prefix": "/orders"}}))?;
+        let (updated, _) = shared_route_config(&config(vec![existing.clone()])?, added.clone())?;
+        assert_eq!(updated.virtual_hosts[0].routes, vec![existing, added]);
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_name_or_equal_prefix_or_exact_path_fails_without_mutation(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let added = route("api", json!({"prefix": {"prefix": "/api"}}))?;
+        for existing in [
+            route("api", json!({"prefix": {"prefix": "/other"}}))?,
+            route("other", json!({"prefix": {"prefix": "/api"}}))?,
+            route("exact", json!({"exact": {"path": "/api"}}))?,
+        ] {
+            let spec = config(vec![existing.clone()])?;
+            assert!(shared_route_config(&spec, added.clone()).is_err());
+            assert_eq!(spec.virtual_hosts[0].routes, vec![existing]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nonwildcard_or_multiple_virtual_hosts_are_not_guessed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let added = route("api", json!({"prefix": {"prefix": "/api"}}))?;
+        let mut domain = config(Vec::new())?;
+        domain.virtual_hosts[0].domains = vec!["example.com".into()];
+        assert!(shared_route_config(&domain, added.clone()).is_err());
+        let mut multiple = config(Vec::new())?;
+        multiple
+            .virtual_hosts
+            .push(multiple.virtual_hosts[0].clone());
+        assert!(shared_route_config(&multiple, added).is_err());
+        Ok(())
+    }
 }

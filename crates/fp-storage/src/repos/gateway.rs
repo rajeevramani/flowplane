@@ -20,13 +20,14 @@ fn map_unique(e: sqlx::Error, kind: &str, name: &str) -> DomainError {
                 return DomainError::conflict(
                     "the listener port is already bound by another listener in this team",
                 )
-                .with_hint("choose a different port or delete the listener holding it");
+                .with_hint("choose a different port or delete the listener holding it")
+                .with_details(serde_json::json!({"conflict_kind": "listener_port"}));
             }
             return DomainError::conflict(format!("{kind} \"{name}\" already exists in this team"))
                 .with_hint("choose a different name or update the existing resource");
         }
     }
-    DomainError::internal(format!("write {kind}: {e}"))
+    crate::sql_error(&format!("write {kind}"), e)
 }
 
 fn stale_or_missing(kind: &str, name: &str, current: Option<i64>, expected: i64) -> DomainError {
@@ -78,7 +79,7 @@ async fn resolve_cluster_refs(
     .bind(owner_kind)
     .fetch_all(&mut **tx)
     .await
-    .map_err(|e| DomainError::internal(format!("resolve cluster refs: {e}")))?;
+    .map_err(|e| crate::sql_error("resolve cluster refs", e))?;
     if rows.len() != names.len() {
         let found: std::collections::HashSet<String> =
             rows.iter().map(|r| r.get::<String, _>("name")).collect();
@@ -106,7 +107,7 @@ async fn replace_cluster_refs(
         .bind(rc_id)
         .execute(&mut **tx)
         .await
-        .map_err(|e| DomainError::internal(format!("clear cluster refs: {e}")))?;
+        .map_err(|e| crate::sql_error("clear cluster refs", e))?;
     for cluster_id in cluster_ids {
         sqlx::query(
             "INSERT INTO route_config_cluster_refs (route_config_id, cluster_id, team_id) \
@@ -117,7 +118,7 @@ async fn replace_cluster_refs(
         .bind(team_id.as_uuid())
         .execute(&mut **tx)
         .await
-        .map_err(|e| DomainError::internal(format!("insert cluster ref: {e}")))?;
+        .map_err(|e| crate::sql_error("insert cluster ref", e))?;
     }
     Ok(())
 }
@@ -218,7 +219,7 @@ pub async fn list_route_configs(
     .bind(team_id.as_uuid())
     .fetch_one(pool)
     .await
-    .map_err(|e| DomainError::internal(format!("count route configs: {e}")))?;
+    .map_err(|e| crate::sql_error("count route configs", e))?;
     rows.iter()
         .map(rc_from_row)
         .collect::<DomainResult<Vec<_>>>()
@@ -245,7 +246,7 @@ pub async fn update_route_config(
     .bind(expected_version)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(|e| DomainError::internal(format!("update route config: {e}")))?;
+    .map_err(|e| crate::sql_error("update route config", e))?;
     match row {
         Some(row) => {
             let rc = rc_from_row(&row)?;
@@ -260,7 +261,7 @@ pub async fn update_route_config(
             .bind(name)
             .fetch_optional(&mut **tx)
             .await
-            .map_err(|e| DomainError::internal(format!("update route config: recheck: {e}")))?;
+            .map_err(|e| crate::sql_error("update route config: recheck", e))?;
             Err(stale_or_missing(
                 "route config",
                 name,
@@ -277,6 +278,13 @@ pub async fn delete_route_config(
     name: &str,
     expected_version: i64,
 ) -> DomainResult<RouteConfigId> {
+    crate::repos::exposures::guard_resource_delete(
+        tx,
+        team_id,
+        fp_domain::authz::Resource::RouteConfigs,
+        name,
+    )
+    .await?;
     if route_config_discovery_owned(tx, team_id, name).await? {
         return Err(DomainError::conflict(format!(
             "route config \"{name}\" is owned by a discovery session"
@@ -329,7 +337,7 @@ pub async fn delete_route_config(
     .bind(expected_version)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(|e| DomainError::internal(format!("delete route config: {e}")))?;
+    .map_err(|e| crate::repos::exposures::delete_error("delete route config", e))?;
     match row {
         Some(row) => Ok(RouteConfigId::from(row.get::<Uuid, _>("id"))),
         None => {
@@ -456,7 +464,7 @@ async fn resolve_listener_rc_ref(
     .bind(owner_kind)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(|e| DomainError::internal(format!("resolve route-config ref: {e}")))?;
+    .map_err(|e| crate::sql_error("resolve route-config ref", e))?;
     id.map(Some).ok_or_else(|| {
         DomainError::validation(format!(
             "listener references route config \"{rc_name}\" which does not exist in this team"
@@ -475,7 +483,7 @@ async fn replace_listener_rc_ref(
         .bind(listener_id)
         .execute(&mut **tx)
         .await
-        .map_err(|e| DomainError::internal(format!("clear listener refs: {e}")))?;
+        .map_err(|e| crate::sql_error("clear listener refs", e))?;
     if let Some(rc_id) = rc_id {
         sqlx::query(
             "INSERT INTO listener_route_config_refs (listener_id, route_config_id, team_id) \
@@ -486,7 +494,7 @@ async fn replace_listener_rc_ref(
         .bind(team_id.as_uuid())
         .execute(&mut **tx)
         .await
-        .map_err(|e| DomainError::internal(format!("insert listener ref: {e}")))?;
+        .map_err(|e| crate::sql_error("insert listener ref", e))?;
     }
     Ok(())
 }
@@ -607,7 +615,7 @@ pub async fn list_listeners(
     .bind(team_id.as_uuid())
     .fetch_one(pool)
     .await
-    .map_err(|e| DomainError::internal(format!("count listeners: {e}")))?;
+    .map_err(|e| crate::sql_error("count listeners", e))?;
     rows.iter()
         .map(listener_from_row)
         .collect::<DomainResult<Vec<_>>>()
@@ -675,6 +683,13 @@ pub async fn delete_listener(
     name: &str,
     expected_version: i64,
 ) -> DomainResult<ListenerId> {
+    crate::repos::exposures::guard_resource_delete(
+        tx,
+        team_id,
+        fp_domain::authz::Resource::Listeners,
+        name,
+    )
+    .await?;
     if listener_discovery_owned(tx, team_id, name).await? {
         return Err(DomainError::conflict(format!(
             "listener \"{name}\" is owned by a discovery session"
@@ -689,7 +704,7 @@ pub async fn delete_listener(
     .bind(expected_version)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(|e| DomainError::internal(format!("delete listener: {e}")))?;
+    .map_err(|e| crate::repos::exposures::delete_error("delete listener", e))?;
     match row {
         Some(row) => Ok(ListenerId::from(row.get::<Uuid, _>("id"))),
         None => {
@@ -771,7 +786,7 @@ pub async fn count_route_configs(pool: &PgPool, team_id: TeamId) -> DomainResult
     .bind(team_id.as_uuid())
     .fetch_one(pool)
     .await
-    .map_err(|e| DomainError::internal(format!("count route configs: {e}")))
+    .map_err(|e| crate::sql_error("count route configs", e))
 }
 
 pub async fn count_listeners(pool: &PgPool, team_id: TeamId) -> DomainResult<i64> {
@@ -779,7 +794,7 @@ pub async fn count_listeners(pool: &PgPool, team_id: TeamId) -> DomainResult<i64
         .bind(team_id.as_uuid())
         .fetch_one(pool)
         .await
-        .map_err(|e| DomainError::internal(format!("count listeners: {e}")))
+        .map_err(|e| crate::sql_error("count listeners", e))
 }
 
 /// Every team that owns at least one xDS-served resource. Used to prime the xDS snapshot
@@ -798,4 +813,51 @@ pub async fn teams_with_gateway_resources(pool: &PgPool) -> DomainResult<Vec<Tea
     .await
     .map_err(|e| DomainError::internal(format!("list teams with gateway resources: {e}")))?;
     Ok(rows.into_iter().map(TeamId::from).collect())
+}
+
+/// Scoped user-owned identity read; locks serialize shortcut and ordinary row writes.
+pub async fn get_listener_named_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+) -> DomainResult<Option<Listener>> {
+    let row = sqlx::query(&format!("SELECT {COLUMNS} FROM listeners WHERE team_id=$1 AND name=$2 AND owner_kind='user' FOR UPDATE"))
+        .bind(team_id.as_uuid()).bind(name).fetch_optional(&mut **tx).await
+        .map_err(|e| crate::repos::exposures::db_error("lock named listener", e))?;
+    row.as_ref().map(listener_from_row).transpose()
+}
+
+pub async fn get_route_config_named_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    name: &str,
+) -> DomainResult<Option<RouteConfig>> {
+    let row = sqlx::query(&format!("SELECT {COLUMNS} FROM route_configs WHERE team_id=$1 AND name=$2 AND owner_kind='user' FOR UPDATE"))
+        .bind(team_id.as_uuid()).bind(name).fetch_optional(&mut **tx).await
+        .map_err(|e| crate::repos::exposures::db_error("lock named route config", e))?;
+    row.as_ref().map(rc_from_row).transpose()
+}
+
+/// Scoped user-owned identity read; locks serialize shortcut and ordinary row writes.
+pub async fn get_listener_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    id: ListenerId,
+) -> DomainResult<Option<Listener>> {
+    let row=sqlx::query(&format!("SELECT {COLUMNS} FROM listeners WHERE team_id=$1 AND id=$2 AND owner_kind='user' FOR UPDATE"))
+        .bind(team_id.as_uuid()).bind(id.as_uuid()).fetch_optional(&mut **tx).await
+        .map_err(|e| crate::repos::exposures::db_error("lock listeners",e))?;
+    row.as_ref().map(listener_from_row).transpose()
+}
+
+/// Scoped user-owned identity read; locks serialize shortcut and ordinary row writes.
+pub async fn get_route_config_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: TeamId,
+    id: RouteConfigId,
+) -> DomainResult<Option<RouteConfig>> {
+    let row=sqlx::query(&format!("SELECT {COLUMNS} FROM route_configs WHERE team_id=$1 AND id=$2 AND owner_kind='user' FOR UPDATE"))
+        .bind(team_id.as_uuid()).bind(id.as_uuid()).fetch_optional(&mut **tx).await
+        .map_err(|e| crate::repos::exposures::db_error("lock route_configs",e))?;
+    row.as_ref().map(rc_from_row).transpose()
 }

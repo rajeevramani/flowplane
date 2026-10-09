@@ -17,6 +17,24 @@ use std::time::Duration;
 /// Embedded migrations, applied in order; forward-only (spec/10 §10).
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
+pub(crate) const TRANSACTION_SQLSTATE_DETAIL: &str = "transaction_sqlstate";
+
+/// Preserve only retryable SQLSTATE identity through reused domain-error helpers.
+/// The status remains Internal for ordinary callers; REST suppresses Internal details.
+/// Shortcut entry points alone translate this trusted marker to Conflict, without replay.
+pub(crate) fn sql_error(context: &str, error: sqlx::Error) -> DomainError {
+    let internal = DomainError::internal(format!("{context}: {error}"));
+    if let sqlx::Error::Database(db) = &error {
+        if let Some(code) = db
+            .code()
+            .filter(|code| matches!(code.as_ref(), "40P01" | "40001"))
+        {
+            return internal.with_details(serde_json::json!({(TRANSACTION_SQLSTATE_DETAIL): code}));
+        }
+    }
+    internal
+}
+
 /// Install a rustls crypto provider if none is set. Idempotent. Required because the
 /// dependency graph links both `ring` (sqlx, axum-server) and `aws-lc-rs` (reqwest) — with
 /// two providers present rustls has NO default until one is chosen, and Postgres TLS

@@ -12,49 +12,93 @@ Publish your APIs through a multi-tenant control plane and get governance (OIDC 
 
 ## Quick Start (no clone, no Rust toolchain)
 
-Evaluate Flowplane on a clean machine with only a container engine (Docker or Podman). This pulls the
-published **evaluation** image and stands up the whole stack — Postgres, the dev-mode control plane, a
-demo upstream, and Envoy — then routes a real request through the gateway. No repo checkout, no
-`cargo build`.
+Install local evaluation infrastructure with **no exposed APIs**, then explicitly expose and call a backend through Envoy. No checkout or `cargo build` is needed for the published-artifact path.
 
-> Set `VER` to a published release. The example below targets the `v3.1.4` release.
-> Its evaluator bundle and `:${VER}-eval` image support
-> `linux/amd64` and `linux/arm64` (the dashboard step
-> needs `3.1.0` or newer). For newer releases, use the version shown on the GitHub Releases
-> page. The image is **multi-arch**: a plain `docker pull` resolves the native variant — no
-> `--platform` flag, no emulation.
+> **3.2.0 release preparation:** use these commands only after `v3.2.0` and its matching eval image are published. Packaged-candidate qualification is pending. Older `3.1.x` bundles automatically expose the demo and do not implement this empty-install/shared-exposure journey. Docker Compose is used below; Podman/runtime and host-networking differences need their own verification.
 
-```bash
-VER=3.1.4
+### Install and define the CLI shortcut
 
-# 1. Fetch the evaluator bundle at the matching release tag (the only file you need)
-curl -fsSLO https://raw.githubusercontent.com/rajeevramani/flowplane/v${VER}/compose.eval.yml
+Use a fresh directory, then keep this shell open:
 
-# 2. Bring up the whole stack against the published eval image (no --build)
-FLOWPLANE_EVAL_IMAGE=ghcr.io/rajeevramani/flowplane:${VER}-eval \
-  docker compose -f compose.eval.yml up -d --no-build
+```sh
+if mkdir flowplane-evaluation &&
+   cd flowplane-evaluation &&
+   VER=3.2.0 &&
+   curl -fsSLO "https://raw.githubusercontent.com/rajeevramani/flowplane/v${VER}/compose.eval.yml" &&
+   export FLOWPLANE_EVAL_IMAGE="ghcr.io/rajeevramani/flowplane:${VER}-eval" &&
+   docker compose -f compose.eval.yml up -d --no-build; then
 
-# 3. A request flows through Envoy (:10000) to the demo upstream
-curl http://127.0.0.1:10000/        # -> hello from the flowplane eval demo upstream
+fp() {
+  docker compose -f compose.eval.yml exec -T flowplane-eval \
+    sh -ec 'export FLOWPLANE_SERVER=http://127.0.0.1:8080 FLOWPLANE_ORG=dev-org FLOWPLANE_TEAM=default; FLOWPLANE_TOKEN="$(cat /shared/dev-token)"; export FLOWPLANE_TOKEN; exec flowplane "$@"' sh "$@"
+}
 
-# 4. Open the read-only dashboard (the URL carries a per-launch security nonce)
-docker compose -f compose.eval.yml exec flowplane-dashboard cat /shared/dashboard-url
-# -> open the printed http://127.0.0.1:8081/<nonce>/ in your browser
-
-# 5. (optional) confirm authentication from inside the control-plane container
-docker compose -f compose.eval.yml exec flowplane-eval \
-  sh -c 'FLOWPLANE_TOKEN=$(cat /shared/dev-token) flowplane auth whoami'
-
-# Tear down
-docker compose -f compose.eval.yml down -v
+(
+  set -eu
+  infra_ready=false
+  for attempt in $(seq 1 30); do
+    if fp auth whoami >/dev/null 2>&1 &&
+       fp -o json dataplane get dp-eval | python3 -c 'import json,sys; assert json.load(sys.stdin)["data"]["last_heartbeat_at"] is not None' 2>/dev/null; then
+      infra_ready=true
+      break
+    fi
+    sleep 2
+  done
+  [ "$infra_ready" = true ] || { printf '%s\n' 'Infrastructure readiness failed; inspect Compose/setup/agent logs before exposing' >&2; exit 1; }
+  fp cluster list
+  fp route list
+  fp listener list
+)
+else
+  printf '%s\n' 'Installation failed; use a fresh directory, inspect the failure and do not continue to exposure' >&2
+  false
+fi
 ```
 
-Next, continue the no-clone evaluation with [Evaluate Flowplane without cloning the repo](docs/tutorials/evaluate-no-clone.md) to try the CLI, import an OpenAPI document, publish it, and verify the generated API tools.
+Wait for authenticated readiness and non-null `last_heartbeat_at`. For a fresh stack, all three gateway lists are empty. Port `10000` is published but has no Envoy listener yet; a gateway request must not return the sample body before you expose it. The [tutorial](docs/tutorials/evaluate-no-clone.md#1-install-infrastructure-not-apis) explains readiness and diagnostics.
 
-> The `:${VER}-eval` image is **for evaluation only** — it runs dev mode (in-process OIDC issuer +
-> seeded resources + a dev bearer token on disk) and binds every port to `127.0.0.1`. It is **never**
-> an operator/production base and is never tagged `:latest`. The hardened, publishable image is
-> `ghcr.io/rajeevramani/flowplane:${VER}` (built `--no-default-features`, which refuses dev mode).
+### Deploy the first service
+
+```sh
+(
+  set -eu
+  fp expose http://demo-upstream:5678 --name demo --path / --port 10000 \
+    --public-base-url http://127.0.0.1:10000
+  traffic_ready=false
+  for attempt in $(seq 1 30); do
+    sample_body=$(curl --max-time 2 -fsS http://127.0.0.1:10000/ 2>/dev/null) || sample_body=
+    if [ "$sample_body" = 'hello from the flowplane eval demo upstream' ]; then
+      traffic_ready=true
+      break
+    fi
+    sleep 1
+  done
+  [ "$traffic_ready" = true ] || { printf '%s\n' 'Expected sample body did not arrive; diagnose, do not replay expose blindly' >&2; exit 1; }
+  printf '%s\n' "$sample_body"
+)
+```
+
+Continue the [no-clone tutorial](docs/tutorials/evaluate-no-clone.md) for a bounded expected-body check, a real host backend, and `fp expose ... --listener demo` to share the existing port. The bundle publishes only gateway port `10000` by default. For an additional independent listener, [publish another container port explicitly](docs/how-to/expose-an-api.md#publish-an-additional-evaluation-port); auto-allocation does not change Compose mappings.
+
+### Next steps
+
+- **Add a local rate limit:** the [tutorial's policy experiment](docs/tutorials/evaluate-no-clone.md#4-add-a-local-rate-limit-and-prove-it-works) checks actual 429 and recovery.
+- **Protect traffic with OIDC/JWT:** [install the JWT filter and route requirement](docs/how-to/jwt-auth-rate-limit-route.md). Management authentication does not automatically protect your API, and the dev management token is not a backend credential.
+- **Optional dashboard:** `docker compose -f compose.eval.yml exec -T flowplane-dashboard cat /shared/dashboard-url` prints its nonce-protected loopback URL. It is not required for traffic.
+- **Optional API-to-MCP:** [import and publish a spec](docs/how-to/import-and-publish-openapi-spec.md), with explicit route bindings for execution. Tool generation/status alone does not prove a backend call.
+
+### Remove or stop
+
+To retain your exposure, skip `unexpose` and use the [preserve/resume/recovery guide](docs/how-to/evaluation-readiness-and-recovery.md); `down` retains volumes but `unexpose` removes configuration. For the single untouched sample exposure, deliberately confirm removal:
+
+```sh
+fp --yes unexpose demo
+docker compose -f compose.eval.yml down
+```
+
+Shared exposures retain their surviving routes/listener/config. Final managed cleanup also removes later policy edits; manual/legacy scaffolds are not adopted by matching names. See [safe removal](docs/how-to/expose-an-api.md#remove-the-exposure-without-deleting-somebody-elses-infrastructure). Use `docker compose -f compose.eval.yml down -v` only to intentionally destroy this evaluation's database and PKI volumes.
+
+> The eval image runs dev mode, with an in-process issuer, seeded identities and a bearer token on disk. Host ports bind to `127.0.0.1`; xDS uses mTLS. It is **never** a production base and is never tagged `:latest`. The hardened image `ghcr.io/rajeevramani/flowplane:${VER}` is built `--no-default-features` and refuses dev mode.
 
 ## Build from source (contributors)
 
@@ -114,7 +158,7 @@ envoy -c /tmp/flowplane-envoy.yaml --log-level info
 curl -i http://127.0.0.1:10001/        # -> 200 OK, body: hello-flowplane
 ```
 
-Tear it down with `flowplane unexpose local`. The full walkthrough with every check is in the [Getting Started tutorial](docs/tutorials/getting-started.md).
+Tear down the exposure's route/upstream with `flowplane unexpose local`. Other routes keep their listener/configuration; final managed-scaffold cleanup deletes its listener/configuration and subsequent policy edits. Legacy/manual matching names are never shortcut-deleted. The full walkthrough with every check is in the [Getting Started tutorial](docs/tutorials/getting-started.md).
 
 > Dev mode runs an in-process identity issuer over plaintext — local exploration only, never production. The published release container is built `--no-default-features` and rejects dev mode entirely.
 
@@ -160,6 +204,7 @@ The [documentation home](docs/README.md) is organised by [Diátaxis](https://dia
 | You want to… | Start here |
 |--------------|------------|
 | Try Flowplane without cloning the repo | [Evaluate without cloning](docs/tutorials/evaluate-no-clone.md) |
+| Expose your API or share a listener | [Expose an API](docs/how-to/expose-an-api.md) |
 | Evaluate a production-shaped platform setup | [Evaluate a production-shaped platform setup](docs/how-to/evaluate-platform.md) |
 | Delegate API onboarding to a team | [Onboard an API team](docs/how-to/onboard-api-team.md) |
 | Stand up a gateway from a clean checkout | [Getting Started](docs/tutorials/getting-started.md) |

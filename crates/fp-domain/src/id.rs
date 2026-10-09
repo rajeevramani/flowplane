@@ -99,6 +99,10 @@ domain_id!(
     RouteConfigId
 );
 domain_id!(
+    /// Identifies a durable gateway shortcut association, not an xDS resource.
+    ExposureId
+);
+domain_id!(
     /// Identifies a registered dataplane (one Envoy instance).
     DataplaneId
 );

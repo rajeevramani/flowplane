@@ -1,8 +1,8 @@
 # Flowplane v2 — evaluation bundle (epic #161 / slice #158). One `docker compose up` stands up
 # Postgres + the dev-mode control plane + a demo upstream + Envoy, wires them with the flowplane
-# CLI, and routes a real request — no manual steps.
+# CLI, with no exposed APIs. Author the first exposure after infrastructure readiness.
 #
-# EVALUATION ONLY. Dev mode (in-process OIDC issuer + seeded resources + a dev bearer token on
+# EVALUATION ONLY. Dev mode (in-process OIDC issuer + seeded identities + a dev bearer token on
 # disk, see DECISIONS.md D-022/D-023/D-024) is never an operator/production setup. Every host
 # port is bound to 127.0.0.1.
 #
@@ -11,7 +11,10 @@
 # `--build`). A plain `docker pull` resolves the right arch (amd64/arm64 are both native, D-025):
 #   curl -fsSLO https://raw.githubusercontent.com/<org>/flowplane/v<ver>/compose.eval.yml
 #   FLOWPLANE_EVAL_IMAGE=ghcr.io/<org>/flowplane:<ver>-eval docker compose -f compose.eval.yml up -d --no-build
-#   curl http://127.0.0.1:10000/        # -> the demo-upstream body, routed through Envoy
+#   # No listener exists yet. First expose the supplied backend explicitly:
+#   docker compose -f compose.eval.yml exec flowplane-eval \
+#     sh -c 'FLOWPLANE_TOKEN=$(cat /shared/dev-token) FLOWPLANE_ORG=dev-org FLOWPLANE_TEAM=default flowplane expose http://demo-upstream:5678 --name demo --port 10000 --public-base-url http://127.0.0.1:10000'
+#   curl http://127.0.0.1:10000/        # after exposure -> demo-upstream body
 #   docker compose -f compose.eval.yml exec flowplane-eval \
 #     sh -c 'FLOWPLANE_TOKEN=$(cat /shared/dev-token) flowplane auth whoami'
 #   docker compose -f compose.eval.yml down -v
@@ -205,7 +208,7 @@ services:
 
   # One-shot: read the dev token, then drive the same CLI flow the E2E harness uses
   # (scripts/e2e/lib.sh:192-228) — create a dataplane, issue its mTLS client certificate
-  # (fpv2-81c; one cert shared by Envoy and the agent), expose the demo upstream, and render
+  # (fpv2-81c; one cert shared by Envoy and the agent), and render
   # the mTLS Envoy bootstrap to the shared volume. pki-client-verify writes the versioned
   # completion guard only after strict client-purpose verification; an older plaintext bootstrap
   # or inconsistent certificate state fails loudly instead of being reused.
@@ -250,9 +253,8 @@ services:
         chmod 0600 /pki-dp/client.key
         grep -q "BEGIN CERTIFICATE" /pki-dp/client.crt || { echo "bad client.crt" >&2; exit 1; }
         grep -Eq -- "-----BEGIN (RSA |EC )?PRIVATE KEY-----" /pki-dp/client.key || { echo "bad client.key" >&2; exit 1; }
-        flowplane expose "http://demo-upstream:5678" --name demo --path / --port 10000 --public-base-url "http://127.0.0.1:10000"
         flowplane --out /shared/envoy.yaml dataplane bootstrap dp-eval --mode mtls --xds-host flowplane-eval --xds-port 18000 --cert-path /pki-dp/client.crt --key-path /pki-dp/client.key --ca-path /pki-dp/ca.crt --admin-port 9901
-        echo "init material ready: dataplane + cert + expose + mtls bootstrap"
+        echo "init material ready: dataplane + cert + mtls bootstrap; no APIs exposed"
     depends_on:
       flowplane-eval:
         condition: service_healthy
