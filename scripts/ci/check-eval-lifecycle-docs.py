@@ -131,6 +131,26 @@ def empty_inventory(text: str) -> bool:
         text, r"\[['\"]data['\"]\]\s*\[['\"]items['\"]\]\s*==\s*\[\s*\]")
 
 
+def manual_inventory(text: str) -> bool:
+    code = "\n".join(blocks(text))
+    return (all(has(code, r"(?m)^\s*fp\s+(?:-o\s+json\s+)?" + resource + r"\s+list\b")
+                for resource in ("listener", "route", "cluster"))
+            and has(prose(text), r"Expected:[^\n]*all three inventories are empty[^\n]*fresh")
+            and has(prose(text), r"If they are not, stop and inspect"))
+
+
+def manual_initial_auth(text: str) -> bool:
+    code = "\n".join(blocks(text))
+    description = prose(text)
+    return (has(code, r"(?m)^\s*fp\s+auth\s+whoami\s*$")
+            and has(code, r"(?m)^\s*fp\s+-o\s+json\s+dataplane\s+get\s+dp-eval\s*$")
+            and has(description, r"Expected:[^\n]*authenticated identity")
+            and has(description, r"data\.last_heartbeat_at[^\n]*non-null and recent")
+            and has(description, r"run the same read again to see it advance")
+            and has(description, r"If authentication fails[^\n]*timestamp remains missing/stale[^\n]*stop before exposure")
+            and has(code, r"(?m)^\s*docker compose -f compose\.eval\.yml logs[^\n]*flowplane-agent[^\n]*envoy"))
+
+
 def shell_tokens(block: str, depth: int = 0) -> list[str]:
     """Block-level quoting; literal heredocs are opaque, never shell code.
 
@@ -337,7 +357,12 @@ def check_guide(text: str, initial_tutorial: str = "") -> list[Finding]:
     ready = section(text, r"readiness|ready checks|preflight")
     delegated = bool(initial_tutorial) and bool(markdown_links(ready)) and has(prose(ready), r"delegat|initial.*tutorial|tutorial.*initial")
     if delegated:
-        ready = section(initial_tutorial, r"readiness|ready checks|preflight|install.*infrastructure") or initial_tutorial
+        # The split install tutorial owns setup, helper, readiness and inventory
+        # across child headings. Never import exposure/policy tutorials here.
+        if has(prose(initial_tutorial), r"(?m)^# Install and verify Flowplane\s*$"):
+            ready = initial_tutorial
+        else:
+            ready = section(initial_tutorial, r"readiness|ready checks|preflight|install.*infrastructure") or initial_tutorial
     keep = section(text, r"preserv|resum|non.destructive")
     reset = section(text, r"destructive reset|reset.*empty|reset.*evaluation")
     diagnostics = section(text, r"diagnos|troubleshoot")
@@ -356,9 +381,11 @@ def check_guide(text: str, initial_tutorial: str = "") -> list[Finding]:
             "Readiness must precede explicit exposure; a fresh install has no sample response.")
     require("fresh-empty", has(ready, r"fresh|new install") and has(ready, r"zero|empty|length\s*==\s*0")
             and all(has(ready, r"\bfp\s+(?:-o\s+json\s+)?" + r + r"\s+list\b") for r in ("listener", "route", "cluster"))
-            and empty_inventory(ready), "Show fresh empty listener/route/cluster lists through data.items.")
-    require("auth-bounded", any(bounded_auth(b) for b in blocks(ready)),
-            "Authentication readiness needs a bounded read-only wait and visible nonzero failure.")
+            and (empty_inventory(ready) or (delegated and manual_inventory(ready))),
+            "Show asserted data.items or delegated manual fresh empty listener/route/cluster reads with stop guidance.")
+    require("auth-bounded", any(bounded_auth(b) for b in blocks(ready))
+            or (delegated and manual_initial_auth(ready)),
+            "Authentication readiness needs a bounded read-only wait with visible nonzero failure, or delegated manual identity/advancing-heartbeat reads with outcomes and stop/diagnostic guidance.")
     require("heartbeat-newer", any(has(b, r"fp\s+-o\s+json\s+dataplane\s+get\s+dp-eval")
             and "last_heartbeat_at" in b and newer_heartbeat(b)
             and bounded_failure(b) and has(prose(text), r"(?:invoke|call|run)[^.\n]*after[^.\n]*(?:disrupt|resum)")
@@ -395,7 +422,8 @@ def check_guide(text: str, initial_tutorial: str = "") -> list[Finding]:
             and empty_inventory(after) and has(reset, r"zero|empty|length\s*==\s*0")
             or (delegated and bool(after) and (has(after, r"\bup\b")
                 or any(has(c, r"^up\b") for c in compose_commands(ready, initial_tutorial)))
-                and has(reset, r"initial tutorial") and has(reset, r"fresh empty") and empty_inventory(ready)
+                and has(reset, r"initial tutorial") and has(reset, r"fresh empty")
+                and (empty_inventory(ready) or manual_inventory(ready))
                 and all(has(ready, r"fp\s+(?:-o\s+json\s+)?" + r + r"\s+list") for r in ("listener", "route", "cluster"))),
             "After destructive reset and reinstall, show empty lists; old APIs must not return.")
     diag_commands = compose_commands(diagnostics, text)
@@ -870,6 +898,79 @@ def self_test() -> int:
     paired("auth redirections and multiline capture", variant, "heartbeat-newer", "eval_baseline_captured=false", "eval_baseline_captured=true")
     paired("literal Compose overlay", SYNTHETIC + "\n```sh\ndocker compose -f compose.eval.yml -f compose.host.yml ps -a\n```\n", "unsupported-shell", "-f compose.eval.yml -f compose.host.yml", "-f other.yml -f compose.host.yml")
     paired("multiline authenticated read conjunction", SYNTHETIC.replace("whoami && fp", "whoami &&\n fp"), "heartbeat-newer", "whoami &&\n fp", "whoami ||\n fp")
+    manual_install = r'''# Install and verify Flowplane
+A fresh install has no gateway APIs or sample response before exposure.
+The helper reads the token inside the container.
+```sh
+fp() { docker compose -f compose.eval.yml exec -T flowplane-eval sh -ec 'flowplane "$@"' sh "$@"; }
+docker compose -f compose.eval.yml up -d --no-build
+```
+### Inspect readiness
+```sh
+fp auth whoami
+fp -o json dataplane get dp-eval
+```
+Expected: authenticated identity and organization information.
+Inspect data.last_heartbeat_at: it must be non-null and recent.
+Wait and run the same read again to see it advance.
+If authentication fails or the timestamp remains missing/stale, stop before exposure.
+```sh
+docker compose -f compose.eval.yml logs flowplane-eval init flowplane-agent envoy
+```
+### Inspect the empty gateway
+```sh
+fp listener list
+fp route list
+fp cluster list
+```
+Expected: all three inventories are empty on a fresh installation.
+If they are not, stop and inspect.
+'''
+    cases.append(("delegated split manual install", None, check_guide(delegated, manual_install), True))
+    for name, rule, old, new in (
+        ("real auth read", "auth-bounded", "fp auth whoami\n", "echo auth whoami\n"),
+        ("real heartbeat read", "auth-bounded", "fp -o json dataplane get dp-eval", "echo dataplane get dp-eval"),
+        ("auth expected outcome", "auth-bounded", "Expected: authenticated identity", "Identity may be absent"),
+        ("recent nonnull heartbeat", "auth-bounded", "non-null and recent", "recorded previously"),
+        ("advancing heartbeat inspection", "auth-bounded", "run the same read again to see it advance", "accept the old timestamp"),
+        ("auth stop guidance", "auth-bounded", "stop before exposure", "continue regardless"),
+        ("diagnostic reads", "auth-bounded", "docker compose -f compose.eval.yml logs", "echo logs"),
+        ("real cluster inventory", "fresh-empty", "fp cluster list", "echo cluster list"),
+        ("empty expected outcome", "fresh-empty", "all three inventories are empty", "inventories may contain APIs"),
+        ("inventory stop guidance", "fresh-empty", "If they are not, stop and inspect", "Ignore nonempty inventories"),
+    ):
+        assert old in manual_install, name
+        cases.append(("manual " + name + " positive", None, check_guide(delegated, manual_install), True))
+        cases.append(("manual " + name + " negative", rule,
+                      check_guide(delegated, manual_install.replace(old, new)), False))
+    cases.append(("manual readiness never replaces recovery freshness", "heartbeat-newer",
+                  check_guide(delegated.replace("parse(b['last_heartbeat_at']) > parse(a['last_heartbeat_at'])",
+                                               "b['last_heartbeat_at'] is not None"), manual_install), False))
+    cases.append(("manual readiness still requires reinstall", "reset-empty",
+                  check_guide(delegated_start, manual_install.replace(
+                      "docker compose -f compose.eval.yml up -d --no-build", "true")), False))
+    # Resolve the direct install link, not an arbitrary aggregate of tutorials.
+    split_names = ('eval-install-and-verify', 'eval-expose-first-api',
+                   'eval-expose-own-backend', 'eval-local-rate-limit', 'eval-remove-apis')
+    split_docs = synthetic_documents(delegated.replace(
+        '../tutorials/evaluation.md#evaluation', '../tutorials/eval-install-and-verify.md'))
+    split_docs['README.md'] = f'# Flowplane\n[Recovery]({GUIDE})\n'
+    for name in split_names:
+        split_docs['docs/tutorials/' + name + '.md'] = (
+            manual_install if name == split_names[0] else '# Next step\n') + (
+                '\n[Recovery](../how-to/evaluation-readiness-and-recovery.md)\n')
+    cases.append(("five manual tutorials with direct initial link", None,
+                  check_document_guide(split_docs) + check_links(split_docs), True))
+    for name in split_names:
+        path = 'docs/tutorials/' + name + '.md'
+        bad = dict(split_docs)
+        bad[path] = bad[path].replace('[Recovery](../how-to/evaluation-readiness-and-recovery.md)', '')
+        cases.append((name + " recovery navigation missing", "navigation", check_links(bad), False))
+    bad = dict(split_docs)
+    bad.pop('docs/tutorials/eval-install-and-verify.md')
+    cases.append(("missing direct install link target", "links", check_links(bad), False))
+    cases.append(("unrelated tutorial cannot supply manual install", "fresh-empty",
+                  check_document_guide(bad), False))
     failures = 0
     for name, rule, findings, expect_clean in cases:
         passed = not findings if expect_clean else any(f.rule == rule for f in findings)

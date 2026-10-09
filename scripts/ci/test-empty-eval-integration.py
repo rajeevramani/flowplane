@@ -2,7 +2,7 @@
 """Black-box empty-eval/shared-exposure release harness (Python stdlib only).
 
 Contract sources: docs/reference/cli.md, docs/how-to/script-the-cli.md,
-docs/tutorials/getting-started.md and the delegated empty-eval acceptance.
+docs/tutorials/build-and-run-from-source.md and the delegated empty-eval acceptance.
 The old evaluate-no-clone tutorial describes seeded gateway resources; the
 slice acceptance deliberately supersedes that behavior. No implementation,
 Compose contents, Envoy admin, logs, or host credential files are inspected.

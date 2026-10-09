@@ -15,6 +15,36 @@ compatibility baseline.
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-09
+
+Release preparation; not yet published. This bounded release fixes explicit API exposure and documents the evaluation journey. It adds no new MCP tool or execution path.
+
+### Added
+
+- Exposure accepts REST `listener` / CLI `--listener` to attach an API to a supported same-team HTTP listener. Combining it with `port` / `public_base_url` (CLI `--port` / `--public-base-url`) is rejected with a bad-request response. Expose responses report `mode: created|attached`; unexpose responses report `cluster_disposition`, `route_config_disposition`, and `listener_disposition` as `deleted|retained`. These extend the existing exposure contract, not a new MCP execution path. (#264)
+- Edits to a shared route config affect every listener that references it. Historical direct-capture rows can block final scaffold deletion even after a capture is stopped/cancelled; stopping a capture does not remove its foreign-key references. (#264)
+
+### Changed
+
+- A fresh evaluation installation has no exposed APIs or gateway listener, route configuration, or cluster. The sample backend, dev identities, automatic dataplane bootstrap and strict xDS mTLS remain. Infrastructure readiness no longer depends on sample gateway traffic; explicitly expose the backend on container port `10000` before making the first call. Existing persisted gateway resources are not deleted on restart. (#265, #266)
+- Shortcut exposures now persist scoped ownership provenance in migration `0038_exposures`. Existing resources are not adopted or backfilled by name: removing a legacy shortcut returns a not-found response with manual-inspection/cleanup guidance. Ordinary deletion of resources used by a recorded exposure returns a conflict identifying that exposure. (#264)
+- `unexpose` removes only the recorded route and upstream; a borrowed listener/configuration is retained. A final managed scaffold is removed only when safe. Bound routes, capture/reference dependencies and stale associations return conflicts rather than deleting unrelated resources. Restore a stale association with ordinary revision-checked updates before retrying removal. (#264)
+
+### Fixed
+
+- Exposure creation and removal now commit gateway resources, ownership records, success audit and outbox together. Authorization is checked before advisory DNS work; transaction/quota/reference checks and revision-guarded shared-listener updates prevent partial shortcut mutations. Recognized serialization/deadlock failures return a conflict instead of being replayed automatically. (#264)
+- Multiple shortcut exposures can safely share the supported HTTP listener shape. A new narrower Prefix is inserted before the first existing broader Prefix, without reordering existing routes. Matching remains first-match, not a longest-prefix re-sort; an earlier Exact rule can win and Prefix `/api` also matches `/apix`. Unrelated routes/policies are preserved; equal-prefix, route-name and unsupported-shape collisions fail without partial changes. Both removal orders preserve surviving traffic. (#264)
+
+### Documentation
+
+- The first-use journey covers install, readiness, explicit exposure, real HTTP calls, existing local rate limiting, repetition, restart persistence, safe removal and reset. Recovery guidance distinguishes retained state from volume deletion and PKI/identity failures; the optional existing API-to-MCP continuation returns an invocation descriptor, not backend execution. (#266, #267, #271)
+- API-spec publication has an identity preflight only, not server-enforced revision protection; concurrent changes remain possible. API deletion enforces its expected revision. No new publication concurrency guarantee is introduced.
+- Secure Fly.io/Tailscale deployment documentation merged after `3.1.4` is included; its historical source/deployment evidence is not a new cloud qualification. (#263)
+
+### Dependencies
+
+- Includes the previously merged rustls `0.23.45` update for `RUSTSEC-2026-0285`. (#269)
+
 ## [3.1.4] - 2026-08-30
 
 Bug-fix-only patch release. It corrects the `team grant add` help example, makes xDS status

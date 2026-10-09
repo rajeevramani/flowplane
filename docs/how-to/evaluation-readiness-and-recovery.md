@@ -2,13 +2,13 @@
 
 > Audience: newcomers, api-teams · Status: draft — local supporting procedure validated; release/platform qualification pending
 
-Use this guide for the local Compose evaluator, not production. Start with [Evaluate without cloning](../tutorials/evaluate-no-clone.md): use its image, directory and `fp` helper in the same terminal. Matching 3.2.0 published artifacts are not yet available. Infrastructure readiness is management authentication plus an agent heartbeat; API traffic requires an explicit exposure and successful xDS delivery. A published host port is not an Envoy listener.
+Use this guide for the local Compose evaluator, not production. Start with [Install and verify Flowplane](../tutorials/eval-install-and-verify.md), the first tutorial in the [evaluation learning path](../tutorials/evaluate-no-clone.md): use its image, directory and `fp` helper in the same terminal. Matching 3.2.0 published artifacts are not yet available. Infrastructure readiness is management authentication plus an agent heartbeat; API traffic requires an explicit exposure and successful xDS delivery. A published host port is not an Envoy listener.
 
 Only the **source-built supporting image**, not a published immutable 3.2.0 artifact, has local evidence on a **macOS arm64 host / Linux-arm64 Podman VM through Docker Compose**. The preserve/resume/reset procedure, control-plane restart and agent-first Envoy replacement have supporting local execution evidence on that same host/runtime, including retained resource identities/spec/revisions, actual rate-limit enforcement after resume and empty reset inventories. On that stack, the post-disruption check observed strictly advancing same-identity heartbeats after resume, control-plane restart and Envoy replacement. This does not qualify another platform or release artifact. Docker Desktop, a Linux Docker host, separate native Mac ARM/Linux release artifacts, remote CI, an unfamiliar-developer trial and the immutable 3.2.0 candidate remain unqualified here. Do not infer minimum RAM/CPU requirements or universal host-backend reachability from one successful local run.
 
 ## Initial readiness before exposure
 
-Delegate initial readiness to the [initial tutorial](../tutorials/evaluate-no-clone.md#1-install-infrastructure-not-apis): its bounded authenticated startup check and fresh empty gateway inventories run before explicit exposure. No sample response is expected on a fresh install. Recovery below additionally requires a heartbeat that advances beyond the first post-disruption read, not merely a non-null value or one newer than a pre-stop snapshot.
+Delegate initial readiness to the [installation tutorial](../tutorials/eval-install-and-verify.md): its manually inspected authenticated startup check and fresh empty gateway inventories run before explicit exposure. No sample response is expected on a fresh install. Recovery below additionally requires a heartbeat that advances beyond the first post-disruption read, not merely a non-null value or one newer than a pre-stop snapshot.
 
 ## Diagnose before changing state
 

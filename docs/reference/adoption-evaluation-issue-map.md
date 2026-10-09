@@ -7,10 +7,10 @@ This reference maps the adoption/evaluation documentation issues (#199–#212) t
 | Issue | Treatment | Public docs and examples |
 | --- | --- | --- |
 | #199 | Replaced the stale top-level `cert issue` path with the nested dataplane certificate command. | [AWS secure deployment](../how-to/aws-secure-deployment.md), `deploy/aws/README.md` |
-| #200 | Repaired the no-clone quick start release selection and evaluator artifact path. | [README Quick Start](../../README.md#quick-start-no-clone-no-rust-toolchain), [Evaluate without cloning](../tutorials/evaluate-no-clone.md) |
+| #200 | Repaired the no-clone quick start release selection and evaluator artifact path. | [README Quick Start](../../README.md#quick-start), [Evaluate without cloning](../tutorials/evaluate-no-clone.md) |
 | #201 | Documented the first-boot bootstrap token requirement for non-dev control planes. | [Production Readiness](../how-to/production-readiness.md), [Bootstrap the first platform admin](../how-to/bootstrap-platform.md) |
 | #202 | Refreshed production readiness around current config, Rate Limit Service (`flowplane-rls`), and public operator links. | [Production Readiness](../how-to/production-readiness.md), [Configuration reference](configuration.md) |
-| #203 | Corrected prerequisite wording where task docs referenced mismatched starter resources. | [Enable global rate limiting](../how-to/global-rate-limit.md), [Getting Started](../tutorials/getting-started.md) |
+| #203 | Corrected prerequisite wording where task docs referenced mismatched starter resources. | [Enable global rate limiting](../how-to/global-rate-limit.md), [Build and run from source](../tutorials/build-and-run-from-source.md) |
 | #204 | Removed maintainer-local `internal/.env.prod-local` sourcing from evaluator deployment steps. | [AWS secure deployment](../how-to/aws-secure-deployment.md), `deploy/aws/README.md` |
 | #205 | Documented token precedence consistently, including `--token` and the saved credentials fallback. | [CLI reference](cli.md), [CLI auth and contexts](../how-to/cli-auth-and-contexts.md), [Script the CLI](../how-to/script-the-cli.md) |
 | #206 | Added the required dataplane/listener prerequisite before AI gateway request verification. | [AI gateway route and budget](../how-to/ai-gateway-route-budget.md), [Register dataplane mTLS](../how-to/register-dataplane-mtls.md) |

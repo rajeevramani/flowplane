@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Independent S4 static guard. Never runs tutorial commands or proves runtime success.
 
-Only --self-test is exercised by the independent author. --repo reads the four
-public documentation targets after the producer has finished; human confirmation
+--self-test exercises paired synthetic contracts. --repo reads the public index,
+its five explicitly ordered tutorials and supporting references; human confirmation
 and real sample/own-backend/429/recovery execution remain separate gates.
 """
 import argparse
@@ -13,8 +13,11 @@ import subprocess
 import tempfile
 from urllib.parse import unquote, urlsplit
 
+STEPS = tuple('docs/tutorials/' + name + '.md' for name in (
+    'eval-install-and-verify', 'eval-expose-first-api', 'eval-expose-own-backend',
+    'eval-local-rate-limit', 'eval-remove-apis'))
 FILES = ('README.md', 'docs/tutorials/evaluate-no-clone.md',
-         'docs/how-to/expose-an-api.md', 'docs/reference/cli.md')
+         'docs/how-to/expose-an-api.md', 'docs/reference/cli.md', *STEPS)
 FLAGS = re.M | re.I
 
 
@@ -84,9 +87,20 @@ def journey(text, blocks):
     require('explicit-sample', expose)
     first = expose.start() if expose else 0
     before = shell[:first]
-    require('ready-before-expose', match(r'\bauth\s+whoami\b', before)
-            and match(r'\bdataplane\s+get\b', before) and 'last_heartbeat_at' in before)
-    require('empty-before-expose', all(match(r'\b' + resource + r'\s+list\b', before)
+    before_prose = text[:text.find('fp expose')] if 'fp expose' in text else ''
+    require('ready-before-expose', match(r'(?:^\s*|\bif\s+)fp\s+auth\s+whoami\b', before)
+            and match(r'(?:^\s*|&&\s*)fp\s+(?:-o\s+json\s+)?dataplane\s+get\b', before)
+            and ('last_heartbeat_at' in before or (
+                re.search(r'Expected:[^\n]*authenticated identity', before_prose)
+                and re.search(r'Inspect `data.last_heartbeat_at`[^\n]*non-null and recent', before_prose)
+                and re.search(r'run the same read again to see it advance', before_prose)
+                and re.search(r'timestamp remains missing/stale[^\n]*stop before exposure', before_prose))))
+    # Manual inspection is an alternative to assertions, not to real reads.
+    manual_empty = (all(match(r'^\s*fp\s+(?:-o\s+json\s+)?' + resource + r'\s+list\b', before)
+                        for resource in ('listener', 'route', 'cluster'))
+                    and bool(re.search(r'Expected:[^\n]*all three inventories are empty[^\n]*fresh', before_prose, re.I))
+                    and bool(re.search(r'If they are not, stop and inspect', before_prose, re.I)))
+    require('empty-before-expose', manual_empty or all(match(r'\b' + resource + r'\s+list\b', before)
             for resource in ('listener', 'route', 'cluster'))
             and bool(match(r'(length\s*==\s*0|==\s*\[\]|-eq\s+0)', before)))
     traffic = list(re.finditer(r'\bcurl\b[^\n]*', shell))
@@ -156,7 +170,20 @@ def journey(text, blocks):
                          + r'=\$\(curl\b[^\n]*%\{http_code\}', shell[d.end():a.start()])
                    and refill_body_asserted(a)
                    for d in denied for a in status_assertions('200') if a.start() > d.end())
-    require('assert-429-recovery', recovery)
+    # Bind manual outcomes to ordered live status/body reads and failure guidance.
+    manual_rate = re.search(
+        r"curl[^\n]*-w\s+['\"]%\{http_code\}[^\n]*10000/[^\n]*.*?"
+        r"Expected:[^\n]*200[^\n]*429[^\n]*.*?"
+        r"If you cannot observe[^\n]*429[^\n]*stop and inspect.*?"
+        r"Wait at least (?:six|6) seconds without other traffic.*?"
+        r"curl[^\n]*\s-i\s+http://127\.0\.0\.1:10000/.*?"
+        r"Expected:[^\n]*HTTP 200[^\n]*original body[^\n]+.*?"
+        r"Confirm both\.[^\n]*If either is wrong, stop and diagnose", text, re.S | re.I)
+    manual_status = match(r"^\s*curl\b[^\n]*-w\s+['\"]%\{http_code\}[^\n]*10000/")
+    manual_refill = match(r'^\s*curl\b[^\n]*\s-i\s+http://127\.0\.0\.1:10000/')
+    require('assert-429-recovery', recovery or (manual_rate and manual_status
+            and manual_refill and update
+            and update.start() < manual_status.start() < manual_refill.start()))
     require('safe-unexpose', match(r'^\s*fp\b(?=[^\n]*\bunexpose\s+\S+)(?=[^\n]*\s(?:--yes|-y)(?:\s|$))')
             and all(word in prose for word in ('retained', 'policy', 'managed'))
             and bool(re.search(r'(delete|cleanup)', prose)))
@@ -186,6 +213,8 @@ def journey(text, blocks):
 
 def check(root):
     errors = []
+    documents = {}
+    parsed_blocks = {}
     for relative in FILES:
         try:
             text = (root / relative).read_text(encoding='utf-8')
@@ -193,6 +222,8 @@ def check(root):
         except (OSError, ValueError) as exc:
             errors.append(f'{relative}: {exc}')
             continue
+        documents[relative] = text
+        parsed_blocks[relative] = blocks
         errors.extend(link_errors(root, relative, prose))
         for index, (lang, body) in enumerate(blocks, 1):
             if lang in ('sh', 'bash'):
@@ -200,8 +231,16 @@ def check(root):
                                         capture_output=True, check=False)
                 if result.returncode:
                     errors.append(f'{relative}: shell block {index}: {result.stderr.strip()}')
-        if relative == FILES[1]:
-            errors.extend(journey(text, blocks))
+    if FILES[1] in documents:
+        index = documents[FILES[1]]
+        destinations = re.findall(r'\[[^]]*\]\((eval-[^\s)]+\.md)\)', markdown(index)[0])
+        expected = [Path(step).name for step in STEPS]
+        if destinations != expected:
+            errors.append('tutorial: ordered-learning-path')
+        if all(step in documents for step in STEPS):
+            ordered = [FILES[1], *STEPS]
+            errors.extend(journey('\n'.join(documents[p] for p in ordered),
+                                  [b for p in ordered for b in parsed_blocks[p]]))
     return errors
 
 
@@ -383,7 +422,11 @@ grep -q 'demo' "$refill_body" || { printf '%s\\n' 'missing refill response body'
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(FIXTURE if relative == FILES[1] else '# Contract\n')
-        tutorial = root / FILES[1]
+        tutorial = root / STEPS[0]
+        index = root / FILES[1]
+        index_text = '\n'.join('[Step](' + Path(step).name + ')' for step in STEPS)
+        index.write_text(index_text)
+        tutorial.write_text(FIXTURE)
         assert not check(root), check(root)
         print('PASS synthetic positive contract')
         for name, fixture, key, old, new in variants:
@@ -408,6 +451,84 @@ grep -q 'demo' "$refill_body" || { printf '%s\\n' 'missing refill response body'
         assert any('shell block' in e for e in check(root))
         readme.write_text('```sh\ntrue\n')
         assert any('unterminated' in e for e in check(root))
+        # Paired manual contracts still require real reads and explicit failures.
+        manual = FIXTURE.replace("fp cluster list | jq -e '.data | length == 0'", "fp cluster list").replace(
+            "fp route list | jq -e '.data | length == 0'", "fp route list").replace(
+            "fp listener list | jq -e '.data | length == 0'", "fp listener list").replace(
+            'fp expose demo-upstream', "```\nExpected: all three inventories are empty on a fresh installation.\nIf they are not, stop and inspect.\n```sh\nfp expose demo-upstream").replace(rate_lines, """curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:10000/
+```
+Expected: requests return 200 and then 429.
+If you cannot observe 429, stop and inspect.
+Wait at least six seconds without other traffic, then run:
+```sh
+curl -i http://127.0.0.1:10000/
+```
+Expected: HTTP 200 and the original body demo response. Confirm both. If either is wrong, stop and diagnose.
+```sh""")
+        manual = manual.replace("fp -o json dataplane get dp-eval | jq -e '.data.last_heartbeat_at != null'",
+                                "fp -o json dataplane get dp-eval").replace(
+            'Expected: all three inventories',
+            'Expected: authenticated identity and organization information.\n'
+            'Inspect `data.last_heartbeat_at`: it must be non-null and recent.\n'
+            'Wait and run the same read again to see it advance.\n'
+            'If the timestamp remains missing/stale, stop before exposure.\n'
+            'Expected: all three inventories')
+        manual_pairs = [
+            ('ready-before-expose', 'fp auth whoami', 'echo auth whoami'),
+            ('ready-before-expose', 'fp -o json dataplane get dp-eval', 'echo dataplane get dp-eval'),
+            ('ready-before-expose', 'Expected: authenticated identity', 'Identity may be absent'),
+            ('ready-before-expose', 'non-null and recent', 'possibly stale'),
+            ('ready-before-expose', 'run the same read again to see it advance', 'accept an old read'),
+            ('ready-before-expose', 'stop before exposure', 'continue regardless'),
+            ('empty-before-expose', 'fp cluster list', 'echo cluster list'),
+            ('empty-before-expose', 'all three inventories are empty', 'inventories are listed'),
+            ('empty-before-expose', 'If they are not, stop and inspect', 'Continue regardless'),
+            ('assert-429-recovery', "curl -sS -o /dev/null -w", "echo -sS -o /dev/null -w"),
+            ('assert-429-recovery', 'curl -i', 'echo curl -i'),
+            ('assert-429-recovery', 'If you cannot observe 429, stop and inspect', 'Continue without a denial'),
+            ('assert-429-recovery', 'Wait at least six seconds without other traffic', 'Continue immediately'),
+            ('assert-429-recovery', 'original body demo response', 'status only'),
+            ('assert-429-recovery', 'If either is wrong, stop and diagnose', 'Ignore wrong results'),
+        ]
+        readme.write_text('# Contract\n')
+        for key, old, new in manual_pairs:
+            tutorial.write_text(manual)
+            assert not check(root), check(root)
+            assert old in manual
+            tutorial.write_text(manual.replace(old, new))
+            assert 'tutorial: ' + key in check(root), (key, check(root))
+        tutorial.write_text(FIXTURE)
+        # Every named file must be read and linted, even with a valid index.
+        for step in STEPS:
+            path = root / step
+            original = path.read_text()
+            for content, expected_error in (('[Broken](absent.md)', 'missing linked file'),
+                                            ('```sh\nif then\n```', 'shell block'),
+                                            ('```sh\ntrue', 'unterminated')):
+                path.write_text(content)
+                assert any(step in e and expected_error in e for e in check(root)), check(root)
+            path.unlink()
+            assert any(step in e for e in check(root)), check(root)
+            path.write_text(original)
+        index.write_text(index_text.replace(Path(STEPS[0]).name, 'missing-step.md'))
+        assert 'tutorial: ordered-learning-path' in check(root), check(root)
+        index.write_text('\n'.join(reversed(index_text.splitlines())))
+        assert 'tutorial: ordered-learning-path' in check(root), check(root)
+        index.write_text(index_text)
+        # Distribute the automated fixture to prove the aggregate order is used.
+        split = FIXTURE.index('fp expose demo-upstream')
+        tutorial.write_text(FIXTURE[:split] + '```\n')
+        (root / STEPS[1]).write_text('```sh\n' + FIXTURE[split:])
+        assert not check(root), check(root)
+        first_part = tutorial.read_text()
+        second_part = (root / STEPS[1]).read_text()
+        tutorial.write_text(second_part)
+        (root / STEPS[1]).write_text(first_part)
+        assert 'tutorial: ready-before-expose' in check(root), check(root)
+        tutorial.write_text(FIXTURE)
+        (root / STEPS[1]).write_text('# Contract\n')
+        assert not check(root), check(root)
+        print(f'PASS {len(manual_pairs)} paired manual contracts; all five split files, missing/order/link/syntax/fence and ordered aggregate controls')
         print(f'PASS {len(mutations)} semantic negative mutations')
         print('PASS link/code exclusions, 2 broken links, shell syntax, unterminated fence')
         print('Static/synthetic only; no tutorial commands executed or runtime claims made.')

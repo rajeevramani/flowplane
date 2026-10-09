@@ -4,7 +4,23 @@
 
 This guide opens a live, read-only web view of your team's gateway and API platform using the credentials the CLI already stores. Seven screens cover Overview, Resources, APIs, Learning, AI, MCP, and Operations. It assumes the CLI is authenticated and scoped to a team (see [Authenticate the CLI](cli-auth-and-contexts.md)).
 
-## Open the dashboard
+## Open the evaluation dashboard
+
+If you started the Compose evaluation bundle, its dashboard service already runs the CLI-hosted dashboard. From the evaluation directory, using the same Compose project, read its nonce-protected URL:
+
+```sh
+docker compose -f compose.eval.yml exec -T flowplane-dashboard cat /shared/dashboard-url
+```
+
+Open the returned loopback URL in your browser. Host port `8081` is separate from gateway port `10000`. Treat the nonce URL as sensitive; redact it before sharing. Re-read it after a dashboard restart. If the file is not ready, inspect the service logs locally:
+
+```sh
+docker compose -f compose.eval.yml logs flowplane-dashboard
+```
+
+This dashboard is optional and is not a prerequisite for API traffic. For the evaluator's installation and readiness prerequisites, see [Install and verify Flowplane](../tutorials/eval-install-and-verify.md).
+
+## Open the dashboard directly
 
 ```bash
 flowplane dashboard

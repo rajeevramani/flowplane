@@ -1,4 +1,4 @@
-# Getting Started with Flowplane
+# Build and run Flowplane from source
 
 > Audience: newcomers · Status: stable
 

@@ -14,7 +14,7 @@ shaped this way (separate process, namespaced counters, fail modes), read
 
 **Prerequisites**
 
-- A running control plane and a real Envoy joined over xDS, with a listener, route-config, and cluster that already route traffic. The [getting-started tutorial](../tutorials/getting-started.md) gets you here with the `local` resource set on listener port `10001`; the examples below use sample names such as `edge`, `api-routes`, and `httpbin`, so substitute your actual resource names.
+- A running control plane and a real Envoy joined over xDS, with a listener, route-config, and cluster that already route traffic. The [from-source tutorial](../tutorials/build-and-run-from-source.md) gets you here with the `local` resource set on listener port `10001`; the examples below use sample names such as `edge`, `api-routes`, and `httpbin`, so substitute your actual resource names.
 - The CLI authenticated against your control plane (`flowplane auth …` or `FLOWPLANE_SERVER`/`FLOWPLANE_TOKEN`) — see [CLI auth & contexts](cli-auth-and-contexts.md). Examples below use team `default`.
 - The `flowplane-rls` binary installed from a published Flowplane release artifact, as shown in [Production Readiness](production-readiness.md).
 
