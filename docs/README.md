@@ -57,6 +57,8 @@ are `Audience: operators` / `platform-engineers` / `api-teams` / `newcomers` and
 
 Start with the [empty-install evaluation tutorial](tutorials/evaluate-no-clone.md), then use [Expose an API](how-to/expose-an-api.md) for shared listeners, published ports, conflicts and safe removal. Both pages target the draft 3.2.0 journey and label the platform paths actually exercised. For startup diagnostics, host ports, preserve/resume and deliberate reset, use [evaluation readiness and recovery](how-to/evaluation-readiness-and-recovery.md); the lifecycle procedure has supporting local Podman execution evidence, not immutable-release or cross-platform qualification.
 
+For an optional continuation after HTTP success, see [Expose an existing API to MCP](how-to/expose-an-api-to-mcp.md) (draft; runtime qualification pending). It distinguishes an MCP invocation descriptor from a separate backend call.
+
 ## Source-of-truth policy
 
 - **Implementation truth** → code + tests.
