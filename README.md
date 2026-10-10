@@ -10,113 +10,15 @@ Publish your APIs through a multi-tenant control plane and get governance (OIDC 
 
 > A ground-up Rust/PostgreSQL rebuild. PostgreSQL is the source of truth, Envoy is the only data plane, xDS/SDS is the config channel, and every product mutation goes through `fp-core` services.
 
-## Quick Start (no clone, no Rust toolchain)
+## Quick Start
 
-Evaluate Flowplane on a clean machine with only a container engine (Docker or Podman). This pulls the
-published **evaluation** image and stands up the whole stack — Postgres, the dev-mode control plane, a
-demo upstream, and Envoy — then routes a real request through the gateway. No repo checkout, no
-`cargo build`.
+Install local evaluation infrastructure with **no exposed APIs**, then explicitly expose and call a backend through Envoy. No checkout or `cargo build` is needed for the published-artifact path.
 
-> Set `VER` to a published release. The example below targets the `v3.1.4` release.
-> Its evaluator bundle and `:${VER}-eval` image support
-> `linux/amd64` and `linux/arm64` (the dashboard step
-> needs `3.1.0` or newer). For newer releases, use the version shown on the GitHub Releases
-> page. The image is **multi-arch**: a plain `docker pull` resolves the native variant — no
-> `--platform` flag, no emulation.
+**Start with the [evaluation learning path](docs/tutorials/evaluate-no-clone.md)**, or go straight to [Install and verify Flowplane](docs/tutorials/eval-install-and-verify.md). The five short tutorials cover installation, your first API, your own backend, a local rate limit, and safe removal. Each uses manual steps with expected results.
 
-```bash
-VER=3.1.4
+> **3.2.0 release preparation:** matching eval images are not yet published; packaged-candidate qualification is pending. Older `3.1.x` bundles automatically expose the demo and do not implement this empty-install/shared-exposure journey. This local-only dev bundle is not a production deployment.
 
-# 1. Fetch the evaluator bundle at the matching release tag (the only file you need)
-curl -fsSLO https://raw.githubusercontent.com/rajeevramani/flowplane/v${VER}/compose.eval.yml
-
-# 2. Bring up the whole stack against the published eval image (no --build)
-FLOWPLANE_EVAL_IMAGE=ghcr.io/rajeevramani/flowplane:${VER}-eval \
-  docker compose -f compose.eval.yml up -d --no-build
-
-# 3. A request flows through Envoy (:10000) to the demo upstream
-curl http://127.0.0.1:10000/        # -> hello from the flowplane eval demo upstream
-
-# 4. Open the read-only dashboard (the URL carries a per-launch security nonce)
-docker compose -f compose.eval.yml exec flowplane-dashboard cat /shared/dashboard-url
-# -> open the printed http://127.0.0.1:8081/<nonce>/ in your browser
-
-# 5. (optional) confirm authentication from inside the control-plane container
-docker compose -f compose.eval.yml exec flowplane-eval \
-  sh -c 'FLOWPLANE_TOKEN=$(cat /shared/dev-token) flowplane auth whoami'
-
-# Tear down
-docker compose -f compose.eval.yml down -v
-```
-
-Next, continue the no-clone evaluation with [Evaluate Flowplane without cloning the repo](docs/tutorials/evaluate-no-clone.md) to try the CLI, import an OpenAPI document, publish it, and verify the generated API tools.
-
-> The `:${VER}-eval` image is **for evaluation only** — it runs dev mode (in-process OIDC issuer +
-> seeded resources + a dev bearer token on disk) and binds every port to `127.0.0.1`. It is **never**
-> an operator/production base and is never tagged `:latest`. The hardened, publishable image is
-> `ghcr.io/rajeevramani/flowplane:${VER}` (built `--no-default-features`, which refuses dev mode).
-
-## Build from source (contributors)
-
-Working on Flowplane itself? Build the binary and run the control plane directly.
-
-> **Toolchain:** build through [rustup](https://rustup.rs) so the `rust-toolchain.toml` pin (1.94.1) is applied automatically. A distro-packaged `cargo` may be too old to read this repo's version-4 `Cargo.lock`.
->
-> **Prerequisites:** a reachable PostgreSQL (`postgres://postgres:postgres@127.0.0.1:5432/flowplane_dev`), a local `envoy` binary on your `PATH`, and a Rust toolchain via rustup. On macOS/Homebrew create the `postgres` role first — see the [tutorial](docs/tutorials/getting-started.md#1-prerequisites).
-
-```bash
-# Build (the default `dev-oidc` feature enables dev mode)
-cargo build --bin flowplane
-
-# 1. Start the control plane in dev mode (in-process OIDC + seeded resources)
-FLOWPLANE_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/flowplane_dev \
-  FLOWPLANE_DEV_MODE=true \
-  FLOWPLANE_API_INSECURE=true \
-  FLOWPLANE_API_ADDR=127.0.0.1:8096 \
-  FLOWPLANE_XDS_ADDR=0.0.0.0:18000 \
-  ./target/debug/flowplane serve
-```
-
-Dev mode logs a 24-hour `dev_token` once at boot (configurable with
-`FLOWPLANE_DEV_TOKEN_TTL`). In a second terminal:
-
-```bash
-export FLOWPLANE_SERVER=http://127.0.0.1:8096
-export FLOWPLANE_ORG=dev-org
-export FLOWPLANE_TEAM=default
-export FLOWPLANE_TOKEN='<paste the dev_token from the server log>'
-
-./target/debug/flowplane auth whoami        # confirm authentication
-```
-
-Start a trivial upstream, expose it, point Envoy at the control plane, and verify:
-
-```bash
-# Trivial upstream (third terminal)
-mkdir -p /tmp/fp-upstream && cd /tmp/fp-upstream
-printf 'hello-flowplane\n' > index.html && python3 -m http.server 3001
-
-# Expose it — creates cluster + route config + listener in one command
-./target/debug/flowplane expose http://127.0.0.1:3001 \
-  --name local --path / --port 10001 \
-  --public-base-url http://127.0.0.1:10001
-
-# Register a dataplane and generate the dev Envoy bootstrap (--out is global, before the subcommand)
-./target/debug/flowplane dataplane create dp-local --description "local Envoy"
-./target/debug/flowplane --out /tmp/flowplane-envoy.yaml \
-  dataplane bootstrap dp-local --mode dev \
-  --xds-host 127.0.0.1 --xds-port 18000 --admin-port 9901
-
-# Start Envoy (its own terminal)
-envoy -c /tmp/flowplane-envoy.yaml --log-level info
-
-# Verify: this request flows through Envoy (:10001) to your upstream (:3001)
-curl -i http://127.0.0.1:10001/        # -> 200 OK, body: hello-flowplane
-```
-
-Tear it down with `flowplane unexpose local`. The full walkthrough with every check is in the [Getting Started tutorial](docs/tutorials/getting-started.md).
-
-> Dev mode runs an in-process identity issuer over plaintext — local exploration only, never production. The published release container is built `--no-default-features` and rejects dev mode entirely.
+For startup diagnostics or preserving/resuming an evaluation, use [evaluation readiness and recovery](docs/how-to/evaluation-readiness-and-recovery.md). For additional ports and exposure modes, use [Expose an API](docs/how-to/expose-an-api.md).
 
 ## Architecture
 
@@ -155,60 +57,15 @@ Flowplane is the **control plane**: it stores gateway configuration (clusters, r
 
 ## Documentation
 
-The [documentation home](docs/README.md) is organised by [Diátaxis](https://diataxis.fr/) mode. Start here:
+- **Evaluate locally:** [Evaluation learning path](docs/tutorials/evaluate-no-clone.md).
+- **Configure your gateway:** [Expose an API](docs/how-to/expose-an-api.md).
+- **Evaluate a production-shaped setup:** [Platform evaluation](docs/how-to/evaluate-platform.md).
+- **Build and run from source:** [Build and run from source](docs/tutorials/build-and-run-from-source.md).
+- **All guides and references:** [Documentation home](docs/README.md).
 
-| You want to… | Start here |
-|--------------|------------|
-| Try Flowplane without cloning the repo | [Evaluate without cloning](docs/tutorials/evaluate-no-clone.md) |
-| Evaluate a production-shaped platform setup | [Evaluate a production-shaped platform setup](docs/how-to/evaluate-platform.md) |
-| Delegate API onboarding to a team | [Onboard an API team](docs/how-to/onboard-api-team.md) |
-| Stand up a gateway from a clean checkout | [Getting Started](docs/tutorials/getting-started.md) |
-| Protect a route with JWT auth + rate limit | [JWT auth & rate limit](docs/how-to/jwt-auth-rate-limit-route.md) |
-| Cap a route globally across all Envoys | [Enable global rate limiting](docs/how-to/global-rate-limit.md) |
-| Learn an API spec from live traffic | [Learn & publish an API spec](docs/how-to/learn-and-publish-api-spec.md) |
-| Front an LLM with a token budget | [AI gateway route & budget](docs/how-to/ai-gateway-route-budget.md) |
-| Inspect a team's gateway in the dashboard | [View your team's gateway dashboard](docs/how-to/view-team-dashboard.md) |
-| Secure the data plane with mTLS | [Register a dataplane (mTLS)](docs/how-to/register-dataplane-mtls.md) |
-| Understand tenancy, grants, and xDS | [Tenancy, grants & the xDS pipeline](docs/concepts/tenancy-grants-xds.md) |
-| Understand global rate limiting | [Global rate limiting](docs/concepts/global-rate-limiting.md) |
+## Contributing
 
-Reference: [CLI](docs/reference/cli.md) · [Configuration](docs/reference/configuration.md) · [REST API](docs/reference/rest-api.md) · [Filters](docs/reference/filters.md) · [Errors](docs/reference/errors.md) · [Adoption issue map](docs/reference/adoption-evaluation-issue-map.md)
-
-## Building and Testing
-
-Build the main binary:
-
-```bash
-cargo build --bin flowplane
-```
-
-Run tests for the main binary:
-
-```bash
-cargo test -p flowplane
-```
-
-Run the full workspace suite with PostgreSQL-backed tests enabled. CI uses
-[`cargo nextest`](https://nexte.st) (faster; the same suite); install it with
-`cargo install cargo-nextest --locked` or `cargo binstall cargo-nextest`:
-
-```bash
-export FLOWPLANE_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/flowplane_test
-
-cargo nextest run --workspace --all-features   # what CI runs (via the `ci` profile)
-cargo test --workspace --all-features --doc    # doctests — nextest does not run these
-
-# plain cargo test still works and additionally runs doctests inline:
-cargo test --workspace --all-features
-```
-
-Print the generated REST contract:
-
-```bash
-./target/debug/flowplane openapi
-```
-
-> Workspace tests read the DB URL from `FLOWPLANE_TEST_DATABASE_URL`. The `scripts/ensure-postgres.sh` helper assumes a Linux/container setup and does not create the `postgres` role; on macOS/Homebrew create it yourself (see [Getting Started](docs/tutorials/getting-started.md#1-prerequisites)).
+Working on Flowplane itself? Use [Build and run from source](docs/tutorials/build-and-run-from-source.md) to build and run a local gateway, and the [contributor guide](CONTRIBUTING.md) for build, test and API-contract commands.
 
 ## License
 

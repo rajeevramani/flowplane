@@ -39,10 +39,11 @@ pub use discovery::{
 pub use error::{DomainError, DomainResult, ErrorCode};
 pub use id::{
     AgentId, AiBudgetId, AiProviderId, AiRouteId, ApiDefinitionId, ApiRouteBindingId, ApiToolId,
-    AuditEntryId, CaptureSessionId, ClusterId, DataplaneId, DiscoverySessionId, GrantId,
-    ListenerId, MembershipId, OrgId, ProxyCertificateId, RateLimitDomainId, RateLimitPolicyId,
-    RateLimitTeamOverrideId, RawObservationId, RequestId, RetentionPolicyId, RouteConfigId,
-    RouteGenerationPlanId, SecretId, SpecVersionId, SpecVersionReviewEventId, TeamId, UserId,
+    AuditEntryId, CaptureSessionId, ClusterId, DataplaneId, DiscoverySessionId, ExposureId,
+    GrantId, ListenerId, MembershipId, OrgId, ProxyCertificateId, RateLimitDomainId,
+    RateLimitPolicyId, RateLimitTeamOverrideId, RawObservationId, RequestId, RetentionPolicyId,
+    RouteConfigId, RouteGenerationPlanId, SecretId, SpecVersionId, SpecVersionReviewEventId,
+    TeamId, UserId,
 };
 pub use identity::{
     validate_name, Agent, AgentKind, EntityStatus, OrgRole, Organization, Team, User,

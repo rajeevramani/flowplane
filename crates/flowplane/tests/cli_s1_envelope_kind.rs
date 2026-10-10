@@ -125,6 +125,34 @@ async fn unexpose_kind_is_mutation_result_not_resource_name() {
         kind, "mutationResult",
         "unexpose -o json envelope kind must be \"mutationResult\": {v}"
     );
+    assert_eq!(v["data"]["cluster_name"], "local-upstream");
+    assert_eq!(v["data"]["route_config_name"], "local-routes");
+    assert_eq!(v["data"]["listener_name"], "local");
+    assert_eq!(v["data"]["cluster_disposition"], "deleted");
+    assert_eq!(v["data"]["route_config_disposition"], "retained");
+    assert_eq!(v["data"]["listener_disposition"], "retained");
+}
+
+/// Real CLI binary output handling, backed by the canonical contract mock (not a DB smoke).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unexpose_yaml_preserves_actual_dispositions() {
+    let mock = common::start_mock().await;
+    let home = common::unique_tempdir();
+    let out = common::flowplane_cmd(&home)
+        .env("FLOWPLANE_SERVER", mock.base_url())
+        .env("FLOWPLANE_TOKEN", "t")
+        .args([
+            "unexpose", "local", "--team", "payments", "--yes", "-o", "yaml",
+        ])
+        .output()
+        .expect("run unexpose -o yaml");
+    assert_eq!(exit_code(&out), 0);
+    assert!(out.stderr.is_empty());
+    let v: Value = serde_yaml::from_slice(&out.stdout).expect("YAML success envelope");
+    assert_eq!(v["kind"], "mutationResult");
+    assert_eq!(v["data"]["cluster_disposition"], "deleted");
+    assert_eq!(v["data"]["route_config_disposition"], "retained");
+    assert_eq!(v["data"]["listener_disposition"], "retained");
 }
 
 // ---------------------------------------------------------------------------------------------

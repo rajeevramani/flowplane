@@ -9,6 +9,7 @@ pub mod bootstrap;
 pub mod clusters;
 pub mod dataplanes;
 pub mod discovery;
+pub mod exposures;
 pub mod gateway;
 pub mod identity;
 pub mod rate_limit;

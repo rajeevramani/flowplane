@@ -161,7 +161,7 @@ pub async fn record_in_tx(
         .execute(&mut **tx)
         .await
         .map(|_| ())
-        .map_err(|e| fp_domain::DomainError::internal(format!("audit insert: {e}")))
+        .map_err(|e| crate::sql_error("audit insert", e))
 }
 
 /// Best-effort record for denials/auth failures: never fails the caller, never silent.

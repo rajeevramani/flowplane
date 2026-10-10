@@ -1,4 +1,4 @@
-# Getting Started with Flowplane
+# Build and run Flowplane from source
 
 > Audience: newcomers · Status: stable
 
@@ -241,8 +241,7 @@ To tear down what you created:
 ./target/debug/flowplane unexpose local
 ```
 
-`unexpose` is destructive, so on an interactive terminal it asks for `[y/N]` confirmation before
-acting. Answer `y`, or pass `--yes` to skip the prompt (required when running non-interactively).
+`unexpose` is destructive, so on an interactive terminal it asks for `[y/N]` confirmation before acting. Answer `y`, or pass `--yes` to skip the prompt (required when running non-interactively). It removes the associated route/upstream, retaining infrastructure when other routes remain. Final managed cleanup also deletes subsequent listener/configuration policy edits. Legacy/manual matching names return404 with ordinary inspection/cleanup guidance; protected references or stale ownership return409 without partial deletion. See the [CLI reference](../reference/cli.md#unexpose) for cleanup and restoration limits.
 
 ---
 

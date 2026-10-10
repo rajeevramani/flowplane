@@ -2,7 +2,7 @@
 
 # Add JWT authentication and a local rate limit to an existing route
 
-This protects one route with JWT validation and caps its request rate. It assumes you already have a working cluster, listener, and route-config bound together. If you do not, start with the [getting-started tutorial](../tutorials/getting-started.md).
+This protects one route with JWT validation and caps its request rate. It assumes you already have a working cluster, listener, and route-config bound together. If you do not, start with the [from-source tutorial](../tutorials/build-and-run-from-source.md).
 
 **Prerequisites:** a listener (e.g. `edge`) whose `route_config` points at an existing route-config (e.g. `api-routes`) with the route you want to protect, and the listener/route revisions to hand (the `revision` field on a `GET`).
 

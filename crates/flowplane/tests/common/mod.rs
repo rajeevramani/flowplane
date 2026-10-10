@@ -312,7 +312,15 @@ async fn mcp_status(Path(_team): Path<String>) -> (StatusCode, Json<Value>) {
 async fn delete_expose(Path((_team, name)): Path<(String, String)>) -> (StatusCode, Json<Value>) {
     (
         StatusCode::OK,
-        Json(json!({ "removed": true, "name": name })),
+        Json(json!({
+            "name": name,
+            "cluster_name": format!("{name}-upstream"),
+            "route_config_name": format!("{name}-routes"),
+            "listener_name": name,
+            "cluster_disposition": "deleted",
+            "route_config_disposition": "retained",
+            "listener_disposition": "retained"
+        })),
     )
 }
 

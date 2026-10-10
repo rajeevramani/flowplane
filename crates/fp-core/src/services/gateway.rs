@@ -13,7 +13,7 @@ use fp_domain::gateway::route_config::{RouteConfig, RouteConfigSpec};
 use fp_domain::{validate_name, DomainError, DomainResult, RequestId};
 use fp_storage::repos::{audit, clusters, gateway};
 use fp_storage::scope::TeamScope;
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 
 async fn authorize(
     pool: &PgPool,
@@ -82,31 +82,7 @@ pub async fn create_route_config(
         .begin()
         .await
         .map_err(crate::services::db_err("create rc: begin"))?;
-    let rc = gateway::create_route_config(&mut tx, team, name, &spec).await?;
-    fp_storage::outbox::append(
-        &mut tx,
-        &DomainEvent::RouteConfigUpserted {
-            route_config_id: rc.id.as_uuid(),
-            name: name.into(),
-        },
-        EventScope {
-            org_id: Some(team.org_id),
-            team_id: Some(team.id),
-        },
-        trace_context_json(),
-    )
-    .await?;
-    audit::record_in_tx(
-        &mut tx,
-        &mutation_audit(
-            ctx,
-            request_id,
-            team,
-            "route_config.create",
-            format!("route-configs/{name}"),
-        ),
-    )
-    .await?;
+    let rc = create_route_config_in_tx(&mut tx, ctx, team, name, spec, request_id).await?;
     tx.commit()
         .await
         .map_err(crate::services::db_err("create rc: commit"))?;
@@ -177,31 +153,9 @@ pub async fn update_route_config(
         .begin()
         .await
         .map_err(crate::services::db_err("update rc: begin"))?;
-    let rc = gateway::update_route_config(&mut tx, team, name, &spec, expected_version).await?;
-    fp_storage::outbox::append(
-        &mut tx,
-        &DomainEvent::RouteConfigUpserted {
-            route_config_id: rc.id.as_uuid(),
-            name: name.into(),
-        },
-        EventScope {
-            org_id: Some(team.org_id),
-            team_id: Some(team.id),
-        },
-        trace_context_json(),
-    )
-    .await?;
-    audit::record_in_tx(
-        &mut tx,
-        &mutation_audit(
-            ctx,
-            request_id,
-            team,
-            "route_config.update",
-            format!("route-configs/{name}"),
-        ),
-    )
-    .await?;
+    let rc =
+        update_route_config_in_tx(&mut tx, ctx, team, name, spec, expected_version, request_id)
+            .await?;
     tx.commit()
         .await
         .map_err(crate::services::db_err("update rc: commit"))?;
@@ -229,31 +183,7 @@ pub async fn delete_route_config(
         .begin()
         .await
         .map_err(crate::services::db_err("delete rc: begin"))?;
-    let rc_id = gateway::delete_route_config(&mut tx, team.id, name, expected_version).await?;
-    fp_storage::outbox::append(
-        &mut tx,
-        &DomainEvent::RouteConfigDeleted {
-            route_config_id: rc_id.as_uuid(),
-            name: name.into(),
-        },
-        EventScope {
-            org_id: Some(team.org_id),
-            team_id: Some(team.id),
-        },
-        trace_context_json(),
-    )
-    .await?;
-    audit::record_in_tx(
-        &mut tx,
-        &mutation_audit(
-            ctx,
-            request_id,
-            team,
-            "route_config.delete",
-            format!("route-configs/{name}"),
-        ),
-    )
-    .await?;
+    delete_route_config_in_tx(&mut tx, ctx, team, name, expected_version, request_id).await?;
     tx.commit()
         .await
         .map_err(crate::services::db_err("delete rc: commit"))?;
@@ -348,31 +278,7 @@ pub async fn create_listener(
         .begin()
         .await
         .map_err(crate::services::db_err("create listener: begin"))?;
-    let listener = gateway::create_listener(&mut tx, team, name, &spec).await?;
-    fp_storage::outbox::append(
-        &mut tx,
-        &DomainEvent::ListenerUpserted {
-            listener_id: listener.id.as_uuid(),
-            name: name.into(),
-        },
-        EventScope {
-            org_id: Some(team.org_id),
-            team_id: Some(team.id),
-        },
-        trace_context_json(),
-    )
-    .await?;
-    audit::record_in_tx(
-        &mut tx,
-        &mutation_audit(
-            ctx,
-            request_id,
-            team,
-            "listener.create",
-            format!("listeners/{name}"),
-        ),
-    )
-    .await?;
+    let listener = create_listener_in_tx(&mut tx, ctx, team, name, spec, request_id).await?;
     tx.commit()
         .await
         .map_err(crate::services::db_err("create listener: commit"))?;
@@ -504,9 +410,194 @@ pub async fn delete_listener(
         .begin()
         .await
         .map_err(crate::services::db_err("delete listener: begin"))?;
-    let listener_id = gateway::delete_listener(&mut tx, team.id, name, expected_version).await?;
+    delete_listener_in_tx(&mut tx, ctx, team, name, expected_version, request_id).await?;
+    tx.commit()
+        .await
+        .map_err(crate::services::db_err("delete listener: commit"))?;
+    Ok(())
+}
+
+pub(crate) fn validate_user_listener_name(name: &str) -> DomainResult<()> {
+    validate_name(name)?;
+    if name.starts_with("ai-") {
+        return Err(DomainError::validation(
+            "listener names starting with \"ai-\" are reserved for AI routes",
+        ));
+    }
+    Ok(())
+}
+
+/// Internal composition seam: caller authorizes and prepares policy/quota before writes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_route_config_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    spec: RouteConfigSpec,
+    request_id: RequestId,
+) -> DomainResult<RouteConfig> {
+    validate_name(name)?;
+    spec.validate()?;
+    let rc = gateway::create_route_config(tx, team, name, &spec).await?;
     fp_storage::outbox::append(
-        &mut tx,
+        tx,
+        &DomainEvent::RouteConfigUpserted {
+            route_config_id: rc.id.as_uuid(),
+            name: name.into(),
+        },
+        EventScope {
+            org_id: Some(team.org_id),
+            team_id: Some(team.id),
+        },
+        trace_context_json(),
+    )
+    .await?;
+    audit::record_in_tx(
+        tx,
+        &mutation_audit(
+            ctx,
+            request_id,
+            team,
+            "route_config.create",
+            format!("route-configs/{name}"),
+        ),
+    )
+    .await?;
+    Ok(rc)
+}
+
+/// Internal composition seam: caller authorizes and prepares policy/quota before writes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn update_route_config_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    spec: RouteConfigSpec,
+    expected_version: i64,
+    request_id: RequestId,
+) -> DomainResult<RouteConfig> {
+    spec.validate()?;
+    let rc = gateway::update_route_config(tx, team, name, &spec, expected_version).await?;
+    fp_storage::outbox::append(
+        tx,
+        &DomainEvent::RouteConfigUpserted {
+            route_config_id: rc.id.as_uuid(),
+            name: name.into(),
+        },
+        EventScope {
+            org_id: Some(team.org_id),
+            team_id: Some(team.id),
+        },
+        trace_context_json(),
+    )
+    .await?;
+    audit::record_in_tx(
+        tx,
+        &mutation_audit(
+            ctx,
+            request_id,
+            team,
+            "route_config.update",
+            format!("route-configs/{name}"),
+        ),
+    )
+    .await?;
+    Ok(rc)
+}
+
+/// Internal composition seam: caller authorizes and prepares policy/quota before writes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn delete_route_config_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    expected_version: i64,
+    request_id: RequestId,
+) -> DomainResult<()> {
+    let rc_id = gateway::delete_route_config(tx, team.id, name, expected_version).await?;
+    fp_storage::outbox::append(
+        tx,
+        &DomainEvent::RouteConfigDeleted {
+            route_config_id: rc_id.as_uuid(),
+            name: name.into(),
+        },
+        EventScope {
+            org_id: Some(team.org_id),
+            team_id: Some(team.id),
+        },
+        trace_context_json(),
+    )
+    .await?;
+    audit::record_in_tx(
+        tx,
+        &mutation_audit(
+            ctx,
+            request_id,
+            team,
+            "route_config.delete",
+            format!("route-configs/{name}"),
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Internal composition seam: caller authorizes and prepares policy/quota before writes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_listener_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    spec: ListenerSpec,
+    request_id: RequestId,
+) -> DomainResult<Listener> {
+    validate_user_listener_name(name)?;
+    spec.validate()?;
+    let listener = gateway::create_listener(tx, team, name, &spec).await?;
+    fp_storage::outbox::append(
+        tx,
+        &DomainEvent::ListenerUpserted {
+            listener_id: listener.id.as_uuid(),
+            name: name.into(),
+        },
+        EventScope {
+            org_id: Some(team.org_id),
+            team_id: Some(team.id),
+        },
+        trace_context_json(),
+    )
+    .await?;
+    audit::record_in_tx(
+        tx,
+        &mutation_audit(
+            ctx,
+            request_id,
+            team,
+            "listener.create",
+            format!("listeners/{name}"),
+        ),
+    )
+    .await?;
+    Ok(listener)
+}
+
+/// Internal composition seam: caller authorizes and prepares policy/quota before writes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn delete_listener_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &PrincipalCtx,
+    team: TeamRef,
+    name: &str,
+    expected_version: i64,
+    request_id: RequestId,
+) -> DomainResult<()> {
+    let listener_id = gateway::delete_listener(tx, team.id, name, expected_version).await?;
+    fp_storage::outbox::append(
+        tx,
         &DomainEvent::ListenerDeleted {
             listener_id: listener_id.as_uuid(),
             name: name.into(),
@@ -519,7 +610,7 @@ pub async fn delete_listener(
     )
     .await?;
     audit::record_in_tx(
-        &mut tx,
+        tx,
         &mutation_audit(
             ctx,
             request_id,
@@ -529,18 +620,5 @@ pub async fn delete_listener(
         ),
     )
     .await?;
-    tx.commit()
-        .await
-        .map_err(crate::services::db_err("delete listener: commit"))?;
-    Ok(())
-}
-
-fn validate_user_listener_name(name: &str) -> DomainResult<()> {
-    validate_name(name)?;
-    if name.starts_with("ai-") {
-        return Err(DomainError::validation(
-            "listener names starting with \"ai-\" are reserved for AI routes",
-        ));
-    }
     Ok(())
 }

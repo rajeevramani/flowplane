@@ -656,7 +656,7 @@ If a migration ran, rollback means restoring the pre-upgrade backup, and that is
 
 Work from the owned-resource ledger from section 1. Delete by exact name or ID, never by pattern, and leave every shared or pre-existing item as it was. Freeze any evidence you need before deleting anything.
 
-Retire product resources first, through supported commands, while the control plane is still running:
+Retire product resources first, through supported commands, while the control plane is still running. `unexpose` removes the associated route/upstream; final managed probe cleanup deletes its listener/configuration **including the runbook's later policy edits**. Other genuine routes retain that infrastructure. Legacy/manual matching names are not adopted; protected bindings/capture history or stale ownership return409 without partial cleanup. Inspect the [cleanup contract](../reference/cli.md#unexpose) and stop on such a conflict rather than forcing deletion.
 
 ```bash
 flowplane unexpose runbook-probe --team "$TEAM" --yes

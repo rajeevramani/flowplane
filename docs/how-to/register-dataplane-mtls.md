@@ -4,7 +4,7 @@
 
 This how-to walks one task end to end: **register a dataplane, issue its mTLS client certificate, and connect `flowplane-agent`.** It assumes you already run Flowplane day to day and have a working CLI context (server URL, org, team, token).
 
-It assumes the control plane is already running with xDS mTLS configured. The xDS listener is **always** mTLS in production — there is no plaintext mode off loopback. If you have not stood that up yet, start with [Production Readiness](production-readiness.md) and set the `FLOWPLANE_XDS_TLS_*` triad as described in the [configuration reference](../reference/configuration.md). For local from-source practice only, use the [Getting started tutorial](../tutorials/getting-started.md).
+It assumes the control plane is already running with xDS mTLS configured. The xDS listener is **always** mTLS in production — there is no plaintext mode off loopback. If you have not stood that up yet, start with [Production Readiness](production-readiness.md) and set the `FLOWPLANE_XDS_TLS_*` triad as described in the [configuration reference](../reference/configuration.md). For local from-source practice only, use the [from-source tutorial](../tutorials/build-and-run-from-source.md).
 
 ## Prerequisites
 
@@ -258,7 +258,7 @@ dataplane UUID and SPIFFE URI; credentials from the retired incarnation cannot a
 
 ## Further reading
 
-- [Getting started tutorial](../tutorials/getting-started.md) — stand up the control plane and xDS mTLS.
+- [from-source tutorial](../tutorials/build-and-run-from-source.md) — stand up the control plane and xDS mTLS.
 - [Configuration reference](../reference/configuration.md) — every env var, including the cert-issuer and xDS TLS triads.
 - [CLI reference](../reference/cli.md) — full `dataplane` and `dataplane cert` command surface.
 - Design references (optional): [spec/04-xds.md](../../spec/04-xds.md), [spec/05-auth.md](../../spec/05-auth.md) — SPIFFE binding and certificate revocation internals.

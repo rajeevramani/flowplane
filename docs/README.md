@@ -6,6 +6,30 @@ This directory is **user-facing product documentation only**. Everything here is
 
 For engineering design records, decisions, progress, and release evidence, see [`../internal/README.md`](../internal/README.md) and `../spec/`.
 
+## Guides and references
+
+Choose a task below, or follow the [evaluation learning path](tutorials/evaluate-no-clone.md) from installation to safe removal.
+
+| You want to… | Start here |
+|--------------|------------|
+| Try Flowplane locally | [Evaluation learning path](tutorials/evaluate-no-clone.md) |
+| Expose your API or share a listener | [Expose an API](how-to/expose-an-api.md) |
+| Evaluate a production-shaped platform setup | [Evaluate a production-shaped platform setup](how-to/evaluate-platform.md) |
+| Delegate API onboarding to a team | [Onboard an API team](how-to/onboard-api-team.md) |
+| Build and run from source | [Build and run from source](tutorials/build-and-run-from-source.md) |
+| Protect a route with JWT auth + rate limit | [JWT auth & rate limit](how-to/jwt-auth-rate-limit-route.md) |
+| Cap a route globally across all Envoys | [Enable global rate limiting](how-to/global-rate-limit.md) |
+| Learn an API spec from live traffic | [Learn & publish an API spec](how-to/learn-and-publish-api-spec.md) |
+| Front an LLM with a token budget | [AI gateway route & budget](how-to/ai-gateway-route-budget.md) |
+| Inspect a team's gateway in the dashboard | [View your team's gateway dashboard](how-to/view-team-dashboard.md) |
+| Secure the data plane with mTLS | [Register a dataplane (mTLS)](how-to/register-dataplane-mtls.md) |
+| Understand tenancy, grants, and xDS | [Tenancy, grants & the xDS pipeline](concepts/tenancy-grants-xds.md) |
+| Understand global rate limiting | [Global rate limiting](concepts/global-rate-limiting.md) |
+
+Reference: [CLI](reference/cli.md) · [Configuration](reference/configuration.md) · [REST API](reference/rest-api.md) · [Filters](reference/filters.md) · [Errors](reference/errors.md) · [Adoption issue map](reference/adoption-evaluation-issue-map.md)
+
+Contributor build and verification commands live in the [contributor guide](../CONTRIBUTING.md).
+
 ## Structure (Diátaxis)
 
 The primary axis is **Diátaxis mode**, not audience. Audience and status are per-document metadata (a header banner), not directories.
@@ -52,6 +76,12 @@ Every page starts with one metadata line:
 `Audience` and `Status` values are open-ended conventions, not closed vocabularies. Common examples
 are `Audience: operators` / `platform-engineers` / `api-teams` / `newcomers` and
 `Status: stable` / `draft`; use other clear values when they describe the page better.
+
+## First exposure
+
+Start with the [evaluation learning path](tutorials/evaluate-no-clone.md). Its focused tutorials cover [installation and verification](tutorials/eval-install-and-verify.md), [your first API](tutorials/eval-expose-first-api.md), [your own backend](tutorials/eval-expose-own-backend.md), [local rate limiting](tutorials/eval-local-rate-limit.md), and [safe removal](tutorials/eval-remove-apis.md). They target the draft 3.2.0 journey and label the platform paths actually exercised. Use [Expose an API](how-to/expose-an-api.md) for exposure modes, additional published ports and conflicts. For startup diagnostics, preserve/resume and deliberate reset, use [evaluation readiness and recovery](how-to/evaluation-readiness-and-recovery.md); supporting local execution is not immutable-release or cross-platform qualification.
+
+For an optional continuation after HTTP success, see [Expose an existing API to MCP](how-to/expose-an-api-to-mcp.md) (draft; runtime qualification pending). It distinguishes an MCP invocation descriptor from a separate backend call.
 
 ## Source-of-truth policy
 

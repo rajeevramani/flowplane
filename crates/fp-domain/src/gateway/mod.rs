@@ -2,6 +2,7 @@
 //! follow the same vertical pattern.
 
 pub mod cluster;
+pub mod exposure;
 pub mod filters;
 pub mod listener;
 pub mod route_config;
